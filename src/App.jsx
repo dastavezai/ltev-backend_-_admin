@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
+import Updates from './pages/Updates';
 import Vehicles from './pages/Vehicles';
 import VehicleDetails from './pages/VehicleDetails';
 import Stands from './pages/Stands';
@@ -11,6 +12,7 @@ import AccountApprovals from './pages/AccountApprovals';
 import WalletApprovals from './pages/WalletApprovals';
 import Transactions from './pages/Transactions';
 import Plans from './pages/Plans';
+import SecurityDeposits from './pages/SecurityDeposits';
 import Login from './pages/Login';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import './App.css';
@@ -44,6 +46,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<ProtectedRoute><Layout><Dashboard /></Layout></ProtectedRoute>} />
+          <Route path="/updates" element={<ProtectedRoute><Layout><Updates /></Layout></ProtectedRoute>} />
           <Route path="/vehicles" element={<ProtectedRoute><Layout><Vehicles /></Layout></ProtectedRoute>} />
           <Route path="/vehicles/:id" element={<ProtectedRoute><Layout><VehicleDetails /></Layout></ProtectedRoute>} />
           <Route path="/stands" element={<ProtectedRoute><Layout><Stands /></Layout></ProtectedRoute>} />
@@ -52,6 +55,7 @@ function App() {
           <Route path="/users" element={<ProtectedRoute><Layout><UserManagement /></Layout></ProtectedRoute>} />
           <Route path="/account-approvals" element={<ProtectedRoute><Layout><AccountApprovals /></Layout></ProtectedRoute>} />
           <Route path="/wallet-approvals" element={<ProtectedRoute><Layout><WalletApprovals /></Layout></ProtectedRoute>} />
+          <Route path="/security-deposits" element={<ProtectedRoute><Layout><SecurityDeposits /></Layout></ProtectedRoute>} />
           <Route path="/transactions" element={<ProtectedRoute><Layout><Transactions /></Layout></ProtectedRoute>} />
           <Route path="/plans" element={<ProtectedRoute><Layout><Plans /></Layout></ProtectedRoute>} />
         </Routes>

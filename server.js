@@ -122,7 +122,7 @@ app.post('/api/auth/verify-login', async (req, res) => {
       return res.status(400).json({ error: 'Invalid OTP' });
     }
     
-    const result = await pool.query('SELECT id, name, phone, email, role, status, kyc_status FROM users WHERE phone = $1', [phone]);
+    const result = await pool.query('SELECT id, name, phone, email, role, status, kyc_status, security_deposit_balance FROM users WHERE phone = $1', [phone]);
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'User not found. Please sign up.' });
     }
@@ -201,7 +201,7 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await pool.query(`
-      SELECT u.id, u.name, u.email, u.phone, u.status, u.kyc_status, u.security_deposit_paid, COALESCE(w.balance, 0) as wallet_balance
+      SELECT u.id, u.name, u.email, u.phone, u.status, u.kyc_status, u.security_deposit_paid, u.security_deposit_balance, COALESCE(w.balance, 0) as wallet_balance
       FROM users u
       LEFT JOIN wallets w ON w.user_id = u.id
       WHERE u.id = $1
@@ -423,6 +423,99 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Security Deposits API
+app.get('/api/security-deposits', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, name, email, phone, security_deposit_balance
+      FROM users
+      ORDER BY name ASC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/security-deposits/:userId/history', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const result = await pool.query(`
+      SELECT id, amount, type, remarks, date
+      FROM security_deposit_transactions
+      WHERE user_id = $1
+      ORDER BY date DESC
+    `, [userId]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/security-deposits/deduct', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { user_id, amount, remarks } = req.body;
+    
+    if (!user_id || !amount || isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Valid user ID and amount are required.' });
+    }
+
+    await client.query('BEGIN');
+    
+    const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+    if (userRes.rows.length === 0) throw new Error('User not found');
+    const balance = parseFloat(userRes.rows[0].security_deposit_balance);
+    
+    if (balance < amount) {
+      throw new Error(`Insufficient security deposit balance. Maximum deductible is ₹${balance}`);
+    }
+
+    await client.query('UPDATE users SET security_deposit_balance = security_deposit_balance - $1 WHERE id = $2', [amount, user_id]);
+    
+    await client.query(`
+      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks)
+      VALUES ($1, $2, 'deduction', $3)
+    `, [user_id, amount, remarks || 'Admin Deduction']);
+    
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Deduction successful' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/security-deposits/add', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { user_id, amount, remarks } = req.body;
+    
+    if (!user_id || !amount || isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Valid user ID and amount are required.' });
+    }
+
+    await client.query('BEGIN');
+    
+    await client.query('UPDATE users SET security_deposit_balance = security_deposit_balance + $1 WHERE id = $2', [amount, user_id]);
+    
+    await client.query(`
+      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks)
+      VALUES ($1, $2, 'deposit', $3)
+    `, [user_id, amount, remarks || 'Admin Deposit']);
+    
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Deposit successful' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // Transactions API (wallet_transactions joined with users)
 app.get('/api/transactions', authenticateToken, async (req, res) => {
   try {
@@ -496,7 +589,7 @@ app.post('/api/transactions/cash', authenticateToken, async (req, res) => {
 app.post('/api/plans/purchase', authenticateToken, async (req, res) => {
   const client = await pool.connect();
   try {
-    const { plan_id } = req.body;
+    const { plan_id, deposit_paid } = req.body;
     const user_id = req.user.id;
 
     await client.query('BEGIN');
@@ -517,6 +610,15 @@ app.post('/api/plans/purchase', authenticateToken, async (req, res) => {
       [rentalId, user_id, plan_id, plan.price, 'pending_assignment']
     );
     
+    // Update security deposit if any was paid during checkout
+    if (deposit_paid && parseFloat(deposit_paid) > 0) {
+      await client.query('UPDATE users SET security_deposit_balance = security_deposit_balance + $1 WHERE id = $2', [parseFloat(deposit_paid), user_id]);
+      await client.query(`
+        INSERT INTO security_deposit_transactions (user_id, amount, type, remarks)
+        VALUES ($1, $2, 'deposit', $3)
+      `, [user_id, parseFloat(deposit_paid), `Deposit for Plan ${plan.name}`]);
+    }
+
     await client.query('COMMIT');
     res.json({ success: true, message: 'Plan purchased successfully. Pending EV assignment.' });
   } catch (err) {
@@ -665,30 +767,31 @@ app.post('/api/rentals/start', authenticateToken, async (req, res) => {
 app.post('/api/rentals/end', authenticateToken, async (req, res) => {
   const client = await pool.connect();
   try {
-    const { rental_id } = req.body;
+    const { stand_id } = req.body;
 
     await client.query('BEGIN');
 
     // 1. Get Rental and calculate cost
-    const rentalRes = await client.query('SELECT * FROM rentals WHERE id = $1 AND status = $2', [rental_id, 'active']);
+    const rentalRes = await client.query('SELECT * FROM rentals WHERE user_id = $1 AND status = $2', [req.user.id, 'active']);
     if (rentalRes.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Active rental not found.' });
     }
     const rental = rentalRes.rows[0];
+    const rental_id = rental.id;
 
     // Dummy cost calculation (e.g., 50 rupees)
     const cost = 50.00;
 
-    // 2. End Rental
+    // 2. Mark Rental as Pending Return
     const result = await client.query(`
       UPDATE rentals 
-      SET end_time = CURRENT_TIMESTAMP, status = 'completed', total_cost = $1
+      SET end_time = CURRENT_TIMESTAMP, status = 'pending_return', total_cost = $1
       WHERE id = $2 RETURNING *
     `, [cost, rental_id]);
 
     // 3. Update Vehicle Status
-    await client.query('UPDATE vehicles SET status = $1 WHERE id = $2', ['available', rental.vehicle_id]);
+    await client.query('UPDATE vehicles SET status = $1 WHERE id = $2', ['pending_return', rental.vehicle_id]);
 
     await client.query('COMMIT');
     res.json({ success: true, rental: result.rows[0] });
@@ -697,6 +800,83 @@ app.post('/api/rentals/end', authenticateToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
+  }
+});
+
+// Admin approve vehicle return
+app.post('/api/rentals/:id/approve-return', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+
+    await client.query('BEGIN');
+
+    const rentalRes = await client.query('SELECT * FROM rentals WHERE id = $1 AND status = $2', [id, 'pending_return']);
+    if (rentalRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Rental not found or not pending return.' });
+    }
+    const rental = rentalRes.rows[0];
+
+    // Update rental
+    await client.query('UPDATE rentals SET status = $1 WHERE id = $2', ['completed', id]);
+
+    // Update vehicle status
+    await client.query('UPDATE vehicles SET status = $1 WHERE id = $2', ['available', rental.vehicle_id]);
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Return approved and vehicle is now available.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Unified Updates Feed
+app.get('/api/updates', authenticateToken, async (req, res) => {
+  try {
+    const updates = [];
+
+    // 1. Fetch pending returns
+    const rentalsRes = await pool.query(`
+      SELECT r.id, r.end_time as date, 'Vehicle Return' as title, 
+             'User ' || u.name || ' wants to return ' || v.name as description, 
+             'return' as type, r.status
+      FROM rentals r
+      JOIN users u ON u.id = r.user_id
+      JOIN vehicles v ON v.id = r.vehicle_id
+      WHERE r.status = 'pending_return'
+    `);
+    updates.push(...rentalsRes.rows);
+
+    // 2. Fetch pending KYC
+    const kycRes = await pool.query(`
+      SELECT id::text, date, 'KYC Approval' as title, 
+             'User ' || user_name || ' submitted ' || document_type as description, 
+             'kyc' as type, status
+      FROM account_approvals
+      WHERE status = 'pending'
+    `);
+    updates.push(...kycRes.rows);
+
+    // 3. Fetch pending wallet approvals
+    const walletRes = await pool.query(`
+      SELECT id::text, date, 'Wallet Deposit' as title, 
+             'User ' || user_name || ' deposited ₹' || amount as description, 
+             'wallet' as type, status
+      FROM wallet_approvals
+      WHERE status = 'pending'
+    `);
+    updates.push(...walletRes.rows);
+
+    // Sort all updates by date descending
+    updates.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    res.json(updates);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
