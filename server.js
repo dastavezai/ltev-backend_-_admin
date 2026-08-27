@@ -1052,8 +1052,13 @@ app.delete('/api/stands/:id', authenticateToken, async (req, res) => {
 // Serve the React Admin Dashboard in production
 if (process.env.NODE_ENV === 'production' || process.env.RAILWAY_ENVIRONMENT) {
   app.use(express.static(path.join(__dirname, 'dist')));
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+  
+  // Express 5 catch-all fallback for React Router
+  app.use((req, res, next) => {
+    if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/uploads')) {
+      return res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    }
+    next();
   });
 }
 
