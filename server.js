@@ -1408,6 +1408,292 @@ app.delete('/api/stands/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// ==========================================
+// SECURITY DEPOSIT MANAGEMENT APIs
+// ==========================================
+
+// Get global security deposit config
+app.get('/api/security-deposits/config', authenticateToken, async (req, res) => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS system_settings (
+        key VARCHAR(100) PRIMARY KEY,
+        value TEXT
+      )
+    `);
+    const result = await pool.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+    const min_security_deposit = result.rows.length > 0 ? parseFloat(result.rows[0].value) : 2000;
+    res.json({ min_security_deposit });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update global security deposit config
+app.put('/api/security-deposits/config', authenticateToken, async (req, res) => {
+  try {
+    const { min_security_deposit } = req.body;
+    if (min_security_deposit === undefined || isNaN(min_security_deposit)) {
+      return res.status(400).json({ error: 'Valid minimum security deposit is required' });
+    }
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS system_settings (
+        key VARCHAR(100) PRIMARY KEY,
+        value TEXT
+      )
+    `);
+    await pool.query(`
+      INSERT INTO system_settings (key, value)
+      VALUES ('min_security_deposit', $1)
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+    `, [min_security_deposit.toString()]);
+    res.json({ success: true, min_security_deposit: parseFloat(min_security_deposit) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get all users security deposit list
+app.get('/api/security-deposits', authenticateToken, async (req, res) => {
+  try {
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS security_deposit_balance DECIMAL(10, 2) NOT NULL DEFAULT 0.00`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS security_deposit_paid BOOLEAN NOT NULL DEFAULT false`);
+    
+    // Get min deposit setting
+    const configRes = await pool.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+    const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+    const result = await pool.query(`
+      SELECT 
+        u.id, u.name, u.phone, u.email, u.status, u.kyc_status,
+        COALESCE(u.security_deposit_balance, 0) as security_deposit_balance,
+        CASE 
+          WHEN COALESCE(u.security_deposit_balance, 0) >= $1 OR u.security_deposit_paid = true THEN true 
+          ELSE false 
+        END as security_deposit_paid
+      FROM users u
+      ORDER BY u.id DESC
+    `, [minDeposit]);
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add Security Deposit to user
+app.post('/api/security-deposits/add', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { user_id, amount, remarks } = req.body;
+    const depositAmount = parseFloat(amount || 0);
+    if (depositAmount <= 0) return res.status(400).json({ error: 'Valid amount is required' });
+
+    await client.query('BEGIN');
+
+    // Get min deposit
+    const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+    const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+    const userRes = await client.query('SELECT * FROM users WHERE id = $1', [user_id]);
+    if (userRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const currentBalance = parseFloat(userRes.rows[0].security_deposit_balance || 0);
+    const newBalance = currentBalance + depositAmount;
+    const isPaid = newBalance >= minDeposit;
+
+    await client.query(`
+      UPDATE users 
+      SET security_deposit_balance = $1, security_deposit_paid = $2
+      WHERE id = $3
+    `, [newBalance, isPaid, user_id]);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS security_deposit_transactions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        amount DECIMAL(10, 2) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        remarks TEXT,
+        date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+      VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+    `, [user_id, depositAmount, remarks || 'Admin Deposit Addition']);
+
+    await client.query('COMMIT');
+    res.json({ success: true, balance: newBalance, security_deposit_paid: isPaid });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Deduct Security Deposit from user
+app.post('/api/security-deposits/deduct', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { user_id, amount, remarks } = req.body;
+    const deductAmount = parseFloat(amount || 0);
+    if (deductAmount <= 0) return res.status(400).json({ error: 'Valid amount is required' });
+
+    await client.query('BEGIN');
+
+    const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+    const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+    const userRes = await client.query('SELECT * FROM users WHERE id = $1', [user_id]);
+    if (userRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const currentBalance = parseFloat(userRes.rows[0].security_deposit_balance || 0);
+    const newBalance = Math.max(0, currentBalance - deductAmount);
+    const isPaid = newBalance >= minDeposit;
+
+    await client.query(`
+      UPDATE users 
+      SET security_deposit_balance = $1, security_deposit_paid = $2
+      WHERE id = $3
+    `, [newBalance, isPaid, user_id]);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS security_deposit_transactions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        amount DECIMAL(10, 2) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        remarks TEXT,
+        date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+      VALUES ($1, $2, 'deduction', $3, CURRENT_TIMESTAMP)
+    `, [user_id, deductAmount, remarks || 'Admin Deduction']);
+
+    await client.query('COMMIT');
+    res.json({ success: true, balance: newBalance, security_deposit_paid: isPaid });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Set Exact Security Deposit for user
+app.post('/api/security-deposits/set', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { user_id, amount, remarks } = req.body;
+    const newBalance = Math.max(0, parseFloat(amount || 0));
+
+    await client.query('BEGIN');
+
+    const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+    const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+    const userRes = await client.query('SELECT * FROM users WHERE id = $1', [user_id]);
+    if (userRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const currentBalance = parseFloat(userRes.rows[0].security_deposit_balance || 0);
+    const diff = newBalance - currentBalance;
+    const isPaid = newBalance >= minDeposit;
+
+    await client.query(`
+      UPDATE users 
+      SET security_deposit_balance = $1, security_deposit_paid = $2
+      WHERE id = $3
+    `, [newBalance, isPaid, user_id]);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS security_deposit_transactions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        amount DECIMAL(10, 2) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        remarks TEXT,
+        date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+    `, [user_id, Math.abs(diff), diff >= 0 ? 'deposit' : 'deduction', remarks || `Admin updated deposit balance to ₹${newBalance}`]);
+
+    await client.query('COMMIT');
+    res.json({ success: true, balance: newBalance, security_deposit_paid: isPaid });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Get User Deposit History
+app.get('/api/security-deposits/:userId/history', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS security_deposit_transactions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        amount DECIMAL(10, 2) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        remarks TEXT,
+        date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    const result = await pool.query(`
+      SELECT * FROM security_deposit_transactions
+      WHERE user_id = $1
+      ORDER BY date DESC
+    `, [userId]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Auth me profile endpoint
+app.get('/api/auth/me', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id, name, phone, email, role, status, kyc_status,
+        COALESCE(security_deposit_paid, false) as security_deposit_paid,
+        COALESCE(security_deposit_balance, 0) as security_deposit_balance,
+        wallet_balance
+      FROM users 
+      WHERE id = $1
+    `, [req.user.id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Serve the React Admin Dashboard in production
 if (process.env.NODE_ENV === 'production' || process.env.RAILWAY_ENVIRONMENT) {
   app.use(express.static(path.join(__dirname, 'dist')));
