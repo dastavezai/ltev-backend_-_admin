@@ -42,6 +42,50 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
+// Auto-initialize required database tables and columns on startup
+async function initDatabase() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS system_settings (
+        key VARCHAR(100) PRIMARY KEY,
+        value TEXT
+      )
+    `);
+    await pool.query(`
+      INSERT INTO system_settings (key, value)
+      VALUES ('min_security_deposit', '2000')
+      ON CONFLICT (key) DO NOTHING
+    `);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS security_deposit_balance DECIMAL(10, 2) NOT NULL DEFAULT 0.00`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS security_deposit_paid BOOLEAN NOT NULL DEFAULT false`);
+    await pool.query(`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS next_payment_date TIMESTAMP`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS security_deposit_transactions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        amount DECIMAL(10, 2) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        remarks TEXT,
+        date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS wallet_approvals (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        amount DECIMAL(10, 2) NOT NULL,
+        utr VARCHAR(100),
+        status VARCHAR(50) DEFAULT 'pending',
+        date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('[DB-INIT] All tables and settings initialized successfully.');
+  } catch (err) {
+    console.error('[DB-INIT-ERROR]', err.message);
+  }
+}
+initDatabase();
+
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
