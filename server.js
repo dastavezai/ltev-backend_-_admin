@@ -589,8 +589,9 @@ app.post('/api/transactions/cash', authenticateToken, async (req, res) => {
 app.post('/api/plans/purchase', authenticateToken, async (req, res) => {
   const client = await pool.connect();
   try {
-    const { plan_id, deposit_paid } = req.body;
+    const { plan_id, deposit_to_pay, deposit_paid } = req.body;
     const user_id = req.user.id;
+    const depositAmt = parseFloat(deposit_to_pay !== undefined ? deposit_to_pay : (deposit_paid || 0));
 
     await client.query('BEGIN');
     
@@ -601,7 +602,7 @@ app.post('/api/plans/purchase', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Plan not found.' });
     }
     const plan = planRes.rows[0];
-    
+    const planPrice = parseFloat(plan.price || 0);
     const rentalId = `RNT-${Date.now().toString().slice(-6)}`;
     
     // Insert pending rental
@@ -610,14 +611,39 @@ app.post('/api/plans/purchase', authenticateToken, async (req, res) => {
       [rentalId, user_id, plan_id, plan.price, 'pending_assignment']
     );
     
-    // Update security deposit if any was paid during checkout
-    if (deposit_paid && parseFloat(deposit_paid) > 0) {
-      await client.query('UPDATE users SET security_deposit_balance = security_deposit_balance + $1 WHERE id = $2', [parseFloat(deposit_paid), user_id]);
+    // 1. Update security deposit if any was paid during checkout
+    if (depositAmt > 0) {
+      const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+      const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+      const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+      const curBal = parseFloat(userRes.rows[0]?.security_deposit_balance || 0);
+      const newBal = curBal + depositAmt;
+      const isPaid = newBal >= minDeposit;
+
+      await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newBal, isPaid, user_id]);
+      
       await client.query(`
-        INSERT INTO security_deposit_transactions (user_id, amount, type, remarks)
-        VALUES ($1, $2, 'deposit', $3)
-      `, [user_id, parseFloat(deposit_paid), `Deposit for Plan ${plan.name}`]);
+        INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+        VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+      `, [user_id, depositAmt, `Security Deposit for ${plan.name} (${rentalId})`]);
     }
+
+    // 2. Also log plan payment to wallet/platform transactions so Transactions page shows it
+    let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+    let walletId = null;
+    if (walletRes.rows.length === 0) {
+      const newW = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, 0) RETURNING id', [user_id]);
+      walletId = newW.rows[0].id;
+    } else {
+      walletId = walletRes.rows[0].id;
+    }
+
+    const totalPaid = planPrice + depositAmt;
+    await client.query(`
+      INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, reference_id, status, timestamp)
+      VALUES ($1, $2, 'credit', $3, $4, $5, 'success', CURRENT_TIMESTAMP)
+    `, [`TXN-ORD-${Date.now()}`, walletId, totalPaid, `Plan Booking: ${plan.name} ${depositAmt > 0 ? `(₹${planPrice} + ₹${depositAmt} Deposit)` : ''}`, rentalId]);
 
     await client.query('COMMIT');
     res.json({ success: true, message: 'Plan purchased successfully. Pending EV assignment.' });
