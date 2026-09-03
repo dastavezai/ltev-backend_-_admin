@@ -134,44 +134,18 @@ async function initOtpTable() {
 }
 initOtpTable();
 
-// SMSIndiaHub OTP Sender Helper (Supports DLT & Cloud Push APIs)
+// SMSIndiaHub OTP Sender Helper (Verified Working Endpoint)
 async function sendSmsIndiaHubOtp(phone, otpCode) {
   const cleanPhone = phone.replace(/\D/g, '').slice(-10);
   const apiKey = process.env.SMSINDIAHUB_API_KEY || '6MhsdTayo0yGMAn5iKwZQQ';
-  const senderId = process.env.SMSINDIAHUB_SENDER_ID || process.env.SMSINDIAHUB_SID || 'SCHTRD';
-  const brandName = process.env.SMSINDIAHUB_BRAND_NAME || 'LT.ev';
-  const templateId = process.env.SMSINDIAHUB_TEMPLATE_ID || '';
-  const peId = process.env.SMSINDIAHUB_PE_ID || '';
-  const route = process.env.SMSINDIAHUB_ROUTE || '';
-  
-  let templateText = process.env.SMSINDIAHUB_TEMPLATE_TEXT || 'Dear customer {otp} is your mobile OTP verification code .do not share it with anyone.SCHTRD';
-  const message = templateText.replace(/\{otp\}/g, otpCode).replace(/\{brand\}/g, brandName);
+  const sid = process.env.SMSINDIAHUB_SENDER_ID || process.env.SMSINDIAHUB_SID || 'SCHTRD';
+  const message = `Dear customer ${otpCode} is your mobile OTP verification code .do not share it with anyone.SCHTRD`;
 
-  let url;
-  if (process.env.SMSINDIAHUB_BASE_URL && process.env.SMSINDIAHUB_BASE_URL.includes('SendSMS')) {
-    // DLT SendSMS Endpoint
-    const baseUrl = process.env.SMSINDIAHUB_BASE_URL;
-    const params = new URLSearchParams({
-      APIKey: apiKey,
-      senderid: senderId,
-      channel: 'Trans',
-      DCS: '0',
-      flashsms: '0',
-      number: `91${cleanPhone}`,
-      text: message,
-      route: route,
-      DLTTemplateId: templateId,
-      PEId: peId
-    });
-    url = `${baseUrl}?${params.toString()}`;
-  } else {
-    // Cloud Vendor PushSMS Endpoint
-    const baseUrl = process.env.SMSINDIAHUB_BASE_URL || "https://cloud.smsindiahub.in/vendorsms/pushsms.aspx";
-    const msisdn = `91${cleanPhone}`;
-    url = `${baseUrl}?APIKey=${encodeURIComponent(apiKey)}&msisdn=${encodeURIComponent(msisdn)}&sid=${encodeURIComponent(senderId)}&msg=${encodeURIComponent(message)}&fl=0&gwid=2`;
-  }
+  const baseUrl = "https://cloud.smsindiahub.in/vendorsms/pushsms.aspx";
+  const msisdn = `91${cleanPhone}`;
+  const url = `${baseUrl}?APIKey=${encodeURIComponent(apiKey)}&msisdn=${encodeURIComponent(msisdn)}&sid=${encodeURIComponent(sid)}&msg=${encodeURIComponent(message)}&fl=0&gwid=2`;
 
-  console.log(`[SMSINDIAHUB] Dispatching OTP to 91${cleanPhone}`);
+  console.log(`[SMSINDIAHUB] Dispatching OTP to ${msisdn}`);
 
   try {
     const response = await fetch(url);
