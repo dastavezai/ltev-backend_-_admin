@@ -4,7 +4,7 @@ import axios from 'axios';
 import { Bell, CheckCircle2, ShieldCheck, Wallet, Bike, XCircle, ArrowRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 export default function Updates() {
   const { token } = useAuth();
@@ -13,10 +13,13 @@ export default function Updates() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchUpdates();
-  }, []);
+    if (token) {
+      fetchUpdates();
+    }
+  }, [token]);
 
   const fetchUpdates = async () => {
+    if (!token) return;
     try {
       const res = await axios.get(`${API_URL}/api/updates`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -31,10 +34,10 @@ export default function Updates() {
 
   const handleApproveReturn = async (id) => {
     try {
-      await axios.post(`${API_URL}/api/rentals/${id}/approve-return`, {}, {
+      await axios.post(`${API_URL}/api/rentals/${id}/confirm-return`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      alert('Return Approved successfully!');
+      alert('Return Approved successfully! EV is now available.');
       fetchUpdates();
     } catch (error) {
       alert(error.response?.data?.error || 'Failed to approve return');
