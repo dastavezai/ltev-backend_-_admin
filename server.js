@@ -854,6 +854,94 @@ app.post('/api/rentals/start', authenticateToken, async (req, res) => {
   }
 });
 
+// Get all pending rental requests (for assignment and returns in admin panel)
+app.get('/api/rentals/pending', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        r.id, r.start_time, r.end_time, r.total_cost as cost, r.status,
+        u.id as user_id, u.name as user_name, u.phone as user_phone,
+        v.id as vehicle_id, v.model as vehicle_model,
+        p.name as plan_name, p.price as plan_price, p.type as plan_type
+      FROM rentals r
+      JOIN users u ON u.id = r.user_id
+      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.status IN ('pending_assignment', 'pending_return')
+      ORDER BY COALESCE(r.end_time, r.start_time, NOW()) DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin assign vehicle to pending rental request
+app.put('/api/rentals/:id/assign', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const { vehicle_id } = req.body;
+
+    await client.query('BEGIN');
+
+    // 1. Check vehicle availability
+    const vehicleRes = await client.query('SELECT * FROM vehicles WHERE id = $1', [vehicle_id]);
+    if (vehicleRes.rows.length === 0 || vehicleRes.rows[0].status !== 'available') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Selected vehicle is not available.' });
+    }
+
+    // 2. Assign vehicle and activate rental
+    const updateRental = await client.query(`
+      UPDATE rentals 
+      SET vehicle_id = $1, start_time = CURRENT_TIMESTAMP, status = 'active'
+      WHERE id = $2
+      RETURNING *
+    `, [vehicle_id, id]);
+
+    if (updateRental.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Rental request not found.' });
+    }
+
+    // 3. Mark vehicle as in_use
+    await client.query('UPDATE vehicles SET status = $1 WHERE id = $2', ['in_use', vehicle_id]);
+
+    await client.query('COMMIT');
+    res.json({ success: true, rental: updateRental.rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Get all rentals for admin panel
+app.get('/api/rentals', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        r.id, r.start_time as "startTime", r.end_time as "endTime", 
+        COALESCE(r.total_cost, p.price, 0) as "rentCollected",
+        r.status,
+        u.name as user, u.phone as user_phone,
+        COALESCE(v.model, 'EV') || ' (' || COALESCE(v.id, 'N/A') || ')' as vehicle,
+        p.name as plan_name,
+        COALESCE(u.wallet_balance, 0) as deposit
+      FROM rentals r
+      JOIN users u ON u.id = r.user_id
+      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN plans p ON p.id = r.plan_id
+      ORDER BY COALESCE(r.start_time, NOW()) DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // End a Rental
 app.post('/api/rentals/end', authenticateToken, async (req, res) => {
   const client = await pool.connect();
@@ -933,11 +1021,11 @@ app.get('/api/updates', authenticateToken, async (req, res) => {
     // 1. Fetch pending returns
     const rentalsRes = await pool.query(`
       SELECT r.id, r.end_time as date, 'Vehicle Return' as title, 
-             'User ' || u.name || ' wants to return ' || v.name as description, 
+             'User ' || u.name || ' wants to return ' || COALESCE(v.model, 'EV') as description, 
              'return' as type, r.status
       FROM rentals r
       JOIN users u ON u.id = r.user_id
-      JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN vehicles v ON v.id = r.vehicle_id
       WHERE r.status = 'pending_return'
     `);
     updates.push(...rentalsRes.rows);
