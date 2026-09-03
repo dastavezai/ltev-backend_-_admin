@@ -701,23 +701,114 @@ app.get('/api/rentals/active', authenticateToken, async (req, res) => {
     if (result.rows.length > 0) {
       const rental = result.rows[0];
       let next_payment_date = null;
+      let due_amount = 0;
+      let overdue_days = 0;
+      let is_overdue = false;
+
       if (rental.start_time && rental.plan_type) {
         const start = new Date(rental.start_time);
         const type = rental.plan_type.toLowerCase();
+        const price = parseFloat(rental.plan_price || 0);
+        const now = new Date();
+
         if (type.includes('daily')) {
            next_payment_date = new Date(start.getTime() + 1 * 24 * 60 * 60 * 1000).toISOString();
+           const nextDue = new Date(next_payment_date);
+           if (now > nextDue) {
+             const diffMs = now.getTime() - nextDue.getTime();
+             overdue_days = Math.floor(diffMs / (24 * 60 * 60 * 1000)) + 1;
+             due_amount = overdue_days * price;
+             is_overdue = true;
+           }
         } else if (type.includes('weekly')) {
            next_payment_date = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+           const nextDue = new Date(next_payment_date);
+           if (now > nextDue) {
+             const diffMs = now.getTime() - nextDue.getTime();
+             const overdueWeeks = Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1;
+             overdue_days = overdueWeeks * 7;
+             due_amount = overdueWeeks * price;
+             is_overdue = true;
+           }
         } else if (type.includes('monthly')) {
            next_payment_date = new Date(start.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+           const nextDue = new Date(next_payment_date);
+           if (now > nextDue) {
+             const diffMs = now.getTime() - nextDue.getTime();
+             const overdueMonths = Math.floor(diffMs / (30 * 24 * 60 * 60 * 1000)) + 1;
+             overdue_days = overdueMonths * 30;
+             due_amount = overdueMonths * price;
+             is_overdue = true;
+           }
         } else {
-           next_payment_date = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(); // fallback
+           next_payment_date = new Date(start.getTime() + 1 * 24 * 60 * 60 * 1000).toISOString();
         }
       }
-      res.json({ ...rental, next_payment_date });
+      res.json({ ...rental, next_payment_date, due_amount, overdue_days, is_overdue });
     } else {
       res.json(null);
     }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pay rental due amount
+app.post('/api/rentals/pay-due', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { amount, days_paid } = req.body;
+    const user_id = req.user.id;
+
+    await client.query('BEGIN');
+
+    const rentalRes = await client.query(`
+      SELECT r.*, p.price as plan_price, p.type as plan_type
+      FROM rentals r
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.user_id = $1 AND r.status = 'active'
+      ORDER BY r.start_time DESC LIMIT 1
+    `, [user_id]);
+
+    if (rentalRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No active rental found.' });
+    }
+
+    const rental = rentalRes.rows[0];
+    const paidAmount = parseFloat(amount || 0);
+
+    // Update rental total_cost
+    await client.query(
+      'UPDATE rentals SET total_cost = COALESCE(total_cost, 0) + $1 WHERE id = $2',
+      [paidAmount, rental.id]
+    );
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Due payment recorded successfully.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Get rental history for current user
+app.get('/api/rentals/my-history', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        r.id, r.start_time, r.end_time, r.total_cost, r.status,
+        v.id as vehicle_id, v.model as vehicle_model,
+        p.name as plan_name, p.price as plan_price, p.type as plan_type
+      FROM rentals r
+      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.user_id = $1
+      ORDER BY COALESCE(r.start_time, NOW()) DESC, r.id DESC
+    `, [req.user.id]);
+    res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
