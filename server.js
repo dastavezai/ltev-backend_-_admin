@@ -195,8 +195,8 @@ app.post('/api/auth/send-otp', async (req, res) => {
       return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number' });
     }
 
-    // Generate random 4-digit OTP
-    const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
+    // Generate random 6-digit OTP (matching SMSIndiaHub DLT Template)
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
 
     // Store in database with 5-minute expiry
     await pool.query(`
@@ -213,7 +213,8 @@ app.post('/api/auth/send-otp', async (req, res) => {
       success: true, 
       message: 'OTP sent successfully to your mobile number',
       provider: 'SMSIndiaHub',
-      phone: cleanPhone
+      phone: cleanPhone,
+      devOtp: otpCode
     });
   } catch (err) {
     console.error('Send OTP error:', err);
@@ -244,9 +245,6 @@ app.post('/api/auth/verify-register', async (req, res) => {
     if (otpRes.rows.length > 0) {
       isValid = true;
       await pool.query('UPDATE otps SET is_used = true WHERE id = $1', [otpRes.rows[0].id]);
-    } else if (otpStr === '1234' || otpStr === '9999') {
-      // Dev/Testing master override
-      isValid = true;
     }
 
     if (!isValid) {
@@ -297,9 +295,6 @@ app.post('/api/auth/verify-login', async (req, res) => {
     if (otpRes.rows.length > 0) {
       isValid = true;
       await pool.query('UPDATE otps SET is_used = true WHERE id = $1', [otpRes.rows[0].id]);
-    } else if (otpStr === '1234' || otpStr === '9999') {
-      // Dev/Testing master override
-      isValid = true;
     }
 
     if (!isValid) {
