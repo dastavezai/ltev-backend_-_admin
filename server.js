@@ -1330,6 +1330,99 @@ app.post('/api/wallet_approvals/:id/reject', authenticateToken, async (req, res)
   }
 });
 
+// Mobile App Submit Wallet Recharge Request (for manual or UPI approval)
+app.post('/api/wallet/recharge', authenticateToken, async (req, res) => {
+  try {
+    const { amount, utr } = req.body;
+    const user_id = req.user.id;
+    const rechargeAmt = parseFloat(amount || 0);
+
+    if (rechargeAmt <= 0) {
+      return res.status(400).json({ error: 'Valid recharge amount is required' });
+    }
+
+    const utrNum = utr || `UPI_${Date.now()}`;
+
+    // Ensure wallet_approvals table exists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS wallet_approvals (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        amount DECIMAL(10, 2) NOT NULL,
+        utr VARCHAR(100),
+        status VARCHAR(50) DEFAULT 'pending',
+        date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    const result = await pool.query(`
+      INSERT INTO wallet_approvals (user_id, amount, utr, status, date)
+      VALUES ($1, $2, $3, 'pending', CURRENT_TIMESTAMP)
+      RETURNING *
+    `, [user_id, rechargeAmt, utrNum]);
+
+    res.json({ success: true, message: 'Recharge request submitted for approval', request: result.rows[0] });
+  } catch (err) {
+    console.error('Recharge submit error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mobile App Fetch Current Wallet & Transactions
+app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
+  try {
+    const user_id = req.user.id;
+    
+    // Ensure wallet exists
+    let walletRes = await pool.query('SELECT * FROM wallets WHERE user_id = $1', [user_id]);
+    if (walletRes.rows.length === 0) {
+      walletRes = await pool.query('INSERT INTO wallets (user_id, balance) VALUES ($1, 0) RETURNING *', [user_id]);
+    }
+    const wallet = walletRes.rows[0];
+
+    // Fetch user transactions
+    const txnRes = await pool.query(`
+      SELECT * FROM wallet_transactions
+      WHERE wallet_id = $1
+      ORDER BY timestamp DESC
+      LIMIT 20
+    `, [wallet.id]);
+
+    // Fetch pending approvals for this user
+    const pendingRes = await pool.query(`
+      SELECT * FROM wallet_approvals
+      WHERE user_id = $1 AND status = 'pending'
+      ORDER BY date DESC
+    `, [user_id]);
+
+    const formattedTxns = [
+      ...pendingRes.rows.map(p => ({
+        id: `REQ-${p.id}`,
+        type: 'credit',
+        amount: parseFloat(p.amount),
+        description: `Wallet Recharge (Pending Approval)`,
+        date: new Date(p.date).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }),
+        status: 'pending'
+      })),
+      ...txnRes.rows.map(t => ({
+        id: t.id,
+        type: t.type,
+        amount: parseFloat(t.amount),
+        description: t.description,
+        date: new Date(t.timestamp).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }),
+        status: t.status
+      }))
+    ];
+
+    res.json({
+      balance: parseFloat(wallet.balance || 0),
+      transactions: formattedTxns
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ==========================================
 // CASHFREE KYC (DIGILOCKER AADHAAR) APIs
 // ==========================================
