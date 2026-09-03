@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, ShieldCheck, Wallet, ReceiptText, LogOut, Bike, FileText, Map, Tag, ClipboardList, ShieldAlert, Bell } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldCheck, Wallet, ReceiptText, LogOut, Bike, FileText, Map, Tag, ClipboardList, ShieldAlert, Bell, Megaphone } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Sidebar() {
@@ -9,6 +9,7 @@ export default function Sidebar() {
   const navItems = [
     { name: 'Dashboard', path: '/dashboard', icon: <LayoutDashboard size={20} /> },
     { name: 'Updates Inbox', path: '/updates', icon: <Bell size={20} /> },
+    { name: 'Broadcast', path: '/broadcast', icon: <Megaphone size={20} /> },
     { name: 'Vehicles', path: '/vehicles', icon: <Bike size={20} /> },
     { name: 'Stands', path: '/stands', icon: <Map size={20} /> },
     { name: 'Rentals', path: '/rentals', icon: <FileText size={20} /> },

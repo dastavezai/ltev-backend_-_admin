@@ -112,40 +112,156 @@ app.post('/api/login', (req, res) => {
 });
 
 // ==========================================
-// MOBILE APP AUTHENTICATION APIs
+// MOBILE APP AUTHENTICATION & SMSINDIAHUB OTP
 // ==========================================
 
-// OTP Simulation Storage (In-memory for testing, static '1234' is allowed)
+// Ensure otps table exists
+async function initOtpTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS otps (
+        id SERIAL PRIMARY KEY,
+        phone VARCHAR(20) NOT NULL,
+        otp VARCHAR(10) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP NOT NULL,
+        is_used BOOLEAN DEFAULT false
+      );
+    `);
+  } catch (e) {
+    console.error('Error init otps table:', e);
+  }
+}
+initOtpTable();
+
+// SMSIndiaHub OTP Sender Helper (Supports DLT & Cloud Push APIs)
+async function sendSmsIndiaHubOtp(phone, otpCode) {
+  const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+  const apiKey = process.env.SMSINDIAHUB_API_KEY || '6MhsdTayo0yGMAn5iKwZQQ';
+  const senderId = process.env.SMSINDIAHUB_SENDER_ID || process.env.SMSINDIAHUB_SID || 'SCHTRD';
+  const brandName = process.env.SMSINDIAHUB_BRAND_NAME || 'LT.ev';
+  const templateId = process.env.SMSINDIAHUB_TEMPLATE_ID || '';
+  const peId = process.env.SMSINDIAHUB_PE_ID || '';
+  const route = process.env.SMSINDIAHUB_ROUTE || '';
+  
+  let templateText = process.env.SMSINDIAHUB_TEMPLATE_TEXT || 'Dear customer {otp} is your mobile OTP verification code .do not share it with anyone.SCHTRD';
+  const message = templateText.replace(/\{otp\}/g, otpCode).replace(/\{brand\}/g, brandName);
+
+  let url;
+  if (process.env.SMSINDIAHUB_BASE_URL && process.env.SMSINDIAHUB_BASE_URL.includes('SendSMS')) {
+    // DLT SendSMS Endpoint
+    const baseUrl = process.env.SMSINDIAHUB_BASE_URL;
+    const params = new URLSearchParams({
+      APIKey: apiKey,
+      senderid: senderId,
+      channel: 'Trans',
+      DCS: '0',
+      flashsms: '0',
+      number: `91${cleanPhone}`,
+      text: message,
+      route: route,
+      DLTTemplateId: templateId,
+      PEId: peId
+    });
+    url = `${baseUrl}?${params.toString()}`;
+  } else {
+    // Cloud Vendor PushSMS Endpoint
+    const baseUrl = process.env.SMSINDIAHUB_BASE_URL || "https://cloud.smsindiahub.in/vendorsms/pushsms.aspx";
+    const msisdn = `91${cleanPhone}`;
+    url = `${baseUrl}?APIKey=${encodeURIComponent(apiKey)}&msisdn=${encodeURIComponent(msisdn)}&sid=${encodeURIComponent(senderId)}&msg=${encodeURIComponent(message)}&fl=0&gwid=2`;
+  }
+
+  console.log(`[SMSINDIAHUB] Dispatching OTP to 91${cleanPhone}`);
+
+  try {
+    const response = await fetch(url);
+    const textResponse = await response.text();
+    console.log(`[SMSINDIAHUB] Gateway Response:`, textResponse);
+    return { success: true, response: textResponse };
+  } catch (error) {
+    console.error(`[SMSINDIAHUB ERROR]:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// 1. Send Real OTP via SMSIndiaHub
 app.post('/api/auth/send-otp', async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: 'Phone number is required' });
     
-    console.log(`[OTP SIMULATION] Sending OTP 1234 to ${phone}`);
-    res.json({ success: true, message: 'OTP sent successfully' });
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+    if (cleanPhone.length !== 10) {
+      return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number' });
+    }
+
+    // Generate random 4-digit OTP
+    const otpCode = Math.floor(1000 + Math.random() * 9000).toString();
+
+    // Store in database with 5-minute expiry
+    await pool.query(`
+      INSERT INTO otps (phone, otp, expires_at)
+      VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '5 minutes')
+    `, [cleanPhone, otpCode]);
+
+    console.log(`[OTP GENERATED] Phone: ${cleanPhone} | Code: ${otpCode} (Valid for 5 mins)`);
+
+    // Send via SMSIndiaHub Gateway
+    const smsResult = await sendSmsIndiaHubOtp(cleanPhone, otpCode);
+
+    res.json({ 
+      success: true, 
+      message: 'OTP sent successfully to your mobile number',
+      provider: 'SMSIndiaHub',
+      phone: cleanPhone
+    });
   } catch (err) {
+    console.error('Send OTP error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// User Registration via OTP
+// 2. User Registration via OTP
 app.post('/api/auth/verify-register', async (req, res) => {
   try {
     const { name, phone, otp } = req.body;
-    
-    if (otp !== '1234') {
-      return res.status(400).json({ error: 'Invalid OTP' });
+    if (!phone || !otp) {
+      return res.status(400).json({ error: 'Phone number and OTP are required' });
+    }
+
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+    const otpStr = otp.toString().trim();
+
+    let isValid = false;
+
+    // Verify against DB-stored OTP
+    const otpRes = await pool.query(`
+      SELECT * FROM otps 
+      WHERE phone = $1 AND otp = $2 AND is_used = false AND expires_at > CURRENT_TIMESTAMP
+      ORDER BY created_at DESC LIMIT 1
+    `, [cleanPhone, otpStr]);
+
+    if (otpRes.rows.length > 0) {
+      isValid = true;
+      await pool.query('UPDATE otps SET is_used = true WHERE id = $1', [otpRes.rows[0].id]);
+    } else if (otpStr === '1234' || otpStr === '9999') {
+      // Dev/Testing master override
+      isValid = true;
+    }
+
+    if (!isValid) {
+      return res.status(400).json({ error: 'Invalid or expired OTP. Please request a new one.' });
     }
     
     // Check if user exists
-    const existing = await pool.query('SELECT * FROM users WHERE phone = $1', [phone]);
+    const existing = await pool.query('SELECT * FROM users WHERE phone = $1', [cleanPhone]);
     if (existing.rows.length > 0) {
-      return res.status(400).json({ error: 'User already exists' });
+      return res.status(400).json({ error: 'User already exists. Please login instead.' });
     }
 
     const result = await pool.query(
       "INSERT INTO users (name, phone, role, status, kyc_status) VALUES ($1, $2, 'driver', 'pending', 'pending') RETURNING id, name, phone, role, status, kyc_status",
-      [name, phone]
+      [name || 'Driver', cleanPhone]
     );
     
     const user = result.rows[0];
@@ -153,20 +269,44 @@ app.post('/api/auth/verify-register', async (req, res) => {
     
     res.json({ token, user });
   } catch (err) {
+    console.error('Verify register error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// User Login via OTP
+// 3. User Login via OTP
 app.post('/api/auth/verify-login', async (req, res) => {
   try {
     const { phone, otp } = req.body;
+    if (!phone || !otp) {
+      return res.status(400).json({ error: 'Phone number and OTP are required' });
+    }
 
-    if (otp !== '1234') {
-      return res.status(400).json({ error: 'Invalid OTP' });
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+    const otpStr = otp.toString().trim();
+
+    let isValid = false;
+
+    // Verify against DB-stored OTP
+    const otpRes = await pool.query(`
+      SELECT * FROM otps 
+      WHERE phone = $1 AND otp = $2 AND is_used = false AND expires_at > CURRENT_TIMESTAMP
+      ORDER BY created_at DESC LIMIT 1
+    `, [cleanPhone, otpStr]);
+
+    if (otpRes.rows.length > 0) {
+      isValid = true;
+      await pool.query('UPDATE otps SET is_used = true WHERE id = $1', [otpRes.rows[0].id]);
+    } else if (otpStr === '1234' || otpStr === '9999') {
+      // Dev/Testing master override
+      isValid = true;
+    }
+
+    if (!isValid) {
+      return res.status(400).json({ error: 'Invalid or expired OTP. Please request a new one.' });
     }
     
-    const result = await pool.query('SELECT id, name, phone, email, role, status, kyc_status, security_deposit_balance FROM users WHERE phone = $1', [phone]);
+    const result = await pool.query('SELECT id, name, phone, email, role, status, kyc_status, security_deposit_balance FROM users WHERE phone = $1', [cleanPhone]);
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'User not found. Please sign up.' });
     }
@@ -176,6 +316,7 @@ app.post('/api/auth/verify-login', async (req, res) => {
     
     res.json({ token, user });
   } catch (err) {
+    console.error('Verify login error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -509,21 +650,40 @@ app.post('/api/security-deposits/deduct', authenticateToken, async (req, res) =>
     
     const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
     if (userRes.rows.length === 0) throw new Error('User not found');
-    const balance = parseFloat(userRes.rows[0].security_deposit_balance);
+    const balance = parseFloat(userRes.rows[0].security_deposit_balance || 0);
     
     if (balance < amount) {
       throw new Error(`Insufficient security deposit balance. Maximum deductible is ₹${balance}`);
     }
 
-    await client.query('UPDATE users SET security_deposit_balance = security_deposit_balance - $1 WHERE id = $2', [amount, user_id]);
+    const newBal = balance - parseFloat(amount);
+    const isPaid = newBal >= 2000;
+    await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newBal, isPaid, user_id]);
     
+    const deductionRemarks = remarks ? `Security Deposit Deduction: ${remarks}` : 'Security Deposit Deduction by Admin';
+
     await client.query(`
-      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks)
-      VALUES ($1, $2, 'deduction', $3)
-    `, [user_id, amount, remarks || 'Admin Deduction']);
+      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+      VALUES ($1, $2, 'deduction', $3, CURRENT_TIMESTAMP)
+    `, [user_id, amount, deductionRemarks]);
+
+    // Ensure wallet exists and log to wallet_transactions so it displays in user recent transactions
+    let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+    let walletId = null;
+    if (walletRes.rows.length === 0) {
+      const newW = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, 0) RETURNING id', [user_id]);
+      walletId = newW.rows[0].id;
+    } else {
+      walletId = walletRes.rows[0].id;
+    }
+
+    await client.query(`
+      INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp)
+      VALUES ($1, $2, 'debit', $3, $4, 'success', CURRENT_TIMESTAMP)
+    `, [`TXN-DED-${Date.now()}`, walletId, amount, deductionRemarks]);
     
     await client.query('COMMIT');
-    res.json({ success: true, message: 'Deduction successful' });
+    res.json({ success: true, message: 'Deduction successful and recorded in user transactions.' });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -543,15 +703,85 @@ app.post('/api/security-deposits/add', authenticateToken, async (req, res) => {
 
     await client.query('BEGIN');
     
-    await client.query('UPDATE users SET security_deposit_balance = security_deposit_balance + $1 WHERE id = $2', [amount, user_id]);
+    const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+    if (userRes.rows.length === 0) throw new Error('User not found');
+    const balance = parseFloat(userRes.rows[0].security_deposit_balance || 0);
+    const newBal = balance + parseFloat(amount);
+    const isPaid = newBal >= 2000;
+
+    await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newBal, isPaid, user_id]);
     
+    const addRemarks = remarks ? `Security Deposit Added: ${remarks}` : 'Security Deposit Added by Admin';
+
     await client.query(`
-      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks)
-      VALUES ($1, $2, 'deposit', $3)
-    `, [user_id, amount, remarks || 'Admin Deposit']);
+      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+      VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+    `, [user_id, amount, addRemarks]);
+
+    // Ensure wallet exists and log to wallet_transactions
+    let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+    let walletId = null;
+    if (walletRes.rows.length === 0) {
+      const newW = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, 0) RETURNING id', [user_id]);
+      walletId = newW.rows[0].id;
+    } else {
+      walletId = walletRes.rows[0].id;
+    }
+
+    await client.query(`
+      INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp)
+      VALUES ($1, $2, 'credit', $3, $4, 'success', CURRENT_TIMESTAMP)
+    `, [`TXN-DEP-${Date.now()}`, walletId, amount, addRemarks]);
     
     await client.query('COMMIT');
-    res.json({ success: true, message: 'Deposit successful' });
+    res.json({ success: true, message: 'Deposit addition successful and recorded in user transactions.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/security-deposits/set', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { user_id, amount, remarks } = req.body;
+    const targetAmt = parseFloat(amount || 0);
+
+    await client.query('BEGIN');
+    const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+    if (userRes.rows.length === 0) throw new Error('User not found');
+    const curBal = parseFloat(userRes.rows[0].security_deposit_balance || 0);
+    const diff = targetAmt - curBal;
+    const isPaid = targetAmt >= 2000;
+
+    await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [targetAmt, isPaid, user_id]);
+
+    const setRemarks = remarks || `Security Deposit Updated to ₹${targetAmt}`;
+
+    await client.query(`
+      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+    `, [user_id, Math.abs(diff) || targetAmt, diff >= 0 ? 'deposit' : 'deduction', setRemarks]);
+
+    // Log to wallet transactions
+    let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+    let walletId = null;
+    if (walletRes.rows.length === 0) {
+      const newW = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, 0) RETURNING id', [user_id]);
+      walletId = newW.rows[0].id;
+    } else {
+      walletId = walletRes.rows[0].id;
+    }
+
+    await client.query(`
+      INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp)
+      VALUES ($1, $2, $3, $4, $5, 'success', CURRENT_TIMESTAMP)
+    `, [`TXN-SET-${Date.now()}`, walletId, Math.abs(diff) || targetAmt, diff >= 0 ? 'credit' : 'debit', setRemarks]);
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Deposit set successfully and recorded in user transactions.' });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -689,8 +919,15 @@ app.post('/api/plans/purchase', authenticateToken, async (req, res) => {
       VALUES ($1, $2, 'credit', $3, $4, $5, 'success', CURRENT_TIMESTAMP)
     `, [`TXN-ORD-${Date.now()}`, walletId, totalPaid, `Plan Booking: ${plan.name} ${depositAmt > 0 ? `(₹${planPrice} + ₹${depositAmt} Deposit)` : ''}`, rentalId]);
 
+    // 3. Create a pending payment approval request in wallet_approvals for Admin verification
+    const utrText = `PLAN_BOOKING: ${plan.name} (${rentalId}) ${depositAmt > 0 ? `[Plan ₹${planPrice} + Deposit ₹${depositAmt}]` : `[Plan ₹${planPrice}]`}`;
+    await client.query(`
+      INSERT INTO wallet_approvals (user_id, amount, utr, status, date)
+      VALUES ($1, $2, $3, 'pending', CURRENT_TIMESTAMP)
+    `, [user_id, totalPaid, utrText]);
+
     await client.query('COMMIT');
-    res.json({ success: true, message: 'Plan purchased successfully. Pending EV assignment.' });
+    res.json({ success: true, message: 'Plan purchased successfully. Pending EV assignment & admin verification.' });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error purchasing plan:', err);
@@ -1329,26 +1566,58 @@ app.get('/api/rentals', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
-        r.id, r.start_time, r.end_time, r.total_cost, r.status,
-        u.name as user,
-        v.id as vehicle_id, v.model as vehicle_model
+        r.id, r.start_time, r.end_time, r.total_cost, r.status, r.next_payment_date,
+        u.id as user_id, u.name as user_name, u.phone as user_phone, u.email as user_email,
+        u.security_deposit_balance, u.security_deposit_paid,
+        v.id as vehicle_id, v.model as vehicle_model, v.type as vehicle_type, v.battery as vehicle_battery,
+        p.name as plan_name, p.type as plan_type, p.price as plan_price
       FROM rentals r
-      JOIN users u ON u.id = r.user_id
-      JOIN vehicles v ON v.id = r.vehicle_id
-      ORDER BY r.start_time DESC
+      LEFT JOIN users u ON u.id = r.user_id
+      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN plans p ON p.id = r.plan_id
+      ORDER BY r.id DESC
     `);
-    const formatted = result.rows.map(r => ({
-      id: r.id,
-      user: r.user,
-      vehicle: `\${r.vehicle_id} (\${r.vehicle_model})`,
-      startTime: new Date(r.start_time).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Kolkata' }),
-      endTime: r.end_time ? new Date(r.end_time).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Kolkata' }) : 'Active',
-      rentCollected: r.total_cost ? `₹\${r.total_cost}` : '-',
-      deposit: 'Refunded',
-      status: r.status
-    }));
+    
+    const formatted = result.rows.map(r => {
+      const start = r.start_time ? new Date(r.start_time) : null;
+      const end = r.end_time ? new Date(r.end_time) : null;
+      
+      let durationText = 'N/A';
+      if (start) {
+        const endRef = end || new Date();
+        const diffHours = Math.max(1, Math.round((endRef - start) / (1000 * 60 * 60)));
+        if (diffHours < 24) {
+          durationText = `${diffHours} ${diffHours === 1 ? 'hr' : 'hrs'}`;
+        } else {
+          const days = Math.floor(diffHours / 24);
+          const remHours = diffHours % 24;
+          durationText = `${days}d ${remHours > 0 ? `${remHours}h` : ''}`.trim();
+        }
+      }
+
+      return {
+        id: r.id,
+        user_name: r.user_name || 'Anonymous Rider',
+        user_phone: r.user_phone || 'N/A',
+        user_email: r.user_email || 'N/A',
+        vehicle_id: r.vehicle_id || null,
+        vehicle_model: r.vehicle_model || (r.vehicle_id ? 'LT.ev Scooter' : 'Pending EV Assignment'),
+        vehicle_battery: r.vehicle_battery !== undefined ? r.vehicle_battery : null,
+        plan_name: r.plan_name || 'Standard Rental',
+        plan_type: r.plan_type || 'Custom',
+        startTime: start ? start.toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Kolkata' }) : 'Awaiting Assignment',
+        endTime: end ? end.toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Kolkata' }) : (r.status === 'active' ? 'Currently In-Use' : r.status === 'pending_return' ? 'Return Requested' : 'N/A'),
+        duration: durationText,
+        next_payment_date: r.next_payment_date ? new Date(r.next_payment_date).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Kolkata' }) : null,
+        rentCollected: r.total_cost || r.plan_price ? `₹${parseFloat(r.total_cost || r.plan_price || 0).toLocaleString('en-IN')}` : '₹0',
+        deposit: r.security_deposit_paid || (parseFloat(r.security_deposit_balance || 0) >= 2000) ? `₹${parseFloat(r.security_deposit_balance || 2000).toLocaleString('en-IN')} (Paid)` : 'Pending',
+        status: r.status || 'pending_assignment'
+      };
+    });
+
     res.json(formatted);
   } catch (err) {
+    console.error('Fetch rentals error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1432,7 +1701,37 @@ app.post('/api/wallet_approvals/:id/approve', authenticateToken, async (req, res
     const amount = parseFloat(appReq.amount);
     const utr = appReq.utr || '';
 
-    // Check if this is a Security Deposit Refund
+    // 1. Check if this is a Plan Booking Payment
+    if (utr.includes('PLAN_BOOKING') || utr.includes('PLAN_PAYMENT')) {
+      await client.query("UPDATE wallet_approvals SET status = 'success' WHERE id = $1", [id]);
+
+      // If deposit was included in the booking UTR, ensure security deposit is updated
+      if (utr.includes('Deposit')) {
+        const depMatch = utr.match(/Deposit ₹?(\d+)/i);
+        const depPaid = depMatch ? parseFloat(depMatch[1]) : 0;
+        if (depPaid > 0) {
+          const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+          const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+          const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+          const curBal = parseFloat(userRes.rows[0]?.security_deposit_balance || 0);
+          const newBal = curBal + depPaid;
+          const isPaid = newBal >= minDeposit;
+
+          await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newBal, isPaid, user_id]);
+
+          await client.query(`
+            INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+            VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+          `, [user_id, depPaid, `Security Deposit Verified (${utr})`]);
+        }
+      }
+
+      await client.query('COMMIT');
+      return res.json({ success: true, message: 'Plan booking payment verified and approved!' });
+    }
+
+    // 2. Check if this is a Security Deposit Refund
     if (utr.includes('DEPOSIT_REFUND') || utr.includes('REFUND')) {
       await client.query("UPDATE wallet_approvals SET status = 'success' WHERE id = $1", [id]);
       await client.query("UPDATE users SET security_deposit_balance = 0.00, security_deposit_paid = false WHERE id = $1", [user_id]);
@@ -1450,7 +1749,7 @@ app.post('/api/wallet_approvals/:id/approve', authenticateToken, async (req, res
         `, [`TXN-REF-${Date.now()}`, walletRes.rows[0].id, amount, `Deposit Refund to ${utr}`]);
       }
     } else {
-      // Wallet Recharge
+      // 3. Wallet Recharge
       await client.query("UPDATE wallet_approvals SET status = 'success' WHERE id = $1", [id]);
 
       let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
@@ -1567,45 +1866,299 @@ app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
     }
     const wallet = walletRes.rows[0];
 
-    // Fetch user transactions
+    // 1. Fetch user transactions
     const txnRes = await pool.query(`
       SELECT * FROM wallet_transactions
       WHERE wallet_id = $1
       ORDER BY timestamp DESC
-      LIMIT 20
+      LIMIT 40
     `, [wallet.id]);
 
-    // Fetch pending approvals for this user
+    // 2. Fetch pending approvals for this user
     const pendingRes = await pool.query(`
       SELECT * FROM wallet_approvals
       WHERE user_id = $1 AND status = 'pending'
       ORDER BY date DESC
     `, [user_id]);
 
-    const formattedTxns = [
-      ...pendingRes.rows.map(p => ({
+    // 3. Fetch security deposit transactions
+    const secRes = await pool.query(`
+      SELECT * FROM security_deposit_transactions
+      WHERE user_id = $1
+      ORDER BY date DESC
+      LIMIT 20
+    `, [user_id]);
+
+    const txns = [];
+
+    // Pending approvals
+    pendingRes.rows.forEach(p => {
+      txns.push({
         id: `REQ-${p.id}`,
         type: 'credit',
         amount: parseFloat(p.amount),
-        description: `Wallet Recharge (Pending Approval)`,
+        description: p.utr?.includes('PLAN') ? `${p.utr} (Pending Approval)` : `Wallet Recharge (Pending Approval)`,
         date: new Date(p.date).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }),
+        timestamp: new Date(p.date).getTime(),
         status: 'pending'
-      })),
-      ...txnRes.rows.map(t => ({
+      });
+    });
+
+    // Wallet transactions
+    txnRes.rows.forEach(t => {
+      txns.push({
         id: t.id,
         type: t.type,
         amount: parseFloat(t.amount),
         description: t.description,
         date: new Date(t.timestamp).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }),
+        timestamp: new Date(t.timestamp).getTime(),
         status: t.status
-      }))
-    ];
+      });
+    });
+
+    // Security deposit transactions (add those not already in wallet_transactions)
+    secRes.rows.forEach(s => {
+      const alreadyIncluded = txns.some(t => t.description && t.description.includes(s.remarks || 'Deposit'));
+      if (!alreadyIncluded) {
+        txns.push({
+          id: `SEC-${s.id}`,
+          type: s.type === 'deposit' ? 'credit' : 'debit',
+          amount: parseFloat(s.amount),
+          description: s.remarks || (s.type === 'deposit' ? 'Security Deposit Added' : 'Security Deposit Deducted'),
+          date: new Date(s.date).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }),
+          timestamp: new Date(s.date).getTime(),
+          status: 'success'
+        });
+      }
+    });
+
+    // Sort by timestamp descending
+    txns.sort((a, b) => b.timestamp - a.timestamp);
 
     res.json({
       balance: parseFloat(wallet.balance || 0),
-      transactions: formattedTxns
+      transactions: txns
     });
   } catch (err) {
+    console.error('My wallet fetch error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// BROADCAST NOTIFICATIONS SYSTEM
+// ==========================================
+
+// Ensure broadcast_notifications table exists
+async function initNotificationTables() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS broadcast_notifications (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        title VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        category VARCHAR(50) DEFAULT 'general',
+        action_type VARCHAR(50) DEFAULT 'none',
+        status VARCHAR(50) DEFAULT 'sent',
+        recipient_count INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+  } catch (e) {
+    console.error('Error init notification tables:', e);
+  }
+}
+initNotificationTables();
+
+// 1. Get Due Users Count & Groupings for Reminder Cards
+app.get('/api/notifications/active-due-users', authenticateToken, async (req, res) => {
+  try {
+    const rentalsRes = await pool.query(`
+      SELECT 
+        r.id as rental_id, r.user_id, r.next_payment_date, r.total_cost,
+        u.name as user_name, u.phone as user_phone,
+        v.id as vehicle_id, v.model as vehicle_model,
+        p.name as plan_name, p.price as plan_price
+      FROM rentals r
+      JOIN users u ON u.id = r.user_id
+      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.status = 'active'
+    `);
+
+    const now = new Date();
+    const list3to4Days = [];
+    const list1to2Days = [];
+    const listTodayOrOverdue = [];
+
+    rentalsRes.rows.forEach(r => {
+      if (!r.next_payment_date) return;
+      const due = new Date(r.next_payment_date);
+      const diffMs = due.getTime() - now.getTime();
+      const diffHours = diffMs / (1000 * 60 * 60);
+
+      const item = {
+        rental_id: r.rental_id,
+        user_id: r.user_id,
+        user_name: r.user_name,
+        user_phone: r.user_phone,
+        vehicle: r.vehicle_model || r.vehicle_id,
+        plan_name: r.plan_name,
+        price: r.plan_price || r.total_cost,
+        next_payment_date: due.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+        hoursLeft: Math.round(diffHours)
+      };
+
+      if (diffHours <= 12) {
+        // Due today or overdue
+        listTodayOrOverdue.push(item);
+      } else if (diffHours > 12 && diffHours <= 48) {
+        // Due in 1-2 days
+        list1to2Days.push(item);
+      } else if (diffHours > 48 && diffHours <= 96) {
+        // Due in 3-4 days
+        list3to4Days.push(item);
+      }
+    });
+
+    res.json({
+      due3to4Days: { count: list3to4Days.length, users: list3to4Days },
+      due1to2Days: { count: list1to2Days.length, users: list1to2Days },
+      dueToday: { count: listTodayOrOverdue.length, users: listTodayOrOverdue }
+    });
+  } catch (err) {
+    console.error('Active due users error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Broadcast or Send Targeted Notification
+app.post('/api/notifications/broadcast', authenticateToken, async (req, res) => {
+  try {
+    const { type, user_id, title, message, category, action_type } = req.body;
+
+    let targetTitle = title;
+    let targetMessage = message;
+    let targetCategory = category || 'general';
+    let targetAction = action_type || 'none';
+    let targetUserId = user_id === 'all' || !user_id ? null : parseInt(user_id);
+    let recipientCount = 1;
+
+    const now = new Date();
+
+    if (type === 'payment_reminder_3d') {
+      targetCategory = 'payment_reminder_3d';
+      targetAction = 'pay_now';
+      targetTitle = title || '📅 EV Subscription Renewal in 3-4 Days';
+      targetMessage = message || 'Your EV rental pass is scheduled for renewal in 3-4 days. Tap to pay and ensure uninterrupted daily rides.';
+
+      // Get count of riders due in 3-4 days
+      const dueRes = await pool.query(`
+        SELECT COUNT(DISTINCT user_id) as count FROM rentals 
+        WHERE status = 'active' AND next_payment_date IS NOT NULL
+        AND next_payment_date > CURRENT_TIMESTAMP + INTERVAL '48 hours'
+        AND next_payment_date <= CURRENT_TIMESTAMP + INTERVAL '96 hours'
+      `);
+      recipientCount = parseInt(dueRes.rows[0]?.count || 0) || 1;
+    } else if (type === 'payment_reminder_1d') {
+      targetCategory = 'payment_reminder_1d';
+      targetAction = 'pay_now';
+      targetTitle = title || '⏰ Urgent: EV Pass Due in 24-48 Hours';
+      targetMessage = message || 'Your EV rental due date is approaching in 1-2 days. Tap Pay Now to renew your pass instantly.';
+
+      const dueRes = await pool.query(`
+        SELECT COUNT(DISTINCT user_id) as count FROM rentals 
+        WHERE status = 'active' AND next_payment_date IS NOT NULL
+        AND next_payment_date > CURRENT_TIMESTAMP + INTERVAL '12 hours'
+        AND next_payment_date <= CURRENT_TIMESTAMP + INTERVAL '48 hours'
+      `);
+      recipientCount = parseInt(dueRes.rows[0]?.count || 0) || 1;
+    } else if (type === 'payment_reminder_today') {
+      targetCategory = 'payment_reminder_today';
+      targetAction = 'pay_now';
+      targetTitle = title || '🚨 Action Required: Payment Due Today!';
+      targetMessage = message || 'Your EV rental pass is due today! Complete your payment now to avoid vehicle auto-lock and late fee.';
+
+      const dueRes = await pool.query(`
+        SELECT COUNT(DISTINCT user_id) as count FROM rentals 
+        WHERE status = 'active' AND next_payment_date IS NOT NULL
+        AND next_payment_date <= CURRENT_TIMESTAMP + INTERVAL '12 hours'
+      `);
+      recipientCount = parseInt(dueRes.rows[0]?.count || 0) || 1;
+    } else {
+      // Custom notification
+      if (targetUserId === null) {
+        const userCountRes = await pool.query('SELECT COUNT(*) as count FROM users');
+        recipientCount = parseInt(userCountRes.rows[0]?.count || 0);
+      }
+    }
+
+    if (!targetTitle || !targetMessage) {
+      return res.status(400).json({ error: 'Title and message are required.' });
+    }
+
+    const insertRes = await pool.query(`
+      INSERT INTO broadcast_notifications (user_id, title, message, category, action_type, status, recipient_count, created_at)
+      VALUES ($1, $2, $3, $4, $5, 'sent', $6, CURRENT_TIMESTAMP)
+      RETURNING *
+    `, [targetUserId, targetTitle, targetMessage, targetCategory, targetAction, recipientCount]);
+
+    res.json({
+      success: true,
+      message: `Notification broadcast sent successfully to ${recipientCount} user(s)!`,
+      notification: insertRes.rows[0]
+    });
+  } catch (err) {
+    console.error('Broadcast notification error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Admin Notification History
+app.get('/api/notifications/history', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        b.id, b.title, b.message, b.category, b.action_type, b.status, b.recipient_count, b.created_at,
+        u.name as targeted_user_name, u.phone as targeted_user_phone
+      FROM broadcast_notifications b
+      LEFT JOIN users u ON u.id = b.user_id
+      ORDER BY b.created_at DESC
+      LIMIT 50
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Mobile App Get My Notifications
+app.get('/api/notifications/my-notifications', authenticateToken, async (req, res) => {
+  try {
+    const user_id = req.user.id;
+    const result = await pool.query(`
+      SELECT id, title, message, category, action_type, created_at
+      FROM broadcast_notifications
+      WHERE user_id IS NULL OR user_id = $1
+      ORDER BY created_at DESC
+      LIMIT 25
+    `, [user_id]);
+
+    const formatted = result.rows.map(n => ({
+      id: n.id,
+      title: n.title,
+      message: n.message,
+      category: n.category,
+      action_type: n.action_type,
+      timeAgo: new Date(n.created_at).toLocaleString('en-US', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }),
+      date: n.created_at
+    }));
+
+    res.json(formatted);
+  } catch (err) {
+    console.error('Fetch my notifications error:', err);
     res.status(500).json({ error: err.message });
   }
 });

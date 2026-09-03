@@ -13,6 +13,7 @@ import WalletApprovals from './pages/WalletApprovals';
 import Transactions from './pages/Transactions';
 import Plans from './pages/Plans';
 import SecurityDeposits from './pages/SecurityDeposits';
+import Broadcast from './pages/Broadcast';
 import Login from './pages/Login';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import './App.css';
@@ -47,6 +48,7 @@ function App() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<ProtectedRoute><Layout><Dashboard /></Layout></ProtectedRoute>} />
           <Route path="/updates" element={<ProtectedRoute><Layout><Updates /></Layout></ProtectedRoute>} />
+          <Route path="/broadcast" element={<ProtectedRoute><Layout><Broadcast /></Layout></ProtectedRoute>} />
           <Route path="/vehicles" element={<ProtectedRoute><Layout><Vehicles /></Layout></ProtectedRoute>} />
           <Route path="/vehicles/:id" element={<ProtectedRoute><Layout><VehicleDetails /></Layout></ProtectedRoute>} />
           <Route path="/stands" element={<ProtectedRoute><Layout><Stands /></Layout></ProtectedRoute>} />
