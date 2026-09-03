@@ -686,9 +686,126 @@ app.put('/api/rentals/:id/assign', authenticateToken, async (req, res) => {
   }
 });
 
+// Helper function: Automatically deduct rental due from wallet if due date has passed
+async function autoDeductRentalDueFromWallet(userId) {
+  const client = await pool.connect();
+  try {
+    await client.query('ALTER TABLE rentals ADD COLUMN IF NOT EXISTS next_payment_date TIMESTAMP');
+    await client.query('BEGIN');
+
+    // 1. Fetch active rental for user
+    const rentalRes = await client.query(`
+      SELECT r.*, p.price as plan_price, p.type as plan_type, p.name as plan_name
+      FROM rentals r
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.user_id = $1 AND r.status = 'active'
+      ORDER BY r.start_time DESC LIMIT 1
+    `, [userId]);
+
+    if (rentalRes.rows.length === 0) {
+      await client.query('COMMIT');
+      return { deducted: 0 };
+    }
+
+    const rental = rentalRes.rows[0];
+    const price = parseFloat(rental.plan_price || 0);
+    if (price <= 0) {
+      await client.query('COMMIT');
+      return { deducted: 0 };
+    }
+
+    const planType = (rental.plan_type || '').toLowerCase();
+    let cycleMs = 24 * 60 * 60 * 1000; // 24 hours
+    if (planType.includes('weekly')) {
+      cycleMs = 7 * 24 * 60 * 60 * 1000; // 7 days
+    } else if (planType.includes('monthly')) {
+      cycleMs = 30 * 24 * 60 * 60 * 1000; // 30 days
+    }
+
+    const start = new Date(rental.start_time || new Date());
+    let nextDue = rental.next_payment_date ? new Date(rental.next_payment_date) : new Date(start.getTime() + cycleMs);
+    const now = new Date();
+
+    // If current time hasn't passed nextDue, not due yet
+    if (now <= nextDue) {
+      await client.query('COMMIT');
+      return { deducted: 0, nextDue };
+    }
+
+    // Calculate overdue cycles
+    const diffMs = now.getTime() - nextDue.getTime();
+    const overdueCycles = Math.floor(diffMs / cycleMs) + 1;
+
+    // 2. Fetch user's wallet
+    let walletRes = await client.query('SELECT * FROM wallets WHERE user_id = $1', [userId]);
+    if (walletRes.rows.length === 0) {
+      walletRes = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, 0) RETURNING *', [userId]);
+    }
+
+    const wallet = walletRes.rows[0];
+    const currentBalance = parseFloat(wallet.balance || 0);
+
+    if (currentBalance >= price) {
+      // How many overdue cycles can the wallet balance cover?
+      const cyclesToPay = Math.min(overdueCycles, Math.floor(currentBalance / price));
+
+      if (cyclesToPay > 0) {
+        const amountToDeduct = cyclesToPay * price;
+        const newBalance = currentBalance - amountToDeduct;
+        const newNextDue = new Date(nextDue.getTime() + (cyclesToPay * cycleMs));
+
+        // Deduct from wallet
+        await client.query('UPDATE wallets SET balance = $1, last_updated = CURRENT_TIMESTAMP WHERE id = $2', [newBalance, wallet.id]);
+
+        // Record in wallet_transactions
+        const txnId = `TXN-AUTO-${Date.now()}`;
+        await client.query(`
+          INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp)
+          VALUES ($1, $2, 'debit', $3, $4, 'success', CURRENT_TIMESTAMP)
+        `, [txnId, wallet.id, amountToDeduct, `Auto-deducted ${rental.plan_name || 'Rental'} Due (${cyclesToPay} cycle)`]);
+
+        // Update rental next_payment_date and total_cost
+        await client.query(`
+          UPDATE rentals 
+          SET total_cost = COALESCE(total_cost, 0) + $1, next_payment_date = $2
+          WHERE id = $3
+        `, [amountToDeduct, newNextDue.toISOString(), rental.id]);
+
+        await client.query('COMMIT');
+        console.log(`[AUTO-DEDUCT] Deducted ₹${amountToDeduct} from user ${userId}'s wallet for rental ${rental.id}`);
+        return { deducted: amountToDeduct, newBalance, nextDue: newNextDue };
+      }
+    }
+
+    await client.query('COMMIT');
+    return { deducted: 0, nextDue };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error in autoDeductRentalDueFromWallet:', err);
+    return { error: err.message };
+  } finally {
+    client.release();
+  }
+}
+
+// Periodic Worker to auto-deduct dues for all active rentals
+setInterval(async () => {
+  try {
+    const activeRentals = await pool.query("SELECT DISTINCT user_id FROM rentals WHERE status = 'active'");
+    for (const row of activeRentals.rows) {
+      await autoDeductRentalDueFromWallet(row.user_id);
+    }
+  } catch (err) {
+    console.error('[Periodic-Worker-Error]', err);
+  }
+}, 60 * 60 * 1000); // Run every hour
+
 // Get active rental for current user
 app.get('/api/rentals/active', authenticateToken, async (req, res) => {
   try {
+    // 1. Auto-deduct any pending due from wallet if balance is available
+    await autoDeductRentalDueFromWallet(req.user.id);
+
     const result = await pool.query(`
       SELECT r.*, v.model as vehicle_model, v.id as vehicle_registration, p.price as plan_price, p.name as plan_name, p.type as plan_type
       FROM rentals r
@@ -711,37 +828,25 @@ app.get('/api/rentals/active', authenticateToken, async (req, res) => {
         const price = parseFloat(rental.plan_price || 0);
         const now = new Date();
 
-        if (type.includes('daily')) {
-           next_payment_date = new Date(start.getTime() + 1 * 24 * 60 * 60 * 1000).toISOString();
-           const nextDue = new Date(next_payment_date);
-           if (now > nextDue) {
-             const diffMs = now.getTime() - nextDue.getTime();
-             overdue_days = Math.floor(diffMs / (24 * 60 * 60 * 1000)) + 1;
-             due_amount = overdue_days * price;
-             is_overdue = true;
-           }
-        } else if (type.includes('weekly')) {
-           next_payment_date = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
-           const nextDue = new Date(next_payment_date);
-           if (now > nextDue) {
-             const diffMs = now.getTime() - nextDue.getTime();
-             const overdueWeeks = Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1;
-             overdue_days = overdueWeeks * 7;
-             due_amount = overdueWeeks * price;
-             is_overdue = true;
-           }
+        let cycleMs = 24 * 60 * 60 * 1000;
+        let cycleDays = 1;
+        if (type.includes('weekly')) {
+          cycleMs = 7 * 24 * 60 * 60 * 1000;
+          cycleDays = 7;
         } else if (type.includes('monthly')) {
-           next_payment_date = new Date(start.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
-           const nextDue = new Date(next_payment_date);
-           if (now > nextDue) {
-             const diffMs = now.getTime() - nextDue.getTime();
-             const overdueMonths = Math.floor(diffMs / (30 * 24 * 60 * 60 * 1000)) + 1;
-             overdue_days = overdueMonths * 30;
-             due_amount = overdueMonths * price;
-             is_overdue = true;
-           }
-        } else {
-           next_payment_date = new Date(start.getTime() + 1 * 24 * 60 * 60 * 1000).toISOString();
+          cycleMs = 30 * 24 * 60 * 60 * 1000;
+          cycleDays = 30;
+        }
+
+        const nextDue = rental.next_payment_date ? new Date(rental.next_payment_date) : new Date(start.getTime() + cycleMs);
+        next_payment_date = nextDue.toISOString();
+
+        if (now > nextDue) {
+          const diffMs = now.getTime() - nextDue.getTime();
+          const overdueCycles = Math.floor(diffMs / cycleMs) + 1;
+          overdue_days = overdueCycles * cycleDays;
+          due_amount = overdueCycles * price;
+          is_overdue = true;
         }
       }
       res.json({ ...rental, next_payment_date, due_amount, overdue_days, is_overdue });
@@ -1175,6 +1280,13 @@ app.post('/api/wallet_approvals/:id/approve', authenticateToken, async (req, res
     }
     
     await pool.query('COMMIT');
+
+    // Immediately check and auto-deduct any pending rental dues from newly approved wallet balance
+    if (updateRes.rows.length > 0) {
+      const { user_id } = updateRes.rows[0];
+      await autoDeductRentalDueFromWallet(user_id);
+    }
+
     res.json({ success: true });
   } catch (err) {
     await pool.query('ROLLBACK');
