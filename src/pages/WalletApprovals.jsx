@@ -13,9 +13,10 @@ export default function WalletApprovals() {
   }, [token]);
 
   const fetchRequests = async () => {
+    if (!token) return;
     setLoading(true);
     try {
-      const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/wallet_approvals`, {
+      const response = await axios.get(`${import.meta.env.VITE_API_URL || ''}/api/wallet_approvals`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setRequests(response.data);
@@ -28,7 +29,7 @@ export default function WalletApprovals() {
 
   const approveRequest = async (id) => {
     try {
-      await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/wallet_approvals/${id}/approve`, {}, {
+      await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/wallet_approvals/${id}/approve`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setRequests(prev => prev.map(req => req.id === id ? { ...req, status: 'success' } : req));
@@ -40,7 +41,7 @@ export default function WalletApprovals() {
 
   const rejectRequest = async (id) => {
     try {
-      await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/wallet_approvals/${id}/reject`, {}, {
+      await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/wallet_approvals/${id}/reject`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setRequests(prev => prev.map(req => req.id === id ? { ...req, status: 'rejected' } : req));

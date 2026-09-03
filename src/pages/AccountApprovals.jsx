@@ -1,17 +1,24 @@
 import { useState, useEffect } from 'react';
 import { CheckCircle, XCircle, FileText } from 'lucide-react';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 
 export default function AccountApprovals() {
+  const { token } = useAuth();
   const [applications, setApplications] = useState([]);
 
   useEffect(() => {
-    fetchApplications();
-  }, []);
+    if (token) {
+      fetchApplications();
+    }
+  }, [token]);
 
   const fetchApplications = async () => {
+    if (!token) return;
     try {
-      const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/account_approvals`);
+      const response = await axios.get(`${import.meta.env.VITE_API_URL || ''}/api/account_approvals`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setApplications(response.data);
     } catch (error) {
       console.error('Error fetching account approvals:', error);
@@ -20,7 +27,9 @@ export default function AccountApprovals() {
 
   const approveApp = async (id) => {
     try {
-      await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/account_approvals/${id}/approve`);
+      await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/account_approvals/${id}/approve`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setApplications(applications.map(a => a.id === id ? { ...a, status: 'approved' } : a));
     } catch (error) {
       console.error('Error approving app:', error);
@@ -29,7 +38,9 @@ export default function AccountApprovals() {
 
   const rejectApp = async (id) => {
     try {
-      await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/account_approvals/${id}/reject`);
+      await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/account_approvals/${id}/reject`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setApplications(applications.map(a => a.id === id ? { ...a, status: 'rejected' } : a));
     } catch (error) {
       console.error('Error rejecting app:', error);

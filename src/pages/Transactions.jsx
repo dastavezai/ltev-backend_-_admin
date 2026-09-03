@@ -14,9 +14,10 @@ export default function Transactions() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fetchTransactions = async () => {
+    if (!token) return;
     setLoading(true);
     try {
-      const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/transactions`, {
+      const response = await axios.get(`${import.meta.env.VITE_API_URL || ''}/api/transactions`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setTransactions(response.data);
@@ -28,8 +29,9 @@ export default function Transactions() {
   };
 
   const fetchUsers = async () => {
+    if (!token) return;
     try {
-      const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users`, {
+      const response = await axios.get(`${import.meta.env.VITE_API_URL || ''}/api/users`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setUsers(response.data);
@@ -39,8 +41,10 @@ export default function Transactions() {
   };
 
   useEffect(() => {
-    fetchTransactions();
-    fetchUsers();
+    if (token) {
+      fetchTransactions();
+      fetchUsers();
+    }
   }, [token]);
 
   const handleCashSubmit = async (e) => {
@@ -50,7 +54,7 @@ export default function Transactions() {
     setIsSubmitting(true);
     try {
       const uid = cashForm.user_id.replace('USR-', '');
-      await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/transactions/cash`, {
+      await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/transactions/cash`, {
         user_id: parseInt(uid),
         amount: parseFloat(cashForm.amount),
         reference: cashForm.reference

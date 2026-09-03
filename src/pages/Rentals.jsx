@@ -1,21 +1,28 @@
 import { useState, useEffect } from 'react';
 import { Calendar, Clock, CreditCard, Filter } from 'lucide-react';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 
 export default function Rentals() {
+  const { token } = useAuth();
   const [rentals, setRentals] = useState([]);
 
   useEffect(() => {
     const fetchRentals = async () => {
+      if (!token) return;
       try {
-        const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/rentals`);
+        const response = await axios.get(`${import.meta.env.VITE_API_URL || ''}/api/rentals`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
         setRentals(response.data);
       } catch (error) {
         console.error('Error fetching rentals:', error);
       }
     };
-    fetchRentals();
-  }, []);
+    if (token) {
+      fetchRentals();
+    }
+  }, [token]);
 
   return (
     <div>

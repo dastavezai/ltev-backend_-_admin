@@ -3,7 +3,7 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Search, ShieldAlert, CheckCircle2, History, MinusCircle, PlusCircle, X, Settings, ShieldCheck, DollarSign, Edit3, ArrowRight } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 export default function SecurityDeposits() {
   const { token } = useAuth();
@@ -26,9 +26,11 @@ export default function SecurityDeposits() {
   const [history, setHistory] = useState([]);
 
   useEffect(() => {
-    fetchConfig();
-    fetchUsers();
-  }, []);
+    if (token) {
+      fetchConfig();
+      fetchUsers();
+    }
+  }, [token]);
 
   const fetchConfig = async () => {
     try {
@@ -50,7 +52,9 @@ export default function SecurityDeposits() {
       const res = await axios.get(`${API_URL}/api/security-deposits`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setUsers(res.data);
+      if (Array.isArray(res.data)) {
+        setUsers(res.data);
+      }
     } catch (error) {
       console.error('Error fetching users:', error);
     } finally {
