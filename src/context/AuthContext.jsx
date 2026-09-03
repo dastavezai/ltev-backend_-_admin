@@ -4,16 +4,16 @@ import axios from 'axios';
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(localStorage.getItem('token') || null);
+  const [user, setUser] = useState(token ? { token } : null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      // For simplicity, we just set the token as the user object here.
-      // In a real app, you might decode the JWT or fetch user details.
-      setUser({ token });
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    const savedToken = localStorage.getItem('token');
+    if (savedToken) {
+      setToken(savedToken);
+      setUser({ token: savedToken });
+      axios.defaults.headers.common['Authorization'] = `Bearer ${savedToken}`;
     }
     setLoading(false);
   }, []);
@@ -26,6 +26,7 @@ export const AuthProvider = ({ children }) => {
       });
       const { accessToken } = response.data;
       localStorage.setItem('token', accessToken);
+      setToken(accessToken);
       setUser({ token: accessToken });
       axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
       return true;
@@ -37,6 +38,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = () => {
     localStorage.removeItem('token');
+    setToken(null);
     setUser(null);
     delete axios.defaults.headers.common['Authorization'];
   };
@@ -46,7 +48,7 @@ export const AuthProvider = ({ children }) => {
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ user, token: token || localStorage.getItem('token'), login, logout }}>
       {children}
     </AuthContext.Provider>
   );

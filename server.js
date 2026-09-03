@@ -756,6 +756,97 @@ app.put('/api/rentals/:id/assign', authenticateToken, async (req, res) => {
   }
 });
 
+// Admin Cancel / Reject Rental Request
+app.post('/api/rentals/:id/cancel', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    await client.query('BEGIN');
+
+    const rentalRes = await client.query('SELECT * FROM rentals WHERE id = $1', [id]);
+    if (rentalRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Rental request not found' });
+    }
+
+    const rental = rentalRes.rows[0];
+
+    // If vehicle was already linked, make it available again
+    if (rental.vehicle_id) {
+      await client.query("UPDATE vehicles SET status = 'available' WHERE id = $1", [rental.vehicle_id]);
+    }
+
+    // Mark rental as cancelled
+    await client.query("UPDATE rentals SET status = 'cancelled' WHERE id = $1", [id]);
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Rental request has been cancelled.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Get EV Return Requests for Admin
+app.get('/api/rentals/return-requests', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        r.id, r.start_time, r.total_cost as cost, r.status, r.vehicle_id,
+        u.name as user_name, u.phone as user_phone,
+        v.model as vehicle_model,
+        p.name as plan_name, p.type as plan_type
+      FROM rentals r
+      JOIN users u ON u.id = r.user_id
+      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.status = 'pending_return'
+      ORDER BY r.id DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin Confirm EV Return / EV Submission Received
+app.post('/api/rentals/:id/confirm-return', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    await client.query('BEGIN');
+
+    const rentalRes = await client.query('SELECT * FROM rentals WHERE id = $1', [id]);
+    if (rentalRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Rental record not found.' });
+    }
+
+    const rental = rentalRes.rows[0];
+
+    // 1. Mark vehicle as available
+    if (rental.vehicle_id) {
+      await client.query("UPDATE vehicles SET status = 'available' WHERE id = $1", [rental.vehicle_id]);
+    }
+
+    // 2. Mark rental as completed
+    await client.query(
+      "UPDATE rentals SET status = 'completed', end_time = CURRENT_TIMESTAMP WHERE id = $1",
+      [id]
+    );
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'EV return confirmed! Vehicle is now available for new bookings.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // Helper function: Automatically deduct rental due from wallet if due date has passed
 async function autoDeductRentalDueFromWallet(userId) {
   const client = await pool.connect();
@@ -1325,42 +1416,70 @@ app.get('/api/wallet_approvals', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/wallet_approvals/:id/approve', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
+    await client.query('BEGIN');
     
-    // Begin Transaction
-    await pool.query('BEGIN');
-    
-    // Update approval status
-    const updateRes = await pool.query('UPDATE wallet_approvals SET status = $1 WHERE id = $2 RETURNING user_id, amount', ['success', id]);
-    
-    if (updateRes.rows.length > 0) {
-      const { user_id, amount } = updateRes.rows[0];
-      
-      // Update wallet balance
-      const walletRes = await pool.query('UPDATE wallets SET balance = balance + $1 WHERE user_id = $2 RETURNING id', [amount, user_id]);
-      
-      if(walletRes.rows.length > 0) {
-        // Add to wallet_transactions ledger
-        await pool.query(`
-          INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status) 
-          VALUES ($1, $2, 'credit', $3, 'Manual Wallet Approval', 'success')
-        `, [`TXN-MAP-\${Date.now()}`, walletRes.rows[0].id, amount]);
+    const approvalRes = await client.query('SELECT * FROM wallet_approvals WHERE id = $1', [id]);
+    if (approvalRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Request not found' });
+    }
+
+    const appReq = approvalRes.rows[0];
+    const user_id = appReq.user_id;
+    const amount = parseFloat(appReq.amount);
+    const utr = appReq.utr || '';
+
+    // Check if this is a Security Deposit Refund
+    if (utr.includes('DEPOSIT_REFUND') || utr.includes('REFUND')) {
+      await client.query("UPDATE wallet_approvals SET status = 'success' WHERE id = $1", [id]);
+      await client.query("UPDATE users SET security_deposit_balance = 0.00, security_deposit_paid = false WHERE id = $1", [user_id]);
+
+      await client.query(`
+        INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+        VALUES ($1, $2, 'refund', $3, CURRENT_TIMESTAMP)
+      `, [user_id, amount, `Security Deposit Refund (${utr})`]);
+
+      let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+      if (walletRes.rows.length > 0) {
+        await client.query(`
+          INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp) 
+          VALUES ($1, $2, 'debit', $3, $4, 'success', CURRENT_TIMESTAMP)
+        `, [`TXN-REF-${Date.now()}`, walletRes.rows[0].id, amount, `Deposit Refund to ${utr}`]);
       }
-    }
-    
-    await pool.query('COMMIT');
+    } else {
+      // Wallet Recharge
+      await client.query("UPDATE wallet_approvals SET status = 'success' WHERE id = $1", [id]);
 
-    // Immediately check and auto-deduct any pending rental dues from newly approved wallet balance
-    if (updateRes.rows.length > 0) {
-      const { user_id } = updateRes.rows[0];
+      let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+      let walletId = null;
+      if (walletRes.rows.length === 0) {
+        const newW = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, $2) RETURNING id', [user_id, amount]);
+        walletId = newW.rows[0].id;
+      } else {
+        walletId = walletRes.rows[0].id;
+        await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [amount, walletId]);
+      }
+
+      await client.query(`
+        INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp) 
+        VALUES ($1, $2, 'credit', $3, $4, 'success', CURRENT_TIMESTAMP)
+      `, [`TXN-RCH-${Date.now()}`, walletId, amount, `Wallet Recharge (${utr})`]);
+
+      await client.query('COMMIT');
       await autoDeductRentalDueFromWallet(user_id);
+      return res.json({ success: true, message: 'Wallet recharge approved and balance credited!' });
     }
 
-    res.json({ success: true });
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Approval processed successfully!' });
   } catch (err) {
-    await pool.query('ROLLBACK');
+    await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -1370,6 +1489,30 @@ app.post('/api/wallet_approvals/:id/reject', authenticateToken, async (req, res)
     await pool.query('UPDATE wallet_approvals SET status = $1 WHERE id = $2', ['rejected', id]);
     res.json({ success: true });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mobile App Submit Security Deposit Refund Request
+app.post('/api/wallet/withdraw-deposit', authenticateToken, async (req, res) => {
+  try {
+    const { upi_id } = req.body;
+    const user_id = req.user.id;
+
+    const userRes = await pool.query('SELECT security_deposit_balance, security_deposit_paid FROM users WHERE id = $1', [user_id]);
+    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+    const depBal = parseFloat(userRes.rows[0].security_deposit_balance || 2500);
+
+    const result = await pool.query(`
+      INSERT INTO wallet_approvals (user_id, amount, utr, status, date)
+      VALUES ($1, $2, $3, 'pending', CURRENT_TIMESTAMP)
+      RETURNING *
+    `, [user_id, depBal, `DEPOSIT_REFUND_UPI: ${upi_id || 'N/A'}`]);
+
+    res.json({ success: true, message: 'Deposit refund request submitted for admin approval', request: result.rows[0] });
+  } catch (err) {
+    console.error('Withdraw deposit error:', err);
     res.status(500).json({ error: err.message });
   }
 });
