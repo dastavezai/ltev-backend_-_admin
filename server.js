@@ -169,6 +169,24 @@ app.post('/api/auth/send-otp', async (req, res) => {
       return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number' });
     }
 
+    // Google Play Store Test Account Bypass
+    if (cleanPhone === '9876543210') {
+      const testOtp = '123456';
+      await pool.query(`
+        INSERT INTO otps (phone, otp, expires_at)
+        VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '1 year')
+      `, [cleanPhone, testOtp]);
+
+      console.log(`[TEST ACCOUNT OTP] Phone: ${cleanPhone} | Static OTP: ${testOtp}`);
+      return res.json({ 
+        success: true, 
+        message: 'OTP sent successfully (Test Account)',
+        provider: 'TestAccount',
+        phone: cleanPhone,
+        devOtp: testOtp
+      });
+    }
+
     // Generate random 6-digit OTP (matching SMSIndiaHub DLT Template)
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -209,16 +227,21 @@ app.post('/api/auth/verify-register', async (req, res) => {
 
     let isValid = false;
 
-    // Verify against DB-stored OTP
-    const otpRes = await pool.query(`
-      SELECT * FROM otps 
-      WHERE phone = $1 AND otp = $2 AND is_used = false AND expires_at > CURRENT_TIMESTAMP
-      ORDER BY created_at DESC LIMIT 1
-    `, [cleanPhone, otpStr]);
-
-    if (otpRes.rows.length > 0) {
+    // Test account check
+    if (cleanPhone === '9876543210' && otpStr === '123456') {
       isValid = true;
-      await pool.query('UPDATE otps SET is_used = true WHERE id = $1', [otpRes.rows[0].id]);
+    } else {
+      // Verify against DB-stored OTP
+      const otpRes = await pool.query(`
+        SELECT * FROM otps 
+        WHERE phone = $1 AND otp = $2 AND is_used = false AND expires_at > CURRENT_TIMESTAMP
+        ORDER BY created_at DESC LIMIT 1
+      `, [cleanPhone, otpStr]);
+
+      if (otpRes.rows.length > 0) {
+        isValid = true;
+        await pool.query('UPDATE otps SET is_used = true WHERE id = $1', [otpRes.rows[0].id]);
+      }
     }
 
     if (!isValid) {
@@ -259,25 +282,39 @@ app.post('/api/auth/verify-login', async (req, res) => {
 
     let isValid = false;
 
-    // Verify against DB-stored OTP
-    const otpRes = await pool.query(`
-      SELECT * FROM otps 
-      WHERE phone = $1 AND otp = $2 AND is_used = false AND expires_at > CURRENT_TIMESTAMP
-      ORDER BY created_at DESC LIMIT 1
-    `, [cleanPhone, otpStr]);
-
-    if (otpRes.rows.length > 0) {
+    // Test account check
+    if (cleanPhone === '9876543210' && otpStr === '123456') {
       isValid = true;
-      await pool.query('UPDATE otps SET is_used = true WHERE id = $1', [otpRes.rows[0].id]);
+    } else {
+      // Verify against DB-stored OTP
+      const otpRes = await pool.query(`
+        SELECT * FROM otps 
+        WHERE phone = $1 AND otp = $2 AND is_used = false AND expires_at > CURRENT_TIMESTAMP
+        ORDER BY created_at DESC LIMIT 1
+      `, [cleanPhone, otpStr]);
+
+      if (otpRes.rows.length > 0) {
+        isValid = true;
+        await pool.query('UPDATE otps SET is_used = true WHERE id = $1', [otpRes.rows[0].id]);
+      }
     }
 
     if (!isValid) {
       return res.status(400).json({ error: 'Invalid or expired OTP. Please request a new one.' });
     }
     
-    const result = await pool.query('SELECT id, name, phone, email, role, status, kyc_status, security_deposit_balance FROM users WHERE phone = $1', [cleanPhone]);
+    let result = await pool.query('SELECT id, name, phone, email, role, status, kyc_status, security_deposit_balance FROM users WHERE phone = $1', [cleanPhone]);
     if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'User not found. Please sign up.' });
+      if (cleanPhone === '9876543210') {
+        // Auto-create active verified test account for Play Store reviewer
+        const createRes = await pool.query(
+          "INSERT INTO users (name, phone, email, role, status, kyc_status, security_deposit_balance) VALUES ($1, $2, $3, 'driver', 'active', 'verified', 5000) RETURNING id, name, phone, email, role, status, kyc_status, security_deposit_balance",
+          ['Play Store Reviewer', '9876543210', 'playstore_tester@ltev.in']
+        );
+        result = createRes;
+      } else {
+        return res.status(401).json({ error: 'User not found. Please sign up.' });
+      }
     }
 
     const user = result.rows[0];
