@@ -56,6 +56,11 @@ async function initDatabase() {
       VALUES ('min_security_deposit', '2000')
       ON CONFLICT (key) DO NOTHING
     `);
+    try {
+      await pool.query(`ALTER TABLE users ALTER COLUMN email DROP NOT NULL`);
+    } catch (e) {
+      // Ignore if already dropped
+    }
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS security_deposit_balance DECIMAL(10, 2) NOT NULL DEFAULT 0.00`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS security_deposit_paid BOOLEAN NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS next_payment_date TIMESTAMP`);
@@ -453,11 +458,17 @@ app.get('/api/vehicles/:id', authenticateToken, async (req, res) => {
     const vehicleRes = await pool.query(`
       SELECT 
         v.*,
-        u.name as current_renter, u.id as current_renter_id,
-        r.start_time as current_rental_start
+        u.name as current_renter, u.id as current_renter_id, u.phone as current_renter_phone,
+        r.id as current_rental_id,
+        r.start_time as current_rental_start,
+        r.next_payment_date as current_rental_next_payment,
+        p.name as current_plan_name,
+        p.type as current_plan_type,
+        p.price as current_plan_price
       FROM vehicles v
-      LEFT JOIN rentals r ON r.vehicle_id = v.id AND r.status = 'active'
+      LEFT JOIN rentals r ON r.vehicle_id = v.id AND r.status IN ('active', 'in_use', 'pending_return')
       LEFT JOIN users u ON u.id = r.user_id
+      LEFT JOIN plans p ON p.id = r.plan_id
       WHERE v.id = $1
     `, [id]);
 
@@ -470,10 +481,12 @@ app.get('/api/vehicles/:id', authenticateToken, async (req, res) => {
     // 2. Get Rental History
     const historyRes = await pool.query(`
       SELECT 
-        r.id, r.start_time, r.end_time, r.total_cost, r.status,
-        u.name as user_name
+        r.id, r.start_time, r.end_time, r.total_cost, r.status, r.next_payment_date,
+        u.name as user_name, u.phone as user_phone, u.email as user_email,
+        p.name as plan_name, p.type as plan_type, p.price as plan_price
       FROM rentals r
       JOIN users u ON u.id = r.user_id
+      LEFT JOIN plans p ON p.id = r.plan_id
       WHERE r.vehicle_id = $1
       ORDER BY r.start_time DESC
     `, [id]);
@@ -493,6 +506,47 @@ app.get('/api/vehicles/:id', authenticateToken, async (req, res) => {
 
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Unassign / Remove Assigned Rider from Vehicle
+app.post('/api/vehicles/:id/unassign-rider', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    await client.query('BEGIN');
+
+    // 1. Complete any active / pending return rentals for this vehicle
+    await client.query(`
+      UPDATE rentals 
+      SET status = 'completed', end_time = COALESCE(end_time, CURRENT_TIMESTAMP)
+      WHERE vehicle_id = $1 AND status IN ('active', 'in_use', 'pending_return', 'pending_assignment')
+    `, [id]);
+
+    // 2. Set vehicle status to available
+    const updateVehicle = await client.query(`
+      UPDATE vehicles 
+      SET status = 'available'
+      WHERE id = $1
+      RETURNING *
+    `, [id]);
+
+    if (updateVehicle.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
+
+    await client.query('COMMIT');
+    res.json({ 
+      success: true, 
+      message: 'Assigned rider removed successfully and vehicle set to available.',
+      vehicle: updateVehicle.rows[0]
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -559,6 +613,8 @@ app.get('/api/users', authenticateToken, async (req, res) => {
     const formatted = result.rows.map(r => ({
       ...r,
       id: `USR-${String(r.id).padStart(3, '0')}`,
+      raw_id: r.id,
+      user_id: r.id,
       joined: new Date(r.joined_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })
     }));
     res.json(formatted);
@@ -569,26 +625,45 @@ app.get('/api/users', authenticateToken, async (req, res) => {
 
 // Create User (Admin Action)
 app.post('/api/users', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
   try {
     const { name, email, phone, role, status } = req.body;
+    const userEmail = email && typeof email === 'string' && email.trim() ? email.trim() : null;
+    const cleanPhone = phone ? phone.trim() : '';
 
-    await pool.query('BEGIN');
+    if (!name || !cleanPhone) {
+      client.release();
+      return res.status(400).json({ error: 'Full name and phone number are required.' });
+    }
+
+    await client.query('BEGIN');
     
-    const result = await pool.query(
+    const result = await client.query(
       "INSERT INTO users (name, email, phone, role, status) VALUES ($1, $2, $3, $4, $5) RETURNING id",
-      [name, email, phone, role || 'customer', status || 'active']
+      [name.trim(), userEmail, cleanPhone, role || 'rider', status || 'active']
     );
     
     const newUserId = result.rows[0].id;
     
     // Create an empty wallet for the user automatically
-    await pool.query("INSERT INTO wallets (user_id, balance) VALUES ($1, 0)", [newUserId]);
+    await client.query("INSERT INTO wallets (user_id, balance) VALUES ($1, 0)", [newUserId]);
     
-    await pool.query('COMMIT');
-    res.json({ success: true });
+    await client.query('COMMIT');
+    res.json({ success: true, id: newUserId });
   } catch (err) {
-    await pool.query('ROLLBACK');
+    await client.query('ROLLBACK');
+    console.error('Error creating user:', err);
+    if (err.code === '23505') {
+      if (err.constraint === 'unique_phone') {
+        return res.status(400).json({ error: 'A rider with this phone number already exists.' });
+      }
+      if (err.constraint === 'users_email_key') {
+        return res.status(400).json({ error: 'A rider with this email address already exists.' });
+      }
+    }
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -601,16 +676,100 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
       id = parseInt(id.replace('USR-', ''), 10);
     }
     const { name, email, phone, role, status, kyc_status } = req.body;
+    const userEmail = email && typeof email === 'string' && email.trim() ? email.trim() : null;
     
     const result = await pool.query(
       "UPDATE users SET name = $1, email = $2, phone = $3, role = $4, status = $5, kyc_status = $6 WHERE id = $7 RETURNING *",
-      [name, email, phone, role, status, kyc_status, id]
+      [name, userEmail, phone, role, status, kyc_status, id]
     );
     
     if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ success: true, user: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Quick Update User Status (Suspend / Reactivate)
+app.patch('/api/users/:id/status', authenticateToken, async (req, res) => {
+  try {
+    let { id } = req.params;
+    if (typeof id === 'string' && id.startsWith('USR-')) {
+      id = parseInt(id.replace('USR-', ''), 10);
+    } else {
+      id = parseInt(id, 10);
+    }
+    const { status } = req.body;
+    
+    if (!['active', 'suspended', 'pending'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const result = await pool.query(
+      "UPDATE users SET status = $1 WHERE id = $2 RETURNING *",
+      [status, id]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    res.json({ success: true, message: `Rider status updated to ${status}`, user: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete User (Admin Action)
+app.delete('/api/users/:id', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    let { id } = req.params;
+    if (typeof id === 'string' && id.startsWith('USR-')) {
+      id = parseInt(id.replace('USR-', ''), 10);
+    } else {
+      id = parseInt(id, 10);
+    }
+
+    if (isNaN(id)) {
+      client.release();
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    await client.query('BEGIN');
+
+    // 1. Delete associated security deposit transactions
+    await client.query('DELETE FROM security_deposit_transactions WHERE user_id = $1', [id]);
+
+    // 2. Delete approvals
+    await client.query('DELETE FROM wallet_approvals WHERE user_id = $1', [id]);
+    await client.query('DELETE FROM account_approvals WHERE user_id = $1', [id]);
+
+    // 3. Delete wallet transactions & wallet
+    await client.query('DELETE FROM wallet_transactions WHERE wallet_id IN (SELECT id FROM wallets WHERE user_id = $1)', [id]);
+    await client.query('DELETE FROM wallets WHERE user_id = $1', [id]);
+
+    // 4. Delete notifications
+    await client.query('DELETE FROM broadcast_notifications WHERE user_id = $1', [id]);
+
+    // 5. Release any rented vehicles
+    const activeRentals = await client.query("SELECT vehicle_id FROM rentals WHERE user_id = $1 AND status IN ('active', 'in_use')", [id]);
+    for (const r of activeRentals.rows) {
+      if (r.vehicle_id) {
+        await client.query("UPDATE vehicles SET status = 'available' WHERE id = $1", [r.vehicle_id]);
+      }
+    }
+    await client.query('DELETE FROM rentals WHERE user_id = $1', [id]);
+
+    // 6. Delete user
+    const result = await client.query('DELETE FROM users WHERE id = $1 RETURNING *', [id]);
+
+    await client.query('COMMIT');
+
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    res.json({ success: true, message: 'User deleted successfully' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -784,7 +943,7 @@ app.post('/api/security-deposits/set', authenticateToken, async (req, res) => {
     await client.query(`
       INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp)
       VALUES ($1, $2, $3, $4, $5, 'success', CURRENT_TIMESTAMP)
-    `, [`TXN-SET-${Date.now()}`, walletId, Math.abs(diff) || targetAmt, diff >= 0 ? 'credit' : 'debit', setRemarks]);
+    `, [`TXN-SET-${Date.now()}`, walletId, diff >= 0 ? 'credit' : 'debit', Math.abs(diff) || targetAmt, setRemarks]);
 
     await client.query('COMMIT');
     res.json({ success: true, message: 'Deposit set successfully and recorded in user transactions.' });
@@ -821,25 +980,27 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
 
 // Manual Cash Payment API
 app.post('/api/transactions/cash', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
   try {
     const { user_id, amount, reference } = req.body;
     
     // Ensure amount is valid
     if (!user_id || !amount || isNaN(amount) || amount <= 0) {
+      client.release();
       return res.status(400).json({ error: 'Valid user ID and amount are required.' });
     }
 
-    await pool.query('BEGIN');
+    await client.query('BEGIN');
     
     // Get wallet for user
-    const walletRes = await pool.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+    const walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
     
     if (walletRes.rows.length === 0) {
       // Create wallet if it doesn't exist
-      const newWallet = await pool.query('INSERT INTO wallets (user_id, balance) VALUES ($1, $2) RETURNING id', [user_id, amount]);
+      const newWallet = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, $2) RETURNING id', [user_id, amount]);
       const newWalletId = newWallet.rows[0].id;
       
-      await pool.query(`
+      await client.query(`
         INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, reference_id, status) 
         VALUES ($1, $2, 'credit', $3, 'Cash Payment at Office', $4, 'success')
       `, [`TXN-CASH-${Date.now()}`, newWalletId, amount, reference || 'N/A']);
@@ -847,19 +1008,21 @@ app.post('/api/transactions/cash', authenticateToken, async (req, res) => {
       const walletId = walletRes.rows[0].id;
       
       // Update existing wallet
-      await pool.query('UPDATE wallets SET balance = balance + $1, last_updated = CURRENT_TIMESTAMP WHERE id = $2', [amount, walletId]);
+      await client.query('UPDATE wallets SET balance = balance + $1, last_updated = CURRENT_TIMESTAMP WHERE id = $2', [amount, walletId]);
       
-      await pool.query(`
+      await client.query(`
         INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, reference_id, status) 
         VALUES ($1, $2, 'credit', $3, 'Cash Payment at Office', $4, 'success')
       `, [`TXN-CASH-${Date.now()}`, walletId, amount, reference || 'N/A']);
     }
     
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
     res.json({ success: true, message: 'Cash payment processed successfully.' });
   } catch (err) {
-    await pool.query('ROLLBACK');
+    await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -1427,29 +1590,7 @@ app.put('/api/rentals/:id/assign', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all rentals for admin panel
-app.get('/api/rentals', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT 
-        r.id, r.start_time as "startTime", r.end_time as "endTime", 
-        COALESCE(r.total_cost, p.price, 0) as "rentCollected",
-        r.status,
-        u.name as user, u.phone as user_phone,
-        COALESCE(v.model, 'EV') || ' (' || COALESCE(v.id, 'N/A') || ')' as vehicle,
-        p.name as plan_name,
-        COALESCE(u.wallet_balance, 0) as deposit
-      FROM rentals r
-      JOIN users u ON u.id = r.user_id
-      LEFT JOIN vehicles v ON v.id = r.vehicle_id
-      LEFT JOIN plans p ON p.id = r.plan_id
-      ORDER BY COALESCE(r.start_time, NOW()) DESC
-    `);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+
 
 // End a Rental
 app.post('/api/rentals/end', authenticateToken, async (req, res) => {
@@ -1541,23 +1682,91 @@ app.get('/api/updates', authenticateToken, async (req, res) => {
 
     // 2. Fetch pending KYC
     const kycRes = await pool.query(`
-      SELECT id::text, date, 'KYC Approval' as title, 
-             'User ' || user_name || ' submitted ' || document_type as description, 
-             'kyc' as type, status
-      FROM account_approvals
-      WHERE status = 'pending'
+      SELECT a.id::text, a.date, 'KYC Approval' as title, 
+             'User ' || COALESCE(u.name, 'Rider') || ' submitted ' || a.document_type as description, 
+             'kyc' as type, a.status
+      FROM account_approvals a
+      LEFT JOIN users u ON u.id = a.user_id
+      WHERE a.status = 'pending'
     `);
     updates.push(...kycRes.rows);
 
     // 3. Fetch pending wallet approvals
     const walletRes = await pool.query(`
-      SELECT id::text, date, 'Wallet Deposit' as title, 
-             'User ' || user_name || ' deposited ₹' || amount as description, 
-             'wallet' as type, status
-      FROM wallet_approvals
-      WHERE status = 'pending'
+      SELECT w.id::text, w.date, 'Wallet Deposit' as title, 
+             'User ' || COALESCE(u.name, 'Rider') || ' deposited ₹' || w.amount as description, 
+             'wallet' as type, w.status
+      FROM wallet_approvals w
+      LEFT JOIN users u ON u.id = w.user_id
+      WHERE w.status = 'pending'
     `);
     updates.push(...walletRes.rows);
+
+    // 4. Fetch Active Rentals with Expired Plan / Due Payment
+    const dueRentalsRes = await pool.query(`
+      SELECT 
+        r.id, r.start_time, r.next_payment_date, r.total_cost, r.status,
+        u.id as user_id, u.name as user_name, u.phone as user_phone,
+        v.id as vehicle_id, COALESCE(v.model, 'EV') as vehicle_model,
+        p.id as plan_id, p.name as plan_name, p.type as plan_type, p.price as plan_price
+      FROM rentals r
+      JOIN users u ON u.id = r.user_id
+      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.status IN ('active', 'in_use')
+    `);
+
+    const now = new Date();
+    for (const r of dueRentalsRes.rows) {
+      let expiryDate = r.next_payment_date ? new Date(r.next_payment_date) : null;
+      const planType = (r.plan_type || '').toLowerCase();
+      
+      if (!expiryDate && r.start_time) {
+        expiryDate = new Date(r.start_time);
+        if (planType.includes('weekly')) {
+          expiryDate.setDate(expiryDate.getDate() + 7);
+        } else if (planType.includes('monthly')) {
+          expiryDate.setDate(expiryDate.getDate() + 30);
+        } else {
+          expiryDate.setDate(expiryDate.getDate() + 1);
+        }
+      }
+
+      // Check if plan expired / due on or before now
+      if (expiryDate && expiryDate <= now) {
+        const formattedExpiry = expiryDate.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+        const suggestedPrice = parseFloat(r.plan_price || 230);
+        
+        // Suggested next due date
+        const nextDue = new Date(now);
+        if (planType.includes('weekly')) nextDue.setDate(nextDue.getDate() + 7);
+        else if (planType.includes('monthly')) nextDue.setDate(nextDue.getDate() + 30);
+        else nextDue.setDate(nextDue.getDate() + 1);
+
+        const pad = (n) => String(n).padStart(2, '0');
+        const nextDueStr = `${nextDue.getFullYear()}-${pad(nextDue.getMonth() + 1)}-${pad(nextDue.getDate())}`;
+
+        updates.push({
+          id: r.id,
+          rental_id: r.id,
+          date: expiryDate.toISOString(),
+          title: `Rental Renewal Due (${r.vehicle_model} - ${r.vehicle_id || 'EV'})`,
+          description: `Rider ${r.user_name} (📞 ${r.user_phone}) plan expired on ${formattedExpiry}. Did they make their payment of ₹${suggestedPrice}?`,
+          type: 'payment_due',
+          status: 'pending_payment',
+          user_id: r.user_id,
+          user_name: r.user_name,
+          user_phone: r.user_phone,
+          vehicle_id: r.vehicle_id,
+          vehicle_model: r.vehicle_model,
+          plan_id: r.plan_id,
+          plan_name: r.plan_name || 'Standard Plan',
+          plan_price: suggestedPrice,
+          expiry_date: formattedExpiry,
+          suggested_next_due: nextDueStr
+        });
+      }
+    }
 
     // Sort all updates by date descending
     updates.sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -1568,6 +1777,56 @@ app.get('/api/updates', authenticateToken, async (req, res) => {
   }
 });
 
+// Admin Confirm Plan Renewal / Due Payment for Rental
+app.post('/api/rentals/:id/confirm-renewal-payment', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const { amount, next_payment_date, payment_mode } = req.body;
+
+    const paidAmount = parseFloat(amount || 0);
+    const finalNextPayment = next_payment_date ? new Date(next_payment_date) : null;
+
+    await client.query('BEGIN');
+
+    const rentalRes = await client.query('SELECT * FROM rentals WHERE id = $1', [id]);
+    if (rentalRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Rental not found.' });
+    }
+
+    const rental = rentalRes.rows[0];
+
+    // Update rental total cost and next payment date
+    const updatedRental = await client.query(`
+      UPDATE rentals 
+      SET total_cost = COALESCE(total_cost, 0) + $1,
+          next_payment_date = $2,
+          status = 'active'
+      WHERE id = $3
+      RETURNING *
+    `, [paidAmount, finalNextPayment, id]);
+
+    // Ensure vehicle remains rented
+    if (rental.vehicle_id) {
+      await client.query("UPDATE vehicles SET status = 'rented' WHERE id = $1", [rental.vehicle_id]);
+    }
+
+    await client.query('COMMIT');
+    res.json({ 
+      success: true, 
+      message: `Payment of ₹${paidAmount} confirmed and plan renewed until ${finalNextPayment ? finalNextPayment.toLocaleDateString() : 'next period'}!`,
+      rental: updatedRental.rows[0]
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error confirming renewal payment:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 app.get('/api/rentals', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -1575,8 +1834,8 @@ app.get('/api/rentals', authenticateToken, async (req, res) => {
         r.id, r.start_time, r.end_time, r.total_cost, r.status, r.next_payment_date,
         u.id as user_id, u.name as user_name, u.phone as user_phone, u.email as user_email,
         u.security_deposit_balance, u.security_deposit_paid,
-        v.id as vehicle_id, v.model as vehicle_model, v.type as vehicle_type, v.battery as vehicle_battery,
-        p.name as plan_name, p.type as plan_type, p.price as plan_price
+        v.id as vehicle_id, v.model as vehicle_model, v.type as vehicle_type, NULL as vehicle_battery,
+        p.id as plan_id, p.name as plan_name, p.type as plan_type, p.price as plan_price
       FROM rentals r
       LEFT JOIN users u ON u.id = r.user_id
       LEFT JOIN vehicles v ON v.id = r.vehicle_id
@@ -1603,14 +1862,21 @@ app.get('/api/rentals', authenticateToken, async (req, res) => {
 
       return {
         id: r.id,
+        user_id: r.user_id,
         user_name: r.user_name || 'Anonymous Rider',
         user_phone: r.user_phone || 'N/A',
         user_email: r.user_email || 'N/A',
         vehicle_id: r.vehicle_id || null,
         vehicle_model: r.vehicle_model || (r.vehicle_id ? 'LT.ev Scooter' : 'Pending EV Assignment'),
         vehicle_battery: r.vehicle_battery !== undefined ? r.vehicle_battery : null,
+        plan_id: r.plan_id,
         plan_name: r.plan_name || 'Standard Rental',
         plan_type: r.plan_type || 'Custom',
+        plan_price: r.plan_price,
+        raw_start_time: r.start_time,
+        raw_end_time: r.end_time,
+        raw_total_cost: r.total_cost,
+        raw_next_payment_date: r.next_payment_date,
         startTime: start ? start.toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Kolkata' }) : 'Awaiting Assignment',
         endTime: end ? end.toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Kolkata' }) : (r.status === 'active' ? 'Currently In-Use' : r.status === 'pending_return' ? 'Return Requested' : 'N/A'),
         duration: durationText,
@@ -1625,6 +1891,214 @@ app.get('/api/rentals', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Fetch rentals error:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Record / Create / Backdate a Rental (Admin)
+app.post('/api/rentals/record', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const {
+      user_id,
+      vehicle_id,
+      plan_id,
+      start_time,
+      end_time,
+      total_cost,
+      next_payment_date,
+      status
+    } = req.body;
+
+    if (!user_id) {
+      return res.status(400).json({ error: 'Rider / User selection is required.' });
+    }
+
+    const cleanUserId = typeof user_id === 'string' && user_id.toUpperCase().startsWith('USR-')
+      ? parseInt(user_id.replace(/^USR-/i, ''), 10)
+      : parseInt(user_id, 10);
+
+    const cleanPlanId = plan_id ? parseInt(plan_id, 10) : null;
+    const cleanVehicleId = vehicle_id ? String(vehicle_id).trim() : null;
+
+    if (isNaN(cleanUserId)) {
+      return res.status(400).json({ error: 'Invalid user ID provided.' });
+    }
+
+    await client.query('BEGIN');
+
+    const rentalId = 'RNT-' + Math.floor(100000 + Math.random() * 900000);
+    const rentalStatus = status || 'active';
+    const finalStartTime = start_time ? new Date(start_time) : new Date();
+    const finalEndTime = end_time ? new Date(end_time) : null;
+    const finalNextPay = next_payment_date ? new Date(next_payment_date) : null;
+
+    const result = await client.query(`
+      INSERT INTO rentals (id, user_id, vehicle_id, plan_id, start_time, end_time, total_cost, status, next_payment_date)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING *
+    `, [
+      rentalId,
+      cleanUserId,
+      cleanVehicleId,
+      cleanPlanId,
+      finalStartTime,
+      finalEndTime,
+      total_cost || 0,
+      rentalStatus,
+      finalNextPay
+    ]);
+
+    // If vehicle assigned and status is active / in_use, update vehicle status to 'rented'
+    if (cleanVehicleId && (rentalStatus === 'active' || rentalStatus === 'in_use')) {
+      await client.query("UPDATE vehicles SET status = 'rented' WHERE id = $1", [cleanVehicleId]);
+    } else if (cleanVehicleId && (rentalStatus === 'completed' || rentalStatus === 'cancelled')) {
+      const activeCheck = await client.query(
+        "SELECT id FROM rentals WHERE vehicle_id = $1 AND status IN ('active', 'in_use', 'pending_return') AND id != $2",
+        [cleanVehicleId, rentalId]
+      );
+      if (activeCheck.rows.length === 0) {
+        await client.query("UPDATE vehicles SET status = 'available' WHERE id = $1", [cleanVehicleId]);
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, rental: result.rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error recording rental:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Update / Edit an existing rental (Admin)
+app.put('/api/rentals/:id', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const {
+      user_id,
+      vehicle_id,
+      plan_id,
+      start_time,
+      end_time,
+      total_cost,
+      next_payment_date,
+      status
+    } = req.body;
+
+    await client.query('BEGIN');
+
+    const prevRes = await client.query('SELECT * FROM rentals WHERE id = $1', [id]);
+    if (prevRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Rental not found.' });
+    }
+    const prevRental = prevRes.rows[0];
+
+    const cleanUserId = user_id !== undefined
+      ? (typeof user_id === 'string' && user_id.toUpperCase().startsWith('USR-') ? parseInt(user_id.replace(/^USR-/i, ''), 10) : parseInt(user_id, 10))
+      : prevRental.user_id;
+
+    const cleanPlanId = plan_id !== undefined ? (plan_id ? parseInt(plan_id, 10) : null) : prevRental.plan_id;
+    const newVehicleId = vehicle_id !== undefined ? (vehicle_id ? String(vehicle_id).trim() : null) : prevRental.vehicle_id;
+
+    const finalStartTime = start_time !== undefined ? (start_time ? new Date(start_time) : null) : prevRental.start_time;
+    const finalEndTime = end_time !== undefined ? (end_time ? new Date(end_time) : null) : prevRental.end_time;
+    const finalNextPay = next_payment_date !== undefined ? (next_payment_date ? new Date(next_payment_date) : null) : prevRental.next_payment_date;
+    const newStatus = status || prevRental.status;
+    const newTotalCost = total_cost !== undefined ? total_cost : prevRental.total_cost;
+
+    const updateRes = await client.query(`
+      UPDATE rentals
+      SET user_id = $1, vehicle_id = $2, plan_id = $3, start_time = $4, end_time = $5,
+          total_cost = $6, status = $7, next_payment_date = $8
+      WHERE id = $9
+      RETURNING *
+    `, [
+      cleanUserId,
+      newVehicleId,
+      cleanPlanId,
+      finalStartTime,
+      finalEndTime,
+      newTotalCost,
+      newStatus,
+      finalNextPay,
+      id
+    ]);
+
+    // Handle previous vehicle status release if changed
+    if (prevRental.vehicle_id && prevRental.vehicle_id !== newVehicleId) {
+      const activeOnOld = await client.query(
+        "SELECT id FROM rentals WHERE vehicle_id = $1 AND status IN ('active', 'in_use', 'pending_return') AND id != $2",
+        [prevRental.vehicle_id, id]
+      );
+      if (activeOnOld.rows.length === 0) {
+        await client.query("UPDATE vehicles SET status = 'available' WHERE id = $1", [prevRental.vehicle_id]);
+      }
+    }
+
+    // Handle new vehicle status
+    if (newVehicleId) {
+      if (newStatus === 'active' || newStatus === 'in_use') {
+        await client.query("UPDATE vehicles SET status = 'rented' WHERE id = $1", [newVehicleId]);
+      } else if (newStatus === 'completed' || newStatus === 'cancelled') {
+        const activeCheck = await client.query(
+          "SELECT id FROM rentals WHERE vehicle_id = $1 AND status IN ('active', 'in_use', 'pending_return') AND id != $2",
+          [newVehicleId, id]
+        );
+        if (activeCheck.rows.length === 0) {
+          await client.query("UPDATE vehicles SET status = 'available' WHERE id = $1", [newVehicleId]);
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, rental: updateRes.rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error updating rental:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Delete a rental (Admin)
+app.delete('/api/rentals/:id', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    await client.query('BEGIN');
+
+    const rentalRes = await client.query('SELECT * FROM rentals WHERE id = $1', [id]);
+    if (rentalRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Rental not found.' });
+    }
+    const rental = rentalRes.rows[0];
+
+    await client.query('DELETE FROM rentals WHERE id = $1', [id]);
+
+    if (rental.vehicle_id) {
+      const activeCheck = await client.query(
+        "SELECT id FROM rentals WHERE vehicle_id = $1 AND status IN ('active', 'in_use', 'pending_return')",
+        [rental.vehicle_id]
+      );
+      if (activeCheck.rows.length === 0) {
+        await client.query("UPDATE vehicles SET status = 'available' WHERE id = $1", [rental.vehicle_id]);
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Rental record deleted successfully.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error deleting rental:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -1669,6 +2143,79 @@ app.post('/api/account_approvals/:id/reject', authenticateToken, async (req, res
     await pool.query('UPDATE account_approvals SET status = $1 WHERE id = $2', ['rejected', id]);
     res.json({ success: true });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get active rentals with payment due / expired plan for Wallet Approvals
+app.get('/api/rentals/due-renewals', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        r.id, r.start_time, r.next_payment_date, r.total_cost, r.status,
+        u.id as user_id, u.name as user_name, u.phone as user_phone,
+        v.id as vehicle_id, COALESCE(v.model, 'EV') as vehicle_model,
+        p.id as plan_id, p.name as plan_name, p.type as plan_type, p.price as plan_price
+      FROM rentals r
+      JOIN users u ON u.id = r.user_id
+      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.status IN ('active', 'in_use')
+      ORDER BY r.start_time ASC
+    `);
+
+    const now = new Date();
+    const formatted = result.rows.map(r => {
+      let expiryDate = r.next_payment_date ? new Date(r.next_payment_date) : null;
+      const planType = (r.plan_type || '').toLowerCase();
+      
+      if (!expiryDate && r.start_time) {
+        expiryDate = new Date(r.start_time);
+        if (planType.includes('weekly')) {
+          expiryDate.setDate(expiryDate.getDate() + 7);
+        } else if (planType.includes('monthly')) {
+          expiryDate.setDate(expiryDate.getDate() + 30);
+        } else {
+          expiryDate.setDate(expiryDate.getDate() + 1);
+        }
+      }
+
+      const isOverdue = expiryDate ? expiryDate <= now : false;
+      const suggestedPrice = parseFloat(r.plan_price || 230);
+      
+      // Suggested next date
+      const nextDue = new Date(now);
+      if (planType.includes('weekly')) nextDue.setDate(nextDue.getDate() + 7);
+      else if (planType.includes('monthly')) nextDue.setDate(nextDue.getDate() + 30);
+      else nextDue.setDate(nextDue.getDate() + 1);
+
+      const pad = (n) => String(n).padStart(2, '0');
+      const nextDueStr = `${nextDue.getFullYear()}-${pad(nextDue.getMonth() + 1)}-${pad(nextDue.getDate())}`;
+
+      return {
+        id: r.id,
+        rental_id: r.id,
+        user_id: r.user_id,
+        user_name: r.user_name || 'Rider',
+        user_phone: r.user_phone || 'N/A',
+        vehicle_id: r.vehicle_id || 'N/A',
+        vehicle_model: r.vehicle_model || 'EV',
+        plan_id: r.plan_id,
+        plan_name: r.plan_name || 'Standard Plan',
+        plan_type: r.plan_type || 'Custom',
+        plan_price: suggestedPrice,
+        total_cost: r.total_cost || '0.00',
+        start_time: r.start_time,
+        expiry_date: expiryDate ? expiryDate.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : 'N/A',
+        raw_expiry: expiryDate ? expiryDate.toISOString() : null,
+        is_overdue: isOverdue,
+        suggested_next_due: nextDueStr
+      };
+    });
+
+    res.json(formatted);
+  } catch (err) {
+    console.error('Error fetching due renewals:', err);
     res.status(500).json({ error: err.message });
   }
 });

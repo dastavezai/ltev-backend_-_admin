@@ -1,29 +1,52 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle2, Clock, XCircle, RefreshCw, Wallet, ArrowRight, CreditCard, ShieldAlert, Tag, Search } from 'lucide-react';
+import { CheckCircle2, Clock, XCircle, RefreshCw, Wallet, ArrowRight, CreditCard, ShieldAlert, Tag, Search, Bike, Check, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 
 export default function WalletApprovals() {
   const { token } = useAuth();
   const [requests, setRequests] = useState([]);
+  const [dueRenewals, setDueRenewals] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filterType, setFilterType] = useState('all'); // 'all' | 'plan' | 'recharge' | 'refund' | 'pending'
+  const [filterType, setFilterType] = useState('all'); // 'all' | 'due_renewals' | 'plan' | 'recharge' | 'refund' | 'pending'
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Form states for inline renewal confirmations: { [rentalId]: { amount, next_payment_date, submitting } }
+  const [renewalForms, setRenewalForms] = useState({});
+
   useEffect(() => {
-    fetchRequests();
+    fetchData();
   }, [token]);
 
-  const fetchRequests = async () => {
+  const fetchData = async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const response = await axios.get(`${import.meta.env.VITE_API_URL || ''}/api/wallet_approvals`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const [walletRes, renewalRes] = await Promise.all([
+        axios.get(`${import.meta.env.VITE_API_URL || ''}/api/wallet_approvals`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }),
+        axios.get(`${import.meta.env.VITE_API_URL || ''}/api/rentals/due-renewals`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+      ]);
+
+      setRequests(walletRes.data);
+      setDueRenewals(renewalRes.data);
+
+      // Prepopulate renewal form values
+      const initialForms = {};
+      renewalRes.data.forEach(item => {
+        initialForms[item.id] = {
+          amount: item.plan_price || '230.00',
+          next_payment_date: item.suggested_next_due || '',
+          submitting: false
+        };
       });
-      setRequests(response.data);
+      setRenewalForms(initialForms);
+
     } catch (error) {
-      console.error('Error fetching wallet approvals:', error);
+      console.error('Error fetching wallet approvals & renewals:', error);
     } finally {
       setLoading(false);
     }
@@ -37,7 +60,7 @@ export default function WalletApprovals() {
       });
       setRequests(prev => prev.map(req => req.id === id ? { ...req, status: 'success' } : req));
       alert(`Payment Request #${id} Approved Successfully!`);
-      fetchRequests();
+      fetchData();
     } catch (error) {
       alert('Error approving request: ' + (error.response?.data?.error || error.message));
     }
@@ -51,11 +74,73 @@ export default function WalletApprovals() {
       });
       setRequests(prev => prev.map(req => req.id === id ? { ...req, status: 'rejected' } : req));
       alert(`Payment Request #${id} Rejected.`);
-      fetchRequests();
+      fetchData();
     } catch (error) {
       alert('Error rejecting request: ' + (error.response?.data?.error || error.message));
     }
   };
+
+  const handleConfirmRenewalPayment = async (rentalId) => {
+    const form = renewalForms[rentalId];
+    if (!form) return;
+
+    if (!form.amount || parseFloat(form.amount) <= 0) {
+      alert('Please enter a valid payment amount.');
+      return;
+    }
+
+    setRenewalForms(prev => ({
+      ...prev,
+      [rentalId]: { ...prev[rentalId], submitting: true }
+    }));
+
+    try {
+      const res = await axios.post(
+        `${import.meta.env.VITE_API_URL || ''}/api/rentals/${rentalId}/confirm-renewal-payment`,
+        {
+          amount: parseFloat(form.amount),
+          next_payment_date: form.next_payment_date || null
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      alert(res.data.message || 'Payment confirmed and plan extended successfully!');
+      fetchData();
+    } catch (error) {
+      alert('Error confirming payment: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setRenewalForms(prev => ({
+        ...prev,
+        [rentalId]: { ...prev[rentalId], submitting: false }
+      }));
+    }
+  };
+
+  const handleApproveReturn = async (rentalId) => {
+    if (!window.confirm(`Confirm vehicle return for rental #${rentalId}? EV will be marked as available.`)) return;
+    try {
+      await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/rentals/${rentalId}/confirm-return`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert('Return approved successfully! EV is now available for new bookings.');
+      fetchData();
+    } catch (error) {
+      alert(error.response?.data?.error || 'Failed to approve return');
+    }
+  };
+
+  const handleFormChange = (rentalId, field, value) => {
+    setRenewalForms(prev => ({
+      ...prev,
+      [rentalId]: {
+        ...prev[rentalId],
+        [field]: value
+      }
+    }));
+  };
+
+  // Overdue count
+  const overdueCount = dueRenewals.filter(r => r.is_overdue).length;
+  const pendingApprovalsCount = requests.filter(r => r.status === 'pending').length;
 
   const filteredRequests = requests.filter(req => {
     const utrStr = (req.utr || '').toUpperCase();
@@ -79,20 +164,113 @@ export default function WalletApprovals() {
     return true;
   });
 
+  const filteredDueRenewals = dueRenewals.filter(r => {
+    const matchesSearch = 
+      (r.user_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.user_phone || '').includes(searchQuery) ||
+      (r.vehicle_id || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.vehicle_model || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      String(r.id).includes(searchQuery);
+    return matchesSearch;
+  });
+
   return (
-    <div style={{ animation: 'fadeIn 0.4s ease' }}>
+    <div style={{ animation: 'fadeIn 0.4s ease', paddingBottom: '40px' }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
         <div>
-          <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#0f172a', margin: '0 0 4px 0' }}>Payment & Wallet Approvals</h1>
-          <p style={{ color: '#64748b', margin: 0 }}>Review and verify driver plan booking payments, wallet topups, and security deposit refund requests.</p>
+          <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#0f172a', margin: '0 0 4px 0' }}>Payments, Dues & Wallet Approvals</h1>
+          <p style={{ color: '#64748b', margin: 0 }}>Review rider plan renewal payments, overdue dues, wallet topups, and deposit refunds.</p>
         </div>
         <button 
-          onClick={fetchRequests}
+          onClick={fetchData}
           style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'white', border: '1px solid #cbd5e1', padding: '10px 16px', borderRadius: '12px', fontWeight: '600', color: '#0f172a', cursor: 'pointer' }}
         >
           <RefreshCw size={16} /> Refresh
         </button>
+      </div>
+
+      {/* Summary Metrics Bar */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '24px' }}>
+        <div 
+          onClick={() => setFilterType('due_renewals')}
+          style={{ 
+            background: filterType === 'due_renewals' ? '#fef3c7' : 'white', 
+            padding: '18px 20px', 
+            borderRadius: '16px', 
+            border: overdueCount > 0 ? '1.5px solid #f59e0b' : '1px solid #f1f5f9', 
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#b45309', fontSize: '13px', fontWeight: '700' }}>
+            <span>Plan Renewals Due</span>
+            <AlertTriangle size={20} color="#d97706" />
+          </div>
+          <div style={{ fontSize: '26px', fontWeight: '800', color: '#b45309', marginTop: '6px' }}>
+            {dueRenewals.length} <span style={{ fontSize: '13px', fontWeight: '600' }}>({overdueCount} Overdue)</span>
+          </div>
+        </div>
+
+        <div 
+          onClick={() => setFilterType('pending')}
+          style={{ 
+            background: filterType === 'pending' ? '#ede9fe' : 'white', 
+            padding: '18px 20px', 
+            borderRadius: '16px', 
+            border: '1px solid #f1f5f9', 
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#6d28d9', fontSize: '13px', fontWeight: '700' }}>
+            <span>Pending Wallet Approvals</span>
+            <Wallet size={20} color="#7c3aed" />
+          </div>
+          <div style={{ fontSize: '26px', fontWeight: '800', color: '#6d28d9', marginTop: '6px' }}>
+            {pendingApprovalsCount} <span style={{ fontSize: '13px', fontWeight: '600' }}>Requests</span>
+          </div>
+        </div>
+
+        <div 
+          onClick={() => setFilterType('recharge')}
+          style={{ 
+            background: filterType === 'recharge' ? '#dbeafe' : 'white', 
+            padding: '18px 20px', 
+            borderRadius: '16px', 
+            border: '1px solid #f1f5f9', 
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#1e40af', fontSize: '13px', fontWeight: '700' }}>
+            <span>Wallet Topups</span>
+            <CreditCard size={20} color="#2563eb" />
+          </div>
+          <div style={{ fontSize: '26px', fontWeight: '800', color: '#1e40af', marginTop: '6px' }}>
+            {requests.filter(r => !(r.utr || '').toUpperCase().includes('PLAN') && !(r.utr || '').toUpperCase().includes('REFUND')).length}
+          </div>
+        </div>
+
+        <div 
+          onClick={() => setFilterType('refund')}
+          style={{ 
+            background: filterType === 'refund' ? '#f3e8ff' : 'white', 
+            padding: '18px 20px', 
+            borderRadius: '16px', 
+            border: '1px solid #f1f5f9', 
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#7e22ce', fontSize: '13px', fontWeight: '700' }}>
+            <span>Deposit Refunds</span>
+            <ShieldAlert size={20} color="#9333ea" />
+          </div>
+          <div style={{ fontSize: '26px', fontWeight: '800', color: '#7e22ce', marginTop: '6px' }}>
+            {requests.filter(r => (r.utr || '').toUpperCase().includes('REFUND')).length}
+          </div>
+        </div>
       </div>
 
       {/* Search & Filter Tabs */}
@@ -101,7 +279,7 @@ export default function WalletApprovals() {
           <Search size={18} color="#94a3b8" />
           <input 
             type="text" 
-            placeholder="Search by driver name, phone, or reference UTR..." 
+            placeholder="Search by rider name, phone, EV ID, or reference UTR..." 
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             style={{ border: 'none', background: 'transparent', outline: 'none', width: '100%', fontSize: '14px', color: '#0f172a' }}
@@ -110,10 +288,11 @@ export default function WalletApprovals() {
 
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           {[
-            { id: 'all', label: `All (${requests.length})` },
-            { id: 'pending', label: `Pending (${requests.filter(r => r.status === 'pending').length})` },
-            { id: 'plan', label: 'Plan Payments' },
+            { id: 'all', label: `All (${requests.length + dueRenewals.length})` },
+            { id: 'due_renewals', label: `⚡ Plan Renewals Due (${dueRenewals.length})` },
+            { id: 'pending', label: `Pending Approvals (${pendingApprovalsCount})` },
             { id: 'recharge', label: 'Wallet Topups' },
+            { id: 'plan', label: 'Plan Bookings' },
             { id: 'refund', label: 'Deposit Refunds' },
           ].map(tab => (
             <button
@@ -137,100 +316,257 @@ export default function WalletApprovals() {
         </div>
       </div>
 
-      {/* Table */}
-      <div style={{ background: 'white', borderRadius: '20px', padding: '20px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)', border: '1px solid #f1f5f9', overflow: 'hidden' }}>
-        <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
-          <thead style={{ background: '#f8fafc', color: '#64748b', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-            <tr>
-              <th style={{ padding: '14px 18px', fontWeight: '600' }}>Req ID</th>
-              <th style={{ padding: '14px 18px', fontWeight: '600' }}>Driver Details</th>
-              <th style={{ padding: '14px 18px', fontWeight: '600' }}>Payment Type & Reference</th>
-              <th style={{ padding: '14px 18px', fontWeight: '600' }}>Amount</th>
-              <th style={{ padding: '14px 18px', fontWeight: '600' }}>Status</th>
-              <th style={{ padding: '14px 18px', fontWeight: '600', textAlign: 'right' }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredRequests.map(req => {
-              const utrStr = (req.utr || '').toUpperCase();
-              const isPlan = utrStr.includes('PLAN_BOOKING') || utrStr.includes('PLAN_PAYMENT');
-              const isRefund = utrStr.includes('DEPOSIT_REFUND') || utrStr.includes('REFUND');
-              const isRecharge = !isPlan && !isRefund;
+      {/* SECTION 1: Plan Renewals & Overdue Payment Confirmation Cards */}
+      {(filterType === 'all' || filterType === 'due_renewals') && filteredDueRenewals.length > 0 && (
+        <div style={{ marginBottom: '32px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: '800', color: '#0f172a', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <CreditCard size={20} color="#d97706" /> Active Plan Renewals & Dues ({filteredDueRenewals.length})
+            </h2>
+            <span style={{ fontSize: '13px', color: '#64748b' }}>Confirm payments received from riders to extend their plan period</span>
+          </div>
+
+          <div style={{ display: 'grid', gap: '14px' }}>
+            {filteredDueRenewals.map(rental => {
+              const form = renewalForms[rental.id] || { amount: rental.plan_price || '230.00', next_payment_date: rental.suggested_next_due || '', submitting: false };
 
               return (
-                <tr key={req.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                  <td style={{ padding: '16px 18px', fontFamily: 'monospace', color: '#64748b', fontSize: '13px', fontWeight: '700' }}>#{req.id}</td>
-                  <td style={{ padding: '16px 18px' }}>
-                    <div style={{ fontWeight: '700', color: '#0f172a' }}>{req.user || 'Anonymous Rider'}</div>
-                    <div style={{ fontSize: '12px', color: '#64748b' }}>📞 {req.phone || 'N/A'}</div>
-                  </td>
-                  <td style={{ padding: '16px 18px' }}>
-                    {isPlan && (
-                      <div>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#dcfce7', color: '#15803d', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '800', marginBottom: '4px' }}>
-                          <Tag size={12} /> PLAN BOOKING PAYMENT
-                        </span>
-                        <div style={{ fontSize: '12px', color: '#475569', fontWeight: '600' }}>{req.utr}</div>
+                <div 
+                  key={rental.id}
+                  style={{
+                    background: 'white',
+                    borderRadius: '18px',
+                    padding: '20px 24px',
+                    border: rental.is_overdue ? '1.5px solid #fde68a' : '1px solid #f1f5f9',
+                    boxShadow: '0 4px 6px -1px rgba(0,0,0,0.03)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '16px'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                      <div style={{ width: '44px', height: '44px', borderRadius: '12px', background: 'rgba(217, 119, 6, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <Bike size={22} color="#d97706" />
                       </div>
-                    )}
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <h3 style={{ fontSize: '16px', fontWeight: '800', color: '#0f172a', margin: 0 }}>{rental.user_name}</h3>
+                          <span style={{ fontFamily: 'monospace', fontSize: '12px', color: '#64748b' }}>#{rental.id}</span>
+                          <span style={{ 
+                            background: rental.is_overdue ? '#fee2e2' : '#fef3c7', 
+                            color: rental.is_overdue ? '#dc2626' : '#b45309', 
+                            padding: '2px 8px', 
+                            borderRadius: '12px', 
+                            fontSize: '11px', 
+                            fontWeight: '800', 
+                            textTransform: 'uppercase' 
+                          }}>
+                            {rental.is_overdue ? 'Plan Expired / Due' : 'Active Plan'}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '13px', color: '#475569', marginTop: '2px', fontWeight: '600' }}>
+                          📞 {rental.user_phone} &bull; EV: <strong style={{ color: '#0f172a' }}>{rental.vehicle_model} ({rental.vehicle_id})</strong>
+                        </div>
+                      </div>
+                    </div>
 
-                    {isRefund && (
-                      <div>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#f3e8ff', color: '#7e22ce', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '800', marginBottom: '4px' }}>
-                          <ShieldAlert size={12} /> SECURITY DEPOSIT REFUND
-                        </span>
-                        <div style={{ fontSize: '12px', color: '#475569', fontWeight: '600' }}>{req.utr}</div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '13px', color: '#64748b' }}>
+                        Plan: <strong style={{ color: '#059669' }}>{rental.plan_name}</strong>
                       </div>
-                    )}
+                      <div style={{ fontSize: '12px', color: rental.is_overdue ? '#dc2626' : '#64748b', fontWeight: '700', marginTop: '2px' }}>
+                        Expiry / Due Date: {rental.expiry_date}
+                      </div>
+                    </div>
+                  </div>
 
-                    {isRecharge && (
+                  {/* Inline Action Bar */}
+                  <div style={{
+                    padding: '14px 18px',
+                    background: '#fffbeb',
+                    borderRadius: '12px',
+                    border: '1px solid #fef3c7',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '14px'
+                  }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '14px' }}>
                       <div>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#e0f2fe', color: '#0284c7', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '800', marginBottom: '4px' }}>
-                          <Wallet size={12} /> WALLET TOPUP
-                        </span>
-                        <div style={{ fontSize: '12px', color: '#64748b', fontFamily: 'monospace' }}>Ref: {req.utr || 'N/A'}</div>
+                        <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#92400e', marginBottom: '3px', textTransform: 'uppercase' }}>
+                          Amount Received (₹)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={form.amount}
+                          onChange={(e) => handleFormChange(rental.id, 'amount', e.target.value)}
+                          style={{ width: '130px', padding: '7px 10px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '14px', fontWeight: '700', color: '#0f172a', background: 'white', outline: 'none' }}
+                        />
                       </div>
-                    )}
-                  </td>
-                  <td style={{ padding: '16px 18px', fontWeight: '800', color: '#00a66c', fontSize: '16px' }}>₹{parseFloat(req.amount).toLocaleString('en-IN')}</td>
-                  <td style={{ padding: '16px 18px' }}>
-                    {req.status === 'pending' && <span style={{ background: '#fef3c7', color: '#d97706', padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: '800', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Clock size={13}/> PENDING</span>}
-                    {req.status === 'success' && <span style={{ background: '#d1fae5', color: '#059669', padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: '800', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><CheckCircle2 size={13}/> APPROVED</span>}
-                    {req.status === 'rejected' && <span style={{ background: '#fee2e2', color: '#dc2626', padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: '800', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><XCircle size={13}/> REJECTED</span>}
-                  </td>
-                  <td style={{ padding: '16px 18px', textAlign: 'right' }}>
-                    {req.status === 'pending' ? (
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                        <button 
-                          onClick={() => approveRequest(req.id, isPlan ? 'plan' : isRefund ? 'refund' : 'recharge')}
-                          style={{ background: '#00a66c', color: 'white', padding: '7px 14px', borderRadius: '8px', border: 'none', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}>
-                          ✓ Approve Payment
-                        </button>
-                        <button 
-                          onClick={() => rejectRequest(req.id)}
-                          style={{ background: '#fee2e2', color: '#dc2626', padding: '7px 14px', borderRadius: '8px', border: 'none', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}>
-                          Reject
-                        </button>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#92400e', marginBottom: '3px', textTransform: 'uppercase' }}>
+                          Extend Until / Next Due Date
+                        </label>
+                        <input
+                          type="date"
+                          value={form.next_payment_date}
+                          onChange={(e) => handleFormChange(rental.id, 'next_payment_date', e.target.value)}
+                          style={{ padding: '7px 10px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: '600', color: '#0f172a', background: 'white', outline: 'none' }}
+                        />
                       </div>
-                    ) : (
-                      <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: '600' }}>Verified</span>
-                    )}
-                  </td>
-                </tr>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={() => handleConfirmRenewalPayment(rental.id)}
+                        disabled={form.submitting}
+                        style={{
+                          background: '#059669',
+                          color: 'white',
+                          border: 'none',
+                          padding: '9px 18px',
+                          borderRadius: '8px',
+                          fontWeight: '700',
+                          fontSize: '13px',
+                          cursor: form.submitting ? 'not-allowed' : 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}
+                      >
+                        <Check size={16} /> {form.submitting ? 'Confirming...' : 'Confirm Payment & Extend'}
+                      </button>
+
+                      <button
+                        onClick={() => handleApproveReturn(rental.id)}
+                        style={{
+                          background: 'white',
+                          color: '#dc2626',
+                          border: '1px solid #fca5a5',
+                          padding: '9px 14px',
+                          borderRadius: '8px',
+                          fontWeight: '700',
+                          fontSize: '13px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Vehicle Returned
+                      </button>
+                    </div>
+                  </div>
+                </div>
               );
             })}
-            {filteredRequests.length === 0 && !loading && (
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 2: Wallet Requests & Approvals Table */}
+      {filterType !== 'due_renewals' && (
+        <div style={{ background: 'white', borderRadius: '20px', padding: '20px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)', border: '1px solid #f1f5f9', overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', padding: '0 4px' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: '800', color: '#0f172a', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Wallet size={20} color="#2563eb" /> Wallet Top-Ups & Approvals ({filteredRequests.length})
+            </h2>
+          </div>
+
+          <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
+            <thead style={{ background: '#f8fafc', color: '#64748b', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
               <tr>
-                <td colSpan="6" style={{ textAlign: 'center', padding: '40px', color: '#64748b' }}>
-                  <Wallet size={36} color="#94a3b8" style={{ marginBottom: '8px', opacity: 0.5 }} />
-                  <div style={{ fontWeight: '700', fontSize: '15px', color: '#0f172a' }}>No Payment Requests Found</div>
-                  <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>When riders pay for plans or recharge their wallets, approvals will appear here.</div>
-                </td>
+                <th style={{ padding: '14px 18px', fontWeight: '600' }}>Req ID</th>
+                <th style={{ padding: '14px 18px', fontWeight: '600' }}>Driver Details</th>
+                <th style={{ padding: '14px 18px', fontWeight: '600' }}>Payment Type & Reference</th>
+                <th style={{ padding: '14px 18px', fontWeight: '600' }}>Amount</th>
+                <th style={{ padding: '14px 18px', fontWeight: '600' }}>Status</th>
+                <th style={{ padding: '14px 18px', fontWeight: '600', textAlign: 'right' }}>Actions</th>
               </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {filteredRequests.map(req => {
+                const utrStr = (req.utr || '').toUpperCase();
+                const isPlan = utrStr.includes('PLAN_BOOKING') || utrStr.includes('PLAN_PAYMENT');
+                const isRefund = utrStr.includes('DEPOSIT_REFUND') || utrStr.includes('REFUND');
+                const isRecharge = !isPlan && !isRefund;
+
+                return (
+                  <tr key={req.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                    <td style={{ padding: '16px 18px', fontFamily: 'monospace', color: '#64748b', fontSize: '13px', fontWeight: '700' }}>#{req.id}</td>
+                    <td style={{ padding: '16px 18px' }}>
+                      <div style={{ fontWeight: '700', color: '#0f172a' }}>{req.user || 'Anonymous Rider'}</div>
+                      <div style={{ fontSize: '12px', color: '#64748b' }}>📞 {req.phone || 'N/A'}</div>
+                    </td>
+                    <td style={{ padding: '16px 18px' }}>
+                      {isPlan && (
+                        <div>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#dcfce7', color: '#15803d', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '800', marginBottom: '4px' }}>
+                            <Tag size={12} /> PLAN BOOKING PAYMENT
+                          </span>
+                          <div style={{ fontSize: '12px', color: '#475569', fontWeight: '600' }}>{req.utr}</div>
+                        </div>
+                      )}
+
+                      {isRefund && (
+                        <div>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#f3e8ff', color: '#7e22ce', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '800', marginBottom: '4px' }}>
+                            <ShieldAlert size={12} /> SECURITY DEPOSIT REFUND
+                          </span>
+                          <div style={{ fontSize: '12px', color: '#475569', fontWeight: '600' }}>{req.utr}</div>
+                        </div>
+                      )}
+
+                      {isRecharge && (
+                        <div>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#e0f2fe', color: '#0284c7', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '800', marginBottom: '4px' }}>
+                            <Wallet size={12} /> WALLET TOPUP
+                          </span>
+                          <div style={{ fontSize: '12px', color: '#64748b', fontFamily: 'monospace' }}>Ref: {req.utr || 'N/A'}</div>
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '16px 18px', fontWeight: '800', color: '#00a66c', fontSize: '16px' }}>₹{parseFloat(req.amount).toLocaleString('en-IN')}</td>
+                    <td style={{ padding: '16px 18px' }}>
+                      {req.status === 'pending' && <span style={{ background: '#fef3c7', color: '#d97706', padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: '800', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Clock size={13}/> PENDING</span>}
+                      {req.status === 'success' && <span style={{ background: '#d1fae5', color: '#059669', padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: '800', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><CheckCircle2 size={13}/> APPROVED</span>}
+                      {req.status === 'rejected' && <span style={{ background: '#fee2e2', color: '#dc2626', padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: '800', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><XCircle size={13}/> REJECTED</span>}
+                    </td>
+                    <td style={{ padding: '16px 18px', textAlign: 'right' }}>
+                      {req.status === 'pending' ? (
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                          <button 
+                            onClick={() => approveRequest(req.id, isPlan ? 'plan' : isRefund ? 'refund' : 'recharge')}
+                            style={{ background: '#00a66c', color: 'white', padding: '7px 14px', borderRadius: '8px', border: 'none', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}>
+                            ✓ Approve Payment
+                          </button>
+                          <button 
+                            onClick={() => rejectRequest(req.id)}
+                            style={{ background: '#fee2e2', color: '#dc2626', padding: '7px 14px', borderRadius: '8px', border: 'none', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}>
+                            Reject
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: '600' }}>Verified</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {filteredRequests.length === 0 && !loading && (
+                <tr>
+                  <td colSpan="6" style={{ textAlign: 'center', padding: '40px', color: '#64748b' }}>
+                    <Wallet size={36} color="#94a3b8" style={{ marginBottom: '8px', opacity: 0.5 }} />
+                    <div style={{ fontWeight: '700', fontSize: '15px', color: '#0f172a' }}>No Payment Requests Found</div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>When riders pay for plans or recharge their wallets, approvals will appear here.</div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
