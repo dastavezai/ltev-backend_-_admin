@@ -178,29 +178,57 @@ export default function Updates() {
                     {getIcon(update.type)}
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
-                      <h3 style={{ fontSize: '17px', fontWeight: '800', color: '#0f172a', margin: 0 }}>{update.title}</h3>
-                      <span style={{ 
-                        background: isPaymentDue ? '#fef3c7' : update.status === 'pending' ? '#ede9fe' : '#e0f2fe', 
-                        color: isPaymentDue ? '#b45309' : update.status === 'pending' ? '#6d28d9' : '#0369a1', 
-                        padding: '3px 10px', 
-                        borderRadius: '20px', 
-                        fontSize: '11px', 
-                        fontWeight: '800', 
-                        textTransform: 'uppercase' 
-                      }}>
-                        {isPaymentDue ? 'Payment Expired' : update.status}
-                      </span>
-                    </div>
-                    
-                    <p style={{ color: '#475569', margin: '0 0 8px 0', fontSize: '14px', lineHeight: '1.5' }}>
-                      {update.description}
-                    </p>
+                    {isPaymentDue ? (
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+                          <h3 style={{ fontSize: '17px', fontWeight: '800', color: '#0f172a', margin: 0 }}>
+                            {update.user_name || 'Rider'} ({update.user_phone || 'N/A'})
+                          </h3>
+                          {update.vehicle_model && (
+                            <span style={{ 
+                              background: '#f1f5f9', 
+                              color: '#0f172a', 
+                              padding: '2px 8px', 
+                              borderRadius: '6px', 
+                              fontSize: '12px', 
+                              fontWeight: '700' 
+                            }}>
+                              {update.vehicle_model}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ color: '#475569', fontSize: '14px', lineHeight: '1.5' }}>
+                          <div>plan expired on {update.expiry_date || new Date(update.date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}.</div>
+                          <div>Did they make their payment of {update.plan_price}</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+                          <h3 style={{ fontSize: '17px', fontWeight: '800', color: '#0f172a', margin: 0 }}>{update.title}</h3>
+                          <span style={{ 
+                            background: update.status === 'pending' ? '#ede9fe' : '#e0f2fe', 
+                            color: update.status === 'pending' ? '#6d28d9' : '#0369a1', 
+                            padding: '3px 10px', 
+                            borderRadius: '20px', 
+                            fontSize: '11px', 
+                            fontWeight: '800', 
+                            textTransform: 'uppercase' 
+                          }}>
+                            {update.status}
+                          </span>
+                        </div>
+                        
+                        <p style={{ color: '#475569', margin: '0 0 8px 0', fontSize: '14px', lineHeight: '1.5' }}>
+                          {update.description}
+                        </p>
 
-                    <div style={{ display: 'flex', gap: '16px', alignItems: 'center', fontSize: '12px', color: '#94a3b8' }}>
-                      <span>Due Date: <strong style={{ color: '#0f172a' }}>{new Date(update.date).toLocaleDateString()}</strong></span>
-                      {update.plan_name && <span>Plan: <strong style={{ color: '#10b981' }}>{update.plan_name}</strong></span>}
-                    </div>
+                        <div style={{ display: 'flex', gap: '16px', alignItems: 'center', fontSize: '12px', color: '#94a3b8' }}>
+                          <span>Due Date: <strong style={{ color: '#0f172a' }}>{new Date(update.date).toLocaleDateString()}</strong></span>
+                          {update.plan_name && <span>Plan: <strong style={{ color: '#10b981' }}>{update.plan_name}</strong></span>}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 

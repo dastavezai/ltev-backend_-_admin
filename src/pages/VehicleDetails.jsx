@@ -300,9 +300,6 @@ export default function VehicleDetails() {
               {isRented ? 'Rented (Active)' : vehicle.status}
             </span>
           </h1>
-          <p style={{ color: '#64748b', fontSize: '15px', fontFamily: 'monospace', background: '#f1f5f9', padding: '4px 10px', borderRadius: '6px', display: 'inline-block', margin: 0 }}>
-            Reg: {vehicle.id}
-          </p>
         </div>
 
         {/* Top Actions */}
@@ -326,16 +323,12 @@ export default function VehicleDetails() {
         {/* Core Identity */}
         <div style={{ background: 'white', padding: '24px', borderRadius: '20px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)', border: '1px solid #f1f5f9' }}>
           <h3 style={{ fontSize: '15px', fontWeight: '700', color: '#0f172a', marginBottom: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Info size={18} color="#3b82f6" /> Registration & Location
+            <Info size={18} color="#3b82f6" /> Vehicle & Location
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #f8fafc', paddingBottom: '10px' }}>
-              <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '500' }}>Registration No.</div>
-              <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b' }}>{vehicle.registration_number || vehicle.id}</div>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #f8fafc', paddingBottom: '10px' }}>
-              <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '500' }}>Chassis Number</div>
-              <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b', fontFamily: 'monospace' }}>{vehicle.chassis_number || 'N/A'}</div>
+              <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '500' }}>Vehicle Number</div>
+              <div style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>{vehicle.model}</div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '500' }}>Disbursed Stand</div>
@@ -933,13 +926,8 @@ export default function VehicleDetails() {
             
             <form onSubmit={handleEditVehicle} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', color: '#475569', marginBottom: '8px' }}>Model</label>
+                <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', color: '#475569', marginBottom: '8px' }}>Vehicle Number (e.g., LT002)</label>
                 <input required type="text" value={editForm.model} onChange={e => setEditForm({...editForm, model: e.target.value})} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
-              </div>
-
-              <div>
-                <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', color: '#475569', marginBottom: '8px' }}>Chassis Number</label>
-                <input required type="text" value={editForm.chassis_number} onChange={e => setEditForm({...editForm, chassis_number: e.target.value})} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
               </div>
 
               <div style={{ display: 'flex', gap: '16px' }}>
@@ -963,9 +951,7 @@ export default function VehicleDetails() {
                 </select>
               </div>
 
-              <div style={{ padding: '12px', background: '#f8fafc', borderRadius: '8px', marginTop: '8px' }}>
-                <p style={{ fontSize: '13px', color: '#64748b', margin: 0 }}>Note: The Registration Number ({vehicle.id}) cannot be changed.</p>
-              </div>
+
 
               <button type="submit" style={{ marginTop: '8px', background: '#0f172a', color: 'white', padding: '14px', borderRadius: '8px', fontWeight: 'bold', border: 'none', cursor: 'pointer' }}>
                 Save Configuration

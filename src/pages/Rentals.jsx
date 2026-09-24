@@ -360,7 +360,7 @@ export default function Rentals() {
           <Search size={18} color="#94a3b8" />
           <input 
             type="text" 
-            placeholder="Search by rider name, phone, EV ID, or rental #..." 
+            placeholder="Search by rider name, phone, vehicle number, or rental #..." 
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             style={{ border: 'none', background: 'transparent', outline: 'none', width: '100%', fontSize: '14px', color: '#0f172a' }}
@@ -388,7 +388,7 @@ export default function Rentals() {
             <option value="all">All Vehicles (16 Bikes)</option>
             {vehicles.map(v => (
               <option key={v.id} value={v.id}>
-                {v.model || 'EV'} ({v.id}) - {v.status}
+                {v.model || 'EV'} - {v.status}
               </option>
             ))}
           </select>
@@ -474,10 +474,7 @@ export default function Rentals() {
                   </div>
                   <div>
                     <div style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>
-                      {rental.vehicle_model}
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#64748b', fontWeight: '600' }}>
-                      EV ID: <span style={{ fontFamily: 'monospace', color: '#0f172a', fontWeight: '700' }}>{rental.vehicle_id || 'Not Assigned'}</span>
+                      {rental.vehicle_model || 'No EV Assigned'}
                     </div>
                   </div>
                 </div>
@@ -671,7 +668,7 @@ export default function Rentals() {
                   <option value="">-- No Vehicle Assigned (Pending) --</option>
                   {vehicles.map(v => (
                     <option key={v.id} value={v.id}>
-                      {v.model || 'EV'} (ID: {v.id}) — Status: {v.status.toUpperCase()}
+                      {v.model || 'EV'} — Status: {v.status.toUpperCase()}
                     </option>
                   ))}
                 </select>

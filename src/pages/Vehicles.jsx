@@ -16,7 +16,7 @@ export default function Vehicles() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'available' | 'rented' | 'maintenance'
   const [locationFilter, setLocationFilter] = useState('all');
-  const [sortBy, setSortBy] = useState('id-asc'); // 'id-asc' | 'id-desc' | 'model-asc' | 'status'
+  const [sortBy, setSortBy] = useState('model-asc'); // 'model-asc' | 'model-desc' | 'status'
 
   // New Vehicle Form State
   const [newVehicle, setNewVehicle] = useState({
@@ -64,7 +64,11 @@ export default function Vehicles() {
   const handleAddVehicle = async (e) => {
     e.preventDefault();
     try {
-      await axios.post('/api/vehicles', newVehicle, {
+      await axios.post('/api/vehicles', {
+        ...newVehicle,
+        registration_number: newVehicle.model,
+        chassis_number: newVehicle.model
+      }, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
       });
       setShowAddModal(false);
@@ -130,11 +134,8 @@ export default function Vehicles() {
         // Search query filter
         const q = searchQuery.toLowerCase().trim();
         const matchesSearch = !q || (
-          (v.id || '').toLowerCase().includes(q) ||
           (v.model || '').toLowerCase().includes(q) ||
           (v.location || '').toLowerCase().includes(q) ||
-          (v.chassis_number || '').toLowerCase().includes(q) ||
-          (v.registration_number || '').toLowerCase().includes(q) ||
           (v.renter || '').toLowerCase().includes(q)
         );
 
@@ -155,14 +156,11 @@ export default function Vehicles() {
         return matchesSearch && matchesStatus && matchesLocation;
       })
       .sort((a, b) => {
-        if (sortBy === 'id-asc') {
-          return (a.id || '').localeCompare(b.id || '', undefined, { numeric: true });
-        }
-        if (sortBy === 'id-desc') {
-          return (b.id || '').localeCompare(a.id || '', undefined, { numeric: true });
-        }
         if (sortBy === 'model-asc') {
-          return (a.model || '').localeCompare(b.model || '');
+          return (a.model || '').localeCompare(b.model || '', undefined, { numeric: true });
+        }
+        if (sortBy === 'model-desc') {
+          return (b.model || '').localeCompare(a.model || '', undefined, { numeric: true });
         }
         if (sortBy === 'status') {
           return (a.status || '').localeCompare(b.status || '');
@@ -262,7 +260,7 @@ export default function Vehicles() {
             <Search size={18} style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
             <input 
               type="text" 
-              placeholder="Search by ID, Model, Location, or Rider..." 
+              placeholder="Search by Vehicle Number (LT...), Location, or Rider..." 
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               style={{ width: '100%', padding: '12px 12px 12px 44px', borderRadius: '12px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '14px', background: 'white' }} 
@@ -322,9 +320,8 @@ export default function Vehicles() {
                 onChange={(e) => setSortBy(e.target.value)}
                 style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: '13px', fontWeight: '700', color: '#0f172a', cursor: 'pointer' }}
               >
-                <option value="id-asc">Reg ID (A to Z)</option>
-                <option value="id-desc">Reg ID (Z to A)</option>
-                <option value="model-asc">Model Name</option>
+                <option value="model-asc">Vehicle Number (A to Z)</option>
+                <option value="model-desc">Vehicle Number (Z to A)</option>
                 <option value="status">Status</option>
                 <option value="location">Stand Location</option>
               </select>
@@ -363,7 +360,6 @@ export default function Vehicles() {
                 >
                   <td style={{ padding: '20px 24px' }}>
                     <div style={{ fontWeight: '700', color: '#0f172a', fontSize: '15px' }}>{vehicle.model}</div>
-                    <div style={{ fontSize: '13px', color: '#64748b', fontFamily: 'monospace' }}>{vehicle.id}</div>
                   </td>
                   <td style={{ padding: '20px 24px' }}>
                     {getStatusBadge(vehicle.status, vehicle.renter)}
@@ -410,19 +406,8 @@ export default function Vehicles() {
             
             <form onSubmit={handleAddVehicle} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', color: '#475569', marginBottom: '8px' }}>Model</label>
-                <input required type="text" placeholder="e.g., Ather 450X" value={newVehicle.model} onChange={e => setNewVehicle({...newVehicle, model: e.target.value})} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
-              </div>
-
-              <div style={{ display: 'flex', gap: '16px' }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', color: '#475569', marginBottom: '8px' }}>Chassis Number</label>
-                  <input required type="text" placeholder="e.g., CHS-99210" value={newVehicle.chassis_number} onChange={e => setNewVehicle({...newVehicle, chassis_number: e.target.value})} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', color: '#475569', marginBottom: '8px' }}>Registration Number</label>
-                  <input required type="text" placeholder="e.g., DL-01-AB-1234" value={newVehicle.registration_number} onChange={e => setNewVehicle({...newVehicle, registration_number: e.target.value})} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
-                </div>
+                <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', color: '#475569', marginBottom: '8px' }}>Vehicle Number (e.g. LT017)</label>
+                <input required type="text" placeholder="e.g., LT017" value={newVehicle.model} onChange={e => setNewVehicle({...newVehicle, model: e.target.value})} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
               </div>
 
               <div style={{ display: 'flex', gap: '16px' }}>

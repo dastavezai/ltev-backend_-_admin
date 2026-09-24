@@ -366,7 +366,7 @@ export default function WalletApprovals() {
                           </span>
                         </div>
                         <div style={{ fontSize: '13px', color: '#475569', marginTop: '2px', fontWeight: '600' }}>
-                          📞 {rental.user_phone} &bull; EV: <strong style={{ color: '#0f172a' }}>{rental.vehicle_model} ({rental.vehicle_id})</strong>
+                          📞 {rental.user_phone} &bull; EV: <strong style={{ color: '#0f172a' }}>{rental.vehicle_model}</strong>
                         </div>
                       </div>
                     </div>

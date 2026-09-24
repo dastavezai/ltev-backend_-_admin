@@ -258,7 +258,6 @@ export default function RentalRequests() {
                   </td>
                   <td style={{ padding: '18px 20px' }}>
                     <div style={{ fontWeight: '700', color: '#0f172a' }}>{req.vehicle_model || 'LT.ev Scooter'}</div>
-                    <div style={{ fontSize: '12px', color: '#64748b' }}>Vehicle ID: {req.vehicle_id || 'N/A'}</div>
                   </td>
                   <td style={{ padding: '18px 20px' }}>
                     <div style={{ fontWeight: '700', color: '#0f172a' }}>{req.plan_name}</div>
@@ -310,7 +309,7 @@ export default function RentalRequests() {
                 >
                   <option value="" disabled>-- Choose an available vehicle --</option>
                   {availableVehicles.map(v => (
-                    <option key={v.id} value={v.id}>{v.name} ({v.type}) - Battery: {v.battery}%</option>
+                    <option key={v.id} value={v.id}>{v.model || v.name || 'EV'} ({v.type})</option>
                   ))}
                 </select>
               </div>
