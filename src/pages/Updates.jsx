@@ -108,6 +108,7 @@ export default function Updates() {
 
   const getIcon = (type) => {
     switch(type) {
+      case 'booking': return <Bike size={24} color="#059669" />;
       case 'payment_due': return <CreditCard size={24} color="#d97706" />;
       case 'return': return <Bike size={24} color="#3b82f6" />;
       case 'kyc': return <ShieldCheck size={24} color="#8b5cf6" />;
@@ -118,6 +119,7 @@ export default function Updates() {
 
   const getIconBg = (type) => {
     switch(type) {
+      case 'booking': return '#d1fae5';
       case 'payment_due': return '#fef3c7';
       case 'return': return '#dbeafe';
       case 'kyc': return '#ede9fe';
@@ -316,6 +318,12 @@ export default function Updates() {
                 {/* Standard Actions for KYC, Wallet, Returns */}
                 {!isPaymentDue && (
                   <div style={{ flexShrink: 0, marginLeft: '24px' }}>
+                    {update.type === 'booking' && (
+                      <button onClick={() => navigate('/rental-requests')} style={{ padding: '10px 20px', borderRadius: '8px', border: 'none', backgroundColor: '#059669', color: 'white', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        Assign EV <ArrowRight size={18} />
+                      </button>
+                    )}
+                    
                     {update.type === 'return' && update.status === 'pending_return' && (
                       <button onClick={() => handleApproveReturn(update.id)} style={{ padding: '10px 20px', borderRadius: '8px', border: 'none', backgroundColor: '#3b82f6', color: 'white', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <CheckCircle2 size={18} /> Approve Return
