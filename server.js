@@ -56,16 +56,18 @@ async function initDatabase() {
       VALUES ('min_security_deposit', '2000')
       ON CONFLICT (key) DO NOTHING
     `);
+    const defaultUpiId = (process.env.UPI_ID || '9113750231@oksbi').trim();
+    const defaultUpiName = (process.env.UPI_NAME || 'LocalToto').trim();
     await pool.query(`
       INSERT INTO system_settings (key, value)
-      VALUES ('upi_id', '9113750231@oksbi')
+      VALUES ('upi_id', $1)
       ON CONFLICT (key) DO NOTHING
-    `);
+    `, [defaultUpiId]);
     await pool.query(`
       INSERT INTO system_settings (key, value)
-      VALUES ('upi_name', 'LocalToto')
+      VALUES ('upi_name', $1)
       ON CONFLICT (key) DO NOTHING
-    `);
+    `, [defaultUpiName]);
     try {
       await pool.query(`ALTER TABLE users ALTER COLUMN email DROP NOT NULL`);
     } catch (e) {
@@ -3010,8 +3012,8 @@ app.get('/api/config/public', async (req, res) => {
   try {
     const result = await pool.query("SELECT key, value FROM system_settings WHERE key IN ('upi_id', 'upi_name', 'min_security_deposit')");
     const config = {
-      upi_id: '9113750231@oksbi',
-      upi_name: 'LocalToto',
+      upi_id: process.env.UPI_ID || '9113750231@oksbi',
+      upi_name: process.env.UPI_NAME || 'LocalToto',
       min_security_deposit: 2000
     };
     result.rows.forEach(r => {
@@ -3023,8 +3025,8 @@ app.get('/api/config/public', async (req, res) => {
   } catch (err) {
     console.error('Error fetching public config:', err);
     res.json({
-      upi_id: '9113750231@oksbi',
-      upi_name: 'LocalToto',
+      upi_id: process.env.UPI_ID || '9113750231@oksbi',
+      upi_name: process.env.UPI_NAME || 'LocalToto',
       min_security_deposit: 2000
     });
   }
@@ -3034,8 +3036,8 @@ app.get('/api/config/public', async (req, res) => {
 app.get('/api/settings/payment', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query("SELECT key, value FROM system_settings WHERE key IN ('upi_id', 'upi_name')");
-    let upi_id = '9113750231@oksbi';
-    let upi_name = 'LocalToto';
+    let upi_id = process.env.UPI_ID || '9113750231@oksbi';
+    let upi_name = process.env.UPI_NAME || 'LocalToto';
     result.rows.forEach(r => {
       if (r.key === 'upi_id' && r.value) upi_id = r.value.trim();
       if (r.key === 'upi_name' && r.value) upi_name = r.value.trim();
