@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle2, Clock, XCircle, RefreshCw, Wallet, ArrowRight, CreditCard, ShieldAlert, Tag, Search, Bike, Check, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, Clock, XCircle, RefreshCw, Wallet, ArrowRight, CreditCard, ShieldAlert, Tag, Search, Bike, Check, AlertTriangle, Settings, X } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 
@@ -14,9 +14,54 @@ export default function WalletApprovals() {
   // Form states for inline renewal confirmations: { [rentalId]: { amount, next_payment_date, submitting } }
   const [renewalForms, setRenewalForms] = useState({});
 
+  // UPI Payment Configuration State
+  const [showUpiModal, setShowUpiModal] = useState(false);
+  const [upiId, setUpiId] = useState('9113750231@oksbi');
+  const [upiName, setUpiName] = useState('LocalToto');
+  const [savingUpi, setSavingUpi] = useState(false);
+
   useEffect(() => {
     fetchData();
+    fetchUpiSettings();
   }, [token]);
+
+  const fetchUpiSettings = async () => {
+    if (!token) return;
+    try {
+      const res = await axios.get(`${import.meta.env.VITE_API_URL || ''}/api/settings/payment`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.data?.upi_id) {
+        setUpiId(res.data.upi_id);
+        setUpiName(res.data.upi_name || 'LocalToto');
+      }
+    } catch (e) {
+      console.error('Error fetching UPI settings:', e);
+    }
+  };
+
+  const handleSaveUpi = async (e) => {
+    e.preventDefault();
+    if (!upiId || !upiId.trim()) {
+      alert('Please enter a valid UPI ID');
+      return;
+    }
+    setSavingUpi(true);
+    try {
+      await axios.put(`${import.meta.env.VITE_API_URL || ''}/api/settings/payment`, {
+        upi_id: upiId.trim(),
+        upi_name: upiName.trim()
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert('UPI Payment Settings updated successfully! All mobile apps will now use this UPI ID.');
+      setShowUpiModal(false);
+    } catch (err) {
+      alert('Error updating UPI settings: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSavingUpi(false);
+    }
+  };
 
   const fetchData = async () => {
     if (!token) return;
@@ -182,12 +227,20 @@ export default function WalletApprovals() {
           <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#0f172a', margin: '0 0 4px 0' }}>Payments, Dues & Wallet Approvals</h1>
           <p style={{ color: '#64748b', margin: 0 }}>Review rider plan renewal payments, overdue dues, wallet topups, and deposit refunds.</p>
         </div>
-        <button 
-          onClick={fetchData}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'white', border: '1px solid #cbd5e1', padding: '10px 16px', borderRadius: '12px', fontWeight: '600', color: '#0f172a', cursor: 'pointer' }}
-        >
-          <RefreshCw size={16} /> Refresh
-        </button>
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button 
+            onClick={() => { fetchUpiSettings(); setShowUpiModal(true); }}
+            style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#00a66c', border: 'none', padding: '10px 18px', borderRadius: '12px', fontWeight: '700', color: 'white', cursor: 'pointer', boxShadow: '0 2px 6px rgba(0, 166, 108, 0.25)' }}
+          >
+            <Settings size={16} /> UPI Settings: {upiId}
+          </button>
+          <button 
+            onClick={fetchData}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'white', border: '1px solid #cbd5e1', padding: '10px 16px', borderRadius: '12px', fontWeight: '600', color: '#0f172a', cursor: 'pointer' }}
+          >
+            <RefreshCw size={16} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* Summary Metrics Bar */}
@@ -565,6 +618,154 @@ export default function WalletApprovals() {
               )}
             </tbody>
           </table>
+        </div>
+      )}
+      {/* UPI Payment Configuration Modal */}
+      {showUpiModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.65)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '20px'
+        }}>
+          <div style={{
+            background: 'white',
+            borderRadius: '20px',
+            width: '100%',
+            maxWidth: '480px',
+            padding: '28px',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
+            position: 'relative',
+            animation: 'fadeIn 0.2s ease-out'
+          }}>
+            <button 
+              onClick={() => setShowUpiModal(false)}
+              style={{
+                position: 'absolute',
+                top: '20px',
+                right: '20px',
+                background: '#f1f5f9',
+                border: 'none',
+                borderRadius: '50%',
+                width: '32px',
+                height: '32px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                color: '#64748b'
+              }}
+            >
+              <X size={18} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+              <div style={{ background: '#ecfdf5', padding: '10px', borderRadius: '12px', color: '#00a66c' }}>
+                <Wallet size={24} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '18px', fontWeight: '800', color: '#0f172a', margin: 0 }}>UPI Payment Settings</h3>
+                <p style={{ fontSize: '13px', color: '#64748b', margin: '2px 0 0 0' }}>Configure the UPI ID where riders pay</p>
+              </div>
+            </div>
+
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '12px 16px', marginBottom: '20px', fontSize: '12px', color: '#475569', lineHeight: '1.5' }}>
+              ℹ️ Any changes here take effect <strong>immediately</strong> in the mobile app. Riders will receive this UPI ID when purchasing plans, paying dues, or recharging wallet.
+            </div>
+
+            <form onSubmit={handleSaveUpi}>
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                  Receiving UPI ID *
+                </label>
+                <input 
+                  type="text" 
+                  value={upiId}
+                  onChange={(e) => setUpiId(e.target.value)}
+                  placeholder="e.g. 9113750231@oksbi"
+                  style={{
+                    width: '100%',
+                    padding: '12px 14px',
+                    borderRadius: '10px',
+                    border: '1.5px solid #cbd5e1',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                  required
+                />
+              </div>
+
+              <div style={{ marginBottom: '24px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                  Payee Display Name
+                </label>
+                <input 
+                  type="text" 
+                  value={upiName}
+                  onChange={(e) => setUpiName(e.target.value)}
+                  placeholder="e.g. LocalToto"
+                  style={{
+                    width: '100%',
+                    padding: '12px 14px',
+                    borderRadius: '10px',
+                    border: '1.5px solid #cbd5e1',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowUpiModal(false)}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: '1px solid #cbd5e1',
+                    background: 'white',
+                    color: '#475569',
+                    fontWeight: '600',
+                    fontSize: '14px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingUpi}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: 'none',
+                    background: '#00a66c',
+                    color: 'white',
+                    fontWeight: '700',
+                    fontSize: '14px',
+                    cursor: savingUpi ? 'not-allowed' : 'pointer',
+                    opacity: savingUpi ? 0.7 : 1
+                  }}
+                >
+                  {savingUpi ? 'Saving...' : 'Save UPI Settings'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

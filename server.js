@@ -56,6 +56,16 @@ async function initDatabase() {
       VALUES ('min_security_deposit', '2000')
       ON CONFLICT (key) DO NOTHING
     `);
+    await pool.query(`
+      INSERT INTO system_settings (key, value)
+      VALUES ('upi_id', '9113750231@oksbi')
+      ON CONFLICT (key) DO NOTHING
+    `);
+    await pool.query(`
+      INSERT INTO system_settings (key, value)
+      VALUES ('upi_name', 'LocalToto')
+      ON CONFLICT (key) DO NOTHING
+    `);
     try {
       await pool.query(`ALTER TABLE users ALTER COLUMN email DROP NOT NULL`);
     } catch (e) {
@@ -2988,6 +2998,76 @@ app.put('/api/security-deposits/config', authenticateToken, async (req, res) => 
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
     `, [min_security_deposit.toString()]);
     res.json({ success: true, min_security_deposit: parseFloat(min_security_deposit) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// PUBLIC SYSTEM CONFIG API (For Mobile App & Web)
+// ==========================================
+app.get('/api/config/public', async (req, res) => {
+  try {
+    const result = await pool.query("SELECT key, value FROM system_settings WHERE key IN ('upi_id', 'upi_name', 'min_security_deposit')");
+    const config = {
+      upi_id: '9113750231@oksbi',
+      upi_name: 'LocalToto',
+      min_security_deposit: 2000
+    };
+    result.rows.forEach(r => {
+      if (r.key === 'upi_id' && r.value) config.upi_id = r.value.trim();
+      if (r.key === 'upi_name' && r.value) config.upi_name = r.value.trim();
+      if (r.key === 'min_security_deposit' && !isNaN(r.value)) config.min_security_deposit = parseFloat(r.value);
+    });
+    res.json(config);
+  } catch (err) {
+    console.error('Error fetching public config:', err);
+    res.json({
+      upi_id: '9113750231@oksbi',
+      upi_name: 'LocalToto',
+      min_security_deposit: 2000
+    });
+  }
+});
+
+// Admin Payment Settings
+app.get('/api/settings/payment', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query("SELECT key, value FROM system_settings WHERE key IN ('upi_id', 'upi_name')");
+    let upi_id = '9113750231@oksbi';
+    let upi_name = 'LocalToto';
+    result.rows.forEach(r => {
+      if (r.key === 'upi_id' && r.value) upi_id = r.value.trim();
+      if (r.key === 'upi_name' && r.value) upi_name = r.value.trim();
+    });
+    res.json({ upi_id, upi_name });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/settings/payment', authenticateToken, async (req, res) => {
+  try {
+    const { upi_id, upi_name } = req.body;
+    if (!upi_id || !upi_id.trim()) {
+      return res.status(400).json({ error: 'Valid UPI ID is required' });
+    }
+    const cleanUpi = upi_id.trim();
+    const cleanName = (upi_name || 'LocalToto').trim();
+
+    await pool.query(`
+      INSERT INTO system_settings (key, value)
+      VALUES ('upi_id', $1)
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+    `, [cleanUpi]);
+
+    await pool.query(`
+      INSERT INTO system_settings (key, value)
+      VALUES ('upi_name', $1)
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+    `, [cleanName]);
+
+    res.json({ success: true, upi_id: cleanUpi, upi_name: cleanName });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
