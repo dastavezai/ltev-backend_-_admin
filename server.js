@@ -1107,7 +1107,7 @@ app.post('/api/plans/purchase', authenticateToken, async (req, res) => {
     const totalPaid = planPrice + depositAmt;
     await client.query(`
       INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, reference_id, status, timestamp)
-      VALUES ($1, $2, 'credit', $3, $4, $5, 'success', CURRENT_TIMESTAMP)
+      VALUES ($1, $2, 'debit', $3, $4, $5, 'success', CURRENT_TIMESTAMP)
     `, [`TXN-ORD-${Date.now()}`, walletId, totalPaid, `Plan Booking: ${plan.name} ${depositAmt > 0 ? `(₹${planPrice} + ₹${depositAmt} Deposit)` : ''}`, rentalId]);
 
     // 3. Create a pending payment approval request in wallet_approvals for Admin verification
@@ -2301,20 +2301,36 @@ app.post('/api/wallet_approvals/:id/approve', authenticateToken, async (req, res
         const depMatch = utr.match(/Deposit ₹?(\d+)/i);
         const depPaid = depMatch ? parseFloat(depMatch[1]) : 0;
         if (depPaid > 0) {
-          const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
-          const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+          // Check if this deposit was ALREADY credited for this rental/booking
+          const rntMatch = utr.match(/RNT-\w+/);
+          const rntId = rntMatch ? rntMatch[0] : null;
+          let alreadyCredited = false;
+          if (rntId) {
+            const checkSec = await client.query(
+              "SELECT id FROM security_deposit_transactions WHERE user_id = $1 AND remarks LIKE $2",
+              [user_id, `%${rntId}%`]
+            );
+            if (checkSec.rows.length > 0) {
+              alreadyCredited = true;
+            }
+          }
 
-          const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
-          const curBal = parseFloat(userRes.rows[0]?.security_deposit_balance || 0);
-          const newBal = curBal + depPaid;
-          const isPaid = newBal >= minDeposit;
+          if (!alreadyCredited) {
+            const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+            const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
 
-          await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newBal, isPaid, user_id]);
+            const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+            const curBal = parseFloat(userRes.rows[0]?.security_deposit_balance || 0);
+            const newBal = curBal + depPaid;
+            const isPaid = newBal >= minDeposit;
 
-          await client.query(`
-            INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
-            VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
-          `, [user_id, depPaid, `Security Deposit Verified (${utr})`]);
+            await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newBal, isPaid, user_id]);
+
+            await client.query(`
+              INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+              VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+            `, [user_id, depPaid, `Security Deposit Verified (${utr})`]);
+          }
         }
       }
 
@@ -2474,12 +2490,13 @@ app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
 
     // Pending approvals
     pendingRes.rows.forEach(p => {
+      const isPlan = p.utr?.includes('PLAN');
       txns.push({
         id: `REQ-${p.id}`,
-        type: 'credit',
+        type: isPlan ? 'debit' : 'credit',
         amount: parseFloat(p.amount),
-        description: p.utr?.includes('PLAN') ? `${p.utr} (Pending Approval)` : `Wallet Recharge (Pending Approval)`,
-        date: new Date(p.date).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }),
+        description: isPlan ? `${p.utr} (Pending Verification)` : `Wallet Recharge (Pending Approval)`,
+        date: new Date(p.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
         timestamp: new Date(p.date).getTime(),
         status: 'pending'
       });
@@ -2492,26 +2509,28 @@ app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
         type: t.type,
         amount: parseFloat(t.amount),
         description: t.description,
-        date: new Date(t.timestamp).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }),
+        date: new Date(t.timestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
         timestamp: new Date(t.timestamp).getTime(),
         status: t.status
       });
     });
 
-    // Security deposit transactions (add those not already in wallet_transactions)
+    // Security deposit transactions (do not duplicate plan booking deposits)
     secRes.rows.forEach(s => {
-      const alreadyIncluded = txns.some(t => t.description && t.description.includes(s.remarks || 'Deposit'));
-      if (!alreadyIncluded) {
-        txns.push({
-          id: `SEC-${s.id}`,
-          type: s.type === 'deposit' ? 'credit' : 'debit',
-          amount: parseFloat(s.amount),
-          description: s.remarks || (s.type === 'deposit' ? 'Security Deposit Added' : 'Security Deposit Deducted'),
-          date: new Date(s.date).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }),
-          timestamp: new Date(s.date).getTime(),
-          status: 'success'
-        });
+      const isPlanDeposit = s.remarks && (s.remarks.includes('RNT-') || s.remarks.includes('PLAN_BOOKING'));
+      if (isPlanDeposit) {
+        // Skip duplicate as the full booking transaction is already in wallet_transactions
+        return;
       }
+      txns.push({
+        id: `SEC-${s.id}`,
+        type: s.type === 'deposit' ? 'debit' : 'credit',
+        amount: parseFloat(s.amount),
+        description: s.remarks || (s.type === 'deposit' ? 'Security Deposit Paid' : 'Security Deposit Refunded'),
+        date: new Date(s.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
+        timestamp: new Date(s.date).getTime(),
+        status: 'success'
+      });
     });
 
     // Sort by timestamp descending
