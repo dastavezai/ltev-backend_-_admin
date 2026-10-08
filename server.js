@@ -4526,22 +4526,33 @@ app.put('/api/security-deposits/config', authenticateToken, async (req, res) => 
 app.get('/api/config/public', async (req, res) => {
   try {
     const result = await pool.query("SELECT key, value FROM system_settings WHERE key IN ('upi_id', 'upi_name', 'min_security_deposit')");
-    const config = {
-      upi_id: process.env.UPI_ID || '9113750231@oksbi',
-      upi_name: process.env.UPI_NAME || 'LocalToto',
-      min_security_deposit: 2000
-    };
+    let dbUpiId = null;
+    let dbUpiName = null;
+    let minDeposit = 2000;
+    
     result.rows.forEach(r => {
-      if (r.key === 'upi_id' && r.value) config.upi_id = r.value.trim();
-      if (r.key === 'upi_name' && r.value) config.upi_name = r.value.trim();
-      if (r.key === 'min_security_deposit' && !isNaN(r.value)) config.min_security_deposit = parseFloat(r.value);
+      if (r.key === 'upi_id' && r.value) dbUpiId = r.value.trim();
+      if (r.key === 'upi_name' && r.value) dbUpiName = r.value.trim();
+      if (r.key === 'min_security_deposit' && !isNaN(r.value)) minDeposit = parseFloat(r.value);
     });
-    res.json(config);
+
+    // Admin Panel settings stored in system_settings have the highest priority
+    const envUpiId = process.env.UPI_ID ? process.env.UPI_ID.trim() : null;
+    const envUpiName = process.env.UPI_NAME ? process.env.UPI_NAME.trim() : null;
+
+    const finalUpiId = dbUpiId || envUpiId || '9113750231@oksbi';
+    const finalUpiName = dbUpiName || envUpiName || 'LocalToto';
+
+    res.json({
+      upi_id: finalUpiId,
+      upi_name: finalUpiName,
+      min_security_deposit: minDeposit
+    });
   } catch (err) {
     console.error('Error fetching public config:', err);
     res.json({
-      upi_id: process.env.UPI_ID || '9113750231@oksbi',
-      upi_name: process.env.UPI_NAME || 'LocalToto',
+      upi_id: (process.env.UPI_ID || '9113750231@oksbi').trim(),
+      upi_name: (process.env.UPI_NAME || 'LocalToto').trim(),
       min_security_deposit: 2000
     });
   }
