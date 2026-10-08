@@ -3803,7 +3803,9 @@ app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
     });
 
     // Wallet transactions
+    const existingTxnDescriptions = new Set();
     txnRes.rows.forEach(t => {
+      if (t.description) existingTxnDescriptions.add(t.description.trim().toLowerCase());
       txns.push({
         id: t.id,
         type: t.type,
@@ -3815,20 +3817,42 @@ app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
       });
     });
 
-    // Security deposit transactions (do not duplicate plan booking deposits)
+    // Security deposit transactions: only include standalone events NOT already logged into wallet_transactions
     secRes.rows.forEach(s => {
-      const isPlanDeposit = s.remarks && (s.remarks.includes('RNT-') || s.remarks.includes('PLAN_BOOKING'));
-      if (isPlanDeposit) {
-        // Skip duplicate as the full booking transaction is already in wallet_transactions
+      const sDesc = (s.remarks || '').trim().toLowerCase();
+      const sAmount = parseFloat(s.amount);
+      const sTime = new Date(s.date).getTime();
+
+      // Check if this deposit event was already recorded in wallet_transactions
+      const isAlreadyInWalletTxns = 
+        existingTxnDescriptions.has(sDesc) ||
+        sDesc.includes('rnt-') ||
+        sDesc.includes('plan_booking') ||
+        sDesc.includes('booking ') ||
+        txnRes.rows.some(t => {
+          const tTime = new Date(t.timestamp).getTime();
+          const tAmount = parseFloat(t.amount);
+          return Math.abs(tTime - sTime) < 10000 && Math.abs(tAmount - sAmount) < 0.01;
+        });
+
+      if (isAlreadyInWalletTxns) {
         return;
       }
+
+      let txnType = 'debit';
+      if (s.type === 'refund' || s.type === 'add' || s.type === 'deposit') {
+        txnType = 'credit';
+      } else if (s.type === 'deduction') {
+        txnType = 'debit';
+      }
+
       txns.push({
         id: `SEC-${s.id}`,
-        type: s.type === 'deposit' ? 'debit' : 'credit',
-        amount: parseFloat(s.amount),
-        description: s.remarks || (s.type === 'deposit' ? 'Security Deposit Paid' : 'Security Deposit Refunded'),
+        type: txnType,
+        amount: sAmount,
+        description: s.remarks || (s.type === 'deduction' ? 'Security Deposit Deduction' : 'Security Deposit Transaction'),
         date: new Date(s.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
-        timestamp: new Date(s.date).getTime(),
+        timestamp: sTime,
         status: 'success'
       });
     });
