@@ -5,8 +5,9 @@ import {
   ArrowLeft, MapPin, Clock, Activity, Settings, Wrench, CalendarDays, 
   Bike, Info, Trash2, X, UserMinus, ChevronLeft, ChevronRight, 
   Calendar as CalendarIcon, ListFilter, CheckCircle2, AlertTriangle, 
-  ShieldAlert, Phone, UserCheck, Zap, RefreshCw
+  ShieldAlert, Phone, UserCheck, Zap, RefreshCw, Plus, Send, FileText
 } from 'lucide-react';
+import ReceiptModal from '../components/ReceiptModal';
 
 export default function VehicleDetails() {
   const { id } = useParams();
@@ -31,6 +32,58 @@ export default function VehicleDetails() {
   const [editForm, setEditForm] = useState({
     model: '', type: '', status: '', location: '', chassis_number: ''
   });
+
+  // Receipt Modal State
+  const [receiptModalOpen, setReceiptModalOpen] = useState(false);
+  const [selectedReceiptData, setSelectedReceiptData] = useState(null);
+
+  const handleSendPaymentReminder = (log) => {
+    const phone = (vehicle.current_renter_phone || '').replace(/\D/g, '').slice(-10);
+    const upiId = '9113750231@oksbi';
+    const amount = parseFloat(log.cost || 0);
+    const upiIntentUrl = `upi://pay?pa=${upiId}&pn=LocalToto&am=${amount}&tn=Service_${vehicle.id}`;
+
+    const message = `*🛠️ LT EV MOBILITY - VEHICLE SERVICE & REPAIR BILL*
+----------------------------------------
+*🛵 Vehicle:* ${vehicle.id} (${vehicle.model})
+*👤 Rider:* ${vehicle.current_renter || 'Rider'}
+*🔧 Service:* ${log.service_type || 'Vehicle Maintenance'}
+*📝 Details:* ${log.issue_description}
+${log.parts_replaced ? `*🔩 Parts Replaced:* ${log.parts_replaced}\n` : ''}*💰 Total Amount Due:* ₹${amount.toLocaleString('en-IN')}
+
+*📲 Pay Instantly via UPI Link:*
+${upiIntentUrl}
+
+*Or Pay to UPI ID:* ${upiId}
+_After payment, please share screenshot or UTR number._
+----------------------------------------
+_Support: +91 9113750231 | https://ltev.in_`;
+
+    if (phone) {
+      window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(message)}`, '_blank');
+    } else {
+      window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank');
+    }
+  };
+
+  const handleOpenReceipt = (log) => {
+    setSelectedReceiptData({
+      receiptNumber: `SRV-${String(log.id).padStart(5, '0')}`,
+      date: log.date_reported ? new Date(log.date_reported).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : new Date().toLocaleDateString('en-IN'),
+      riderName: vehicle.current_renter || 'LT EV Fleet Maintenance',
+      riderPhone: vehicle.current_renter_phone || 'N/A',
+      riderEmail: 'N/A',
+      vehicleModel: vehicle.model,
+      vehicleId: vehicle.id,
+      planName: log.service_type || 'Vehicle Service & Repair',
+      planType: log.billed_to === 'rider' ? 'Billable to Rider' : 'Company Maintenance',
+      amountPaid: log.cost || 0,
+      paymentMode: log.payment_status === 'deducted_from_deposit' ? 'Deducted from Security Deposit' : log.payment_status === 'paid' ? 'Paid (Cash/UPI)' : 'Payment Pending',
+      type: 'service',
+      remarks: `Parts/Description: ${log.issue_description} ${log.parts_replaced ? `| Parts: ${log.parts_replaced}` : ''}`
+    });
+    setReceiptModalOpen(true);
+  };
 
   const fetchVehicleDetailsAndStands = async () => {
     try {
@@ -838,25 +891,101 @@ export default function VehicleDetails() {
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px' }}>
         {/* Maintenance Logs */}
         <div style={{ background: 'white', padding: '28px', borderRadius: '24px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.02)', border: '1px solid #f1f5f9' }}>
-          <h3 style={{ fontSize: '18px', fontWeight: '800', color: '#0f172a', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Wrench size={20} color="#f59e0b" /> Maintenance History
-          </h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <h3 style={{ fontSize: '18px', fontWeight: '800', color: '#0f172a', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Wrench size={20} color="#0284c7" /> Vehicle Service & Parts Replacement
+            </h3>
+            <button
+              onClick={() => navigate('/services')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                background: '#0284c7',
+                color: 'white',
+                border: 'none',
+                padding: '6px 12px',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: '700',
+                cursor: 'pointer'
+              }}
+            >
+              <Plus size={14} /> + Record Service / Fix
+            </button>
+          </div>
+
           {vehicle.maintenance_logs && vehicle.maintenance_logs.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              {vehicle.maintenance_logs.map(log => (
-                <div key={log.id} style={{ border: '1px solid #e2e8f0', padding: '16px', borderRadius: '14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <span style={{ fontSize: '12px', fontWeight: '600', color: '#64748b' }}>
-                      {new Date(log.date_reported).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })}
-                    </span>
-                    <span style={{ fontSize: '11px', fontWeight: '800', background: log.status === 'resolved' ? '#d1fae5' : '#fee2e2', color: log.status === 'resolved' ? '#059669' : '#dc2626', padding: '2px 8px', borderRadius: '12px', textTransform: 'uppercase' }}>
-                      {log.status}
-                    </span>
+              {vehicle.maintenance_logs.map(log => {
+                const isBilledToRider = log.billed_to === 'rider';
+                const isPending = log.payment_status === 'pending';
+
+                return (
+                  <div key={log.id} style={{ border: '1px solid #e2e8f0', padding: '16px', borderRadius: '14px', background: '#fafafa' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                      <div>
+                        <span style={{ fontSize: '14px', fontWeight: '800', color: '#0f172a' }}>
+                          {log.service_type || 'Vehicle Service'}
+                        </span>
+                        <div style={{ fontSize: '12px', fontWeight: '600', color: '#64748b', marginTop: '2px' }}>
+                          {new Date(log.date_reported).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '11px', fontWeight: '800', background: log.status === 'resolved' || log.status === 'completed' ? '#d1fae5' : '#fee2e2', color: log.status === 'resolved' || log.status === 'completed' ? '#059669' : '#dc2626', padding: '2px 8px', borderRadius: '12px', textTransform: 'uppercase' }}>
+                          {log.status}
+                        </span>
+                        {log.cost && (
+                          <span style={{ fontSize: '14px', fontWeight: '800', color: '#0f172a' }}>
+                            ₹{log.cost}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <p style={{ fontSize: '13px', fontWeight: '500', color: '#334155', lineHeight: '1.4', margin: '0 0 6px 0' }}>
+                      {log.issue_description}
+                    </p>
+
+                    {log.parts_replaced && (
+                      <div style={{ fontSize: '12px', color: '#0284c7', fontWeight: '600', marginBottom: '8px' }}>
+                        🔩 Parts: {log.parts_replaced}
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #e2e8f0', flexWrap: 'wrap', gap: '8px' }}>
+                      <span style={{
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        background: isBilledToRider ? '#fef3c7' : '#f1f5f9',
+                        color: isBilledToRider ? '#b45309' : '#475569',
+                        padding: '2px 8px',
+                        borderRadius: '6px'
+                      }}>
+                        {isBilledToRider ? '👤 Billed to Rider' : '🏢 Company Maintenance'}
+                      </span>
+
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        {isBilledToRider && (
+                          <button
+                            onClick={() => handleSendPaymentReminder(log)}
+                            style={{ background: '#25D366', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '700', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                          >
+                            <Send size={11} /> WhatsApp UPI Link
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleOpenReceipt(log)}
+                          style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '5px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '700', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                        >
+                          <FileText size={11} /> Bill / Receipt
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                  <p style={{ fontSize: '14px', fontWeight: '600', color: '#1e293b', lineHeight: '1.4', margin: 0 }}>{log.issue_description}</p>
-                  {log.cost && <div style={{ marginTop: '8px', fontSize: '13px', fontWeight: '700', color: '#0f172a' }}>Cost: ₹{log.cost}</div>}
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <p style={{ color: '#94a3b8', textAlign: 'center', padding: '30px 0' }}>No maintenance records found.</p>
@@ -983,6 +1112,13 @@ export default function VehicleDetails() {
           </div>
         </div>
       )}
+
+      {/* Official Bill / Receipt Modal */}
+      <ReceiptModal 
+        isOpen={receiptModalOpen}
+        onClose={() => setReceiptModalOpen(false)}
+        data={selectedReceiptData}
+      />
     </div>
   );
 }

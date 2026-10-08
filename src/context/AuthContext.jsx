@@ -10,9 +10,11 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
+    const savedRole = localStorage.getItem('role') || 'admin';
+    const savedUsername = localStorage.getItem('username') || 'admin';
     if (savedToken) {
       setToken(savedToken);
-      setUser({ token: savedToken });
+      setUser({ token: savedToken, role: savedRole, username: savedUsername });
       axios.defaults.headers.common['Authorization'] = `Bearer ${savedToken}`;
     }
     setLoading(false);
@@ -24,20 +26,25 @@ export const AuthProvider = ({ children }) => {
         username,
         password
       });
-      const { accessToken } = response.data;
+      const { accessToken, role } = response.data;
+      const userRole = role || 'admin';
       localStorage.setItem('token', accessToken);
+      localStorage.setItem('role', userRole);
+      localStorage.setItem('username', username);
       setToken(accessToken);
-      setUser({ token: accessToken });
+      setUser({ token: accessToken, role: userRole, username });
       axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
-      return true;
+      return { success: true, role: userRole };
     } catch (error) {
       console.error('Login failed:', error);
-      return false;
+      return { success: false, error: error.response?.data?.message || 'Login failed' };
     }
   };
 
   const logout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('role');
+    localStorage.removeItem('username');
     setToken(null);
     setUser(null);
     delete axios.defaults.headers.common['Authorization'];

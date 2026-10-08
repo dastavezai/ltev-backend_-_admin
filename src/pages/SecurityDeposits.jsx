@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { Search, ShieldAlert, CheckCircle2, History, MinusCircle, PlusCircle, X, Settings, ShieldCheck, DollarSign, Edit3, ArrowRight } from 'lucide-react';
+import { Search, ShieldAlert, CheckCircle2, History, MinusCircle, PlusCircle, X, Settings, ShieldCheck, DollarSign, Edit3, ArrowRight, FileText } from 'lucide-react';
+import ReceiptModal from '../components/ReceiptModal';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -19,6 +20,10 @@ export default function SecurityDeposits() {
   const [showSetModal, setShowSetModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
+
+  // Receipt Modal State
+  const [receiptModalOpen, setReceiptModalOpen] = useState(false);
+  const [selectedReceiptData, setSelectedReceiptData] = useState(null);
   
   const [configAmount, setConfigAmount] = useState('2000');
   const [amount, setAmount] = useState('');
@@ -151,6 +156,27 @@ export default function SecurityDeposits() {
     setSelectedUser(user);
     fetchHistory(user.id);
     setShowHistoryModal(true);
+  };
+
+  const handleOpenDepositReceipt = (user) => {
+    const bal = parseFloat(user.security_deposit_balance || 0);
+    setSelectedReceiptData({
+      receiptNumber: `REC-DEP-${String(user.id).padStart(5, '0')}`,
+      date: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      riderName: user.name,
+      riderPhone: user.phone,
+      riderEmail: user.email,
+      riderId: user.id,
+      vehicleModel: 'LT EV Mobility Fleet',
+      planName: 'Refundable Security Deposit',
+      planType: 'Security Deposit',
+      amountPaid: bal,
+      depositAmount: bal,
+      paymentMode: 'Cash / UPI Admin Deposit',
+      type: 'deposit',
+      remarks: `Security deposit held on account for driver #${user.id}. Refundable upon return.`
+    });
+    setReceiptModalOpen(true);
   };
 
   const totalDeposits = users.reduce((sum, u) => sum + parseFloat(u.security_deposit_balance || 0), 0);
@@ -287,6 +313,14 @@ export default function SecurityDeposits() {
 
                     <td style={{ padding: '16px 18px', textAlign: 'right' }}>
                       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
+                        {bal > 0 && (
+                          <button 
+                            onClick={() => handleOpenDepositReceipt(u)} 
+                            title="Generate / Print / WhatsApp Deposit Receipt"
+                            style={{ padding: '7px 11px', borderRadius: '8px', border: '1px solid #bae6fd', backgroundColor: '#e0f2fe', color: '#0284c7', fontWeight: '700', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <FileText size={13} /> Receipt
+                          </button>
+                        )}
                         <button onClick={() => openSetModal(u)} style={{ padding: '7px 11px', borderRadius: '8px', border: '1px solid #cbd5e1', backgroundColor: '#ffffff', color: '#0f172a', fontWeight: '600', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}>
                           <Edit3 size={14} color="#1d7afc" /> Set Amount
                         </button>
@@ -469,6 +503,12 @@ export default function SecurityDeposits() {
         </div>
       )}
 
+      {/* Official Printable / PDF Receipt & Invoice Modal */}
+      <ReceiptModal 
+        isOpen={receiptModalOpen} 
+        onClose={() => setReceiptModalOpen(false)} 
+        data={selectedReceiptData} 
+      />
     </div>
   );
 }

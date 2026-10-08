@@ -2,10 +2,11 @@ import { useState, useEffect } from 'react';
 import { 
   Calendar, Clock, CreditCard, Filter, Search, Bike, User, ShieldCheck, 
   CheckCircle2, RotateCcw, XCircle, RefreshCw, ChevronRight, Zap, 
-  Plus, Edit3, Trash2, X, AlertCircle, Settings, Check
+  Plus, Edit3, Trash2, X, AlertCircle, Settings, Check, FileText
 } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
+import ReceiptModal from '../components/ReceiptModal';
 
 export default function Rentals() {
   const { token } = useAuth();
@@ -17,6 +18,10 @@ export default function Rentals() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [vehicleFilter, setVehicleFilter] = useState('all');
+
+  // Receipt Modal State
+  const [receiptModalOpen, setReceiptModalOpen] = useState(false);
+  const [selectedReceiptData, setSelectedReceiptData] = useState(null);
 
   // Modal State for Record / Edit Rental
   const [modalOpen, setModalOpen] = useState(false);
@@ -239,6 +244,29 @@ export default function Rentals() {
     } catch (error) {
       alert('Error deleting rental: ' + (error.response?.data?.error || error.message));
     }
+  };
+
+  const handleOpenReceipt = (rental) => {
+    setSelectedReceiptData({
+      receiptNumber: `REC-${String(rental.id).replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase()}`,
+      date: rental.startTime ? rental.startTime.split(' ')[0] : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      riderName: rental.user_name,
+      riderPhone: rental.user_phone,
+      riderEmail: rental.user_email,
+      riderId: rental.user_id,
+      vehicleModel: rental.vehicle_model,
+      vehicleId: rental.vehicle_id,
+      planName: rental.plan_name,
+      planType: rental.plan_type,
+      startDate: rental.startTime,
+      endDate: rental.endTime,
+      nextDueDate: rental.next_payment_date,
+      amountPaid: rental.raw_total_cost || 0,
+      depositAmount: rental.deposit ? String(rental.deposit).replace(/[^0-9.]/g, '') : null,
+      paymentMode: 'Cash / UPI Admin Record',
+      type: 'rental'
+    });
+    setReceiptModalOpen(true);
   };
 
   // Fleet summary stats
@@ -527,6 +555,15 @@ export default function Rentals() {
                 </span>
 
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {/* Official Printable Receipt Button */}
+                  <button
+                    onClick={() => handleOpenReceipt(rental)}
+                    title="Generate, Print & WhatsApp Receipt"
+                    style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    <FileText size={13} /> Receipt
+                  </button>
+
                   {/* Edit / Manage Button */}
                   <button
                     onClick={() => handleOpenEditModal(rental)}
@@ -666,11 +703,17 @@ export default function Rentals() {
                   style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', background: '#f8fafc', color: '#0f172a', outline: 'none' }}
                 >
                   <option value="">-- No Vehicle Assigned (Pending) --</option>
-                  {vehicles.map(v => (
-                    <option key={v.id} value={v.id}>
-                      {v.model || 'EV'} — Status: {v.status.toUpperCase()}
-                    </option>
-                  ))}
+                  {vehicles.map(v => {
+                    const formattedId = v.id.toUpperCase().startsWith('LT') ? v.id : `EV ${v.id}`;
+                    const vStatus = (v.status || 'available').toLowerCase().trim();
+                    const isAssigned = Boolean(v.renter) || vStatus === 'rented' || vStatus === 'in_use';
+                    const statusLabel = isAssigned ? `RENTED (${v.renter})` : vStatus === 'maintenance' ? 'MAINTENANCE' : 'AVAILABLE';
+                    return (
+                      <option key={v.id} value={v.id}>
+                        {formattedId} — {v.model} [{statusLabel}]
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
@@ -797,6 +840,13 @@ export default function Rentals() {
           </div>
         </div>
       )}
+
+      {/* Official Printable / PDF Receipt & Invoice Modal */}
+      <ReceiptModal 
+        isOpen={receiptModalOpen} 
+        onClose={() => setReceiptModalOpen(false)} 
+        data={selectedReceiptData} 
+      />
     </div>
   );
 }

@@ -56,7 +56,11 @@ export default function RentalRequests() {
       const response = await axios.get('/api/vehicles', {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setAvailableVehicles(response.data.filter(v => v.status === 'available'));
+      const unassigned = (response.data || []).filter(v => {
+        const s = (v.status || 'available').toLowerCase().trim();
+        return !v.renter && s !== 'rented' && s !== 'in_use' && s !== 'maintenance';
+      });
+      setAvailableVehicles(unassigned);
     } catch (error) {
       console.error('Error fetching vehicles:', error);
     }
@@ -65,7 +69,9 @@ export default function RentalRequests() {
   const handleAssignClick = (request) => {
     setSelectedRequest(request);
     setPaymentConfirmed(false);
+    setSelectedVehicleId('');
     setShowAssignModal(true);
+    fetchAvailableVehicles();
   };
 
   const handleAssignSubmit = async (e) => {
@@ -307,10 +313,15 @@ export default function RentalRequests() {
                   onChange={e => setSelectedVehicleId(e.target.value)} 
                   style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #cbd5e1', outline: 'none', background: 'white', fontSize: '14px' }}
                 >
-                  <option value="" disabled>-- Choose an available vehicle --</option>
-                  {availableVehicles.map(v => (
-                    <option key={v.id} value={v.id}>{v.model || v.name || 'EV'} ({v.type})</option>
-                  ))}
+                  <option value="" disabled>-- Choose an available vehicle ({availableVehicles.length} available) --</option>
+                  {availableVehicles.map(v => {
+                    const formattedId = v.id.toUpperCase().startsWith('LT') ? v.id : `EV ${v.id}`;
+                    return (
+                      <option key={v.id} value={v.id}>
+                        {formattedId} — {v.model} ({v.location || 'Stand'})
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 

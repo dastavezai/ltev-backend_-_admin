@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle2, Clock, XCircle, RefreshCw, Wallet, ArrowRight, CreditCard, ShieldAlert, Tag, Search, Bike, Check, AlertTriangle, Settings, X } from 'lucide-react';
+import { CheckCircle2, Clock, XCircle, RefreshCw, Wallet, ArrowRight, CreditCard, ShieldAlert, Tag, Search, Bike, Check, AlertTriangle, Settings, X, FileText } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
+import ReceiptModal from '../components/ReceiptModal';
 
 export default function WalletApprovals() {
   const { token } = useAuth();
@@ -10,6 +11,10 @@ export default function WalletApprovals() {
   const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState('all'); // 'all' | 'due_renewals' | 'plan' | 'recharge' | 'refund' | 'pending'
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Receipt Modal State
+  const [receiptModalOpen, setReceiptModalOpen] = useState(false);
+  const [selectedReceiptData, setSelectedReceiptData] = useState(null);
 
   // Form states for inline renewal confirmations: { [rentalId]: { amount, next_payment_date, submitting } }
   const [renewalForms, setRenewalForms] = useState({});
@@ -181,6 +186,49 @@ export default function WalletApprovals() {
         [field]: value
       }
     }));
+  };
+
+  const handleOpenRenewalReceipt = (rental) => {
+    const form = renewalForms[rental.id] || {};
+    setSelectedReceiptData({
+      receiptNumber: `REC-REN-${String(rental.id).replace(/[^a-zA-Z0-9]/g, '').slice(-5).toUpperCase()}`,
+      date: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      riderName: rental.user_name,
+      riderPhone: rental.user_phone,
+      riderEmail: rental.user_email || 'N/A',
+      vehicleModel: rental.vehicle_model,
+      vehicleId: rental.vehicle_id,
+      planName: rental.plan_name,
+      planType: 'Plan Renewal Extension',
+      startDate: rental.expiry_date || 'Active',
+      endDate: form.next_payment_date || rental.suggested_next_due || 'Extended',
+      nextDueDate: form.next_payment_date || rental.suggested_next_due,
+      amountPaid: form.amount || rental.plan_price || 230,
+      paymentMode: 'Cash / UPI Admin Renewal',
+      remarks: `Plan renewal payment verified for EV #${rental.vehicle_id || 'N/A'}`
+    });
+    setReceiptModalOpen(true);
+  };
+
+  const handleOpenWalletReceipt = (req) => {
+    const utrStr = (req.utr || '').toUpperCase();
+    const isPlan = utrStr.includes('PLAN_BOOKING') || utrStr.includes('PLAN_PAYMENT');
+    const isRefund = utrStr.includes('DEPOSIT_REFUND') || utrStr.includes('REFUND');
+
+    setSelectedReceiptData({
+      receiptNumber: `REC-${String(req.id).padStart(6, '0')}`,
+      date: req.created_at ? new Date(req.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      riderName: req.user,
+      riderPhone: req.phone,
+      riderEmail: req.email || 'N/A',
+      vehicleModel: 'LT EV Fleet',
+      planName: isPlan ? 'Plan Subscription' : isRefund ? 'Security Deposit Refund' : 'Wallet Recharge Top-Up',
+      planType: isPlan ? 'Subscription' : isRefund ? 'Refund' : 'Top-Up',
+      amountPaid: req.amount || 0,
+      paymentMode: 'Online UPI / Bank Transfer',
+      remarks: `Reference UTR: ${req.utr || 'N/A'} (Status: APPROVED)`
+    });
+    setReceiptModalOpen(true);
   };
 
   // Overdue count
@@ -495,6 +543,26 @@ export default function WalletApprovals() {
                       </button>
 
                       <button
+                        onClick={() => handleOpenRenewalReceipt(rental)}
+                        title="Generate / Print / WhatsApp Receipt"
+                        style={{
+                          background: '#e0f2fe',
+                          color: '#0284c7',
+                          border: '1px solid #bae6fd',
+                          padding: '9px 14px',
+                          borderRadius: '8px',
+                          fontWeight: '700',
+                          fontSize: '13px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        <FileText size={14} /> Receipt
+                      </button>
+
+                      <button
                         onClick={() => handleApproveReturn(rental.id)}
                         style={{
                           background: 'white',
@@ -601,7 +669,18 @@ export default function WalletApprovals() {
                           </button>
                         </div>
                       ) : (
-                        <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: '600' }}>Verified</span>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: '600' }}>Verified</span>
+                          {req.status === 'success' && (
+                            <button
+                              onClick={() => handleOpenWalletReceipt(req)}
+                              title="Generate / Print / WhatsApp Receipt"
+                              style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '5px 10px', borderRadius: '6px', fontWeight: '700', fontSize: '11px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+                            >
+                              <FileText size={12} /> Receipt
+                            </button>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -768,6 +847,13 @@ export default function WalletApprovals() {
           </div>
         </div>
       )}
+
+      {/* Official Printable / PDF Receipt & Invoice Modal */}
+      <ReceiptModal 
+        isOpen={receiptModalOpen} 
+        onClose={() => setReceiptModalOpen(false)} 
+        data={selectedReceiptData} 
+      />
     </div>
   );
 }

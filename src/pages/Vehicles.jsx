@@ -64,16 +64,26 @@ export default function Vehicles() {
   const handleAddVehicle = async (e) => {
     e.preventDefault();
     try {
+      const trimmedModel = (newVehicle.model || '').trim();
+      if (!trimmedModel) {
+        alert('Please enter a vehicle number / model (e.g. LT017)');
+        return;
+      }
+
       await axios.post('/api/vehicles', {
         ...newVehicle,
-        registration_number: newVehicle.model,
-        chassis_number: newVehicle.model
+        model: trimmedModel,
+        registration_number: trimmedModel,
+        chassis_number: trimmedModel,
+        status: (newVehicle.status || 'available').toLowerCase().trim(),
+        location: newVehicle.location || (stands[0]?.name || 'Khajpura')
       }, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
       });
       setShowAddModal(false);
       setNewVehicle({ model: '', type: 'Electric Scooter', status: 'available', location: stands[0]?.name || '', chassis_number: '', registration_number: '' });
       fetchVehicles(); // Refresh list
+      alert(`Vehicle ${trimmedModel} added successfully and is available for booking & assignment!`);
     } catch (error) {
       console.error('Error adding vehicle:', error);
       alert('Failed to add vehicle: ' + (error.response?.data?.error || error.message));

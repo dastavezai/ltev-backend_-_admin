@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, ShieldCheck, Wallet, ReceiptText, LogOut, Bike, FileText, Map, Tag, ClipboardList, ShieldAlert, Bell, Megaphone } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldCheck, Wallet, LogOut, Bike, FileText, Map, Tag, ClipboardList, ShieldAlert, Bell, Megaphone, Wrench, CalendarCheck, Briefcase, Package } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Sidebar() {
@@ -8,9 +8,13 @@ export default function Sidebar() {
 
   const navItems = [
     { name: 'Dashboard', path: '/dashboard', icon: <LayoutDashboard size={20} /> },
+    { name: 'Management Portal', path: '/management', icon: <Briefcase size={20} /> },
+    { name: 'Bookings & Dues', path: '/bookings', icon: <CalendarCheck size={20} /> },
     { name: 'Updates Inbox', path: '/updates', icon: <Bell size={20} /> },
     { name: 'Broadcast', path: '/broadcast', icon: <Megaphone size={20} /> },
     { name: 'Vehicles', path: '/vehicles', icon: <Bike size={20} /> },
+    { name: 'Vehicle Services', path: '/services', icon: <Wrench size={20} /> },
+    { name: 'Spare Parts', path: '/parts', icon: <Package size={20} /> },
     { name: 'Stands', path: '/stands', icon: <Map size={20} /> },
     { name: 'Rentals', path: '/rentals', icon: <FileText size={20} /> },
     { name: 'Rental Requests', path: '/rental-requests', icon: <ClipboardList size={20} /> },
@@ -18,7 +22,7 @@ export default function Sidebar() {
     { name: 'Account Approvals', path: '/account-approvals', icon: <ShieldCheck size={20} /> },
     { name: 'Wallet Approvals', path: '/wallet-approvals', icon: <Wallet size={20} /> },
     { name: 'Security Deposits', path: '/security-deposits', icon: <ShieldAlert size={20} /> },
-    { name: 'Transactions', path: '/transactions', icon: <ReceiptText size={20} /> },
+    { name: 'Transactions', path: '/transactions', icon: <Wallet size={20} /> },
     { name: 'Subscription Plans', path: '/plans', icon: <Tag size={20} /> },
   ];
 
@@ -68,7 +72,12 @@ export default function Sidebar() {
               }}
             >
               <div style={{ color: isActive ? '#38bdf8' : 'inherit', transition: 'color 0.2s' }}>{item.icon}</div>
-              <span style={{ fontSize: '15px' }}>{item.name}</span>
+              <span style={{ fontSize: '15px', flex: 1 }}>{item.name}</span>
+              {item.badge && (
+                <span style={{ background: '#38bdf8', color: '#0f172a', fontSize: '10px', fontWeight: '800', padding: '2px 6px', borderRadius: '6px', letterSpacing: '0.5px' }}>
+                  {item.badge}
+                </span>
+              )}
             </Link>
           );
         })}
