@@ -53,6 +53,24 @@ const partsStorage = multer.diskStorage({
 });
 const uploadPart = multer({ storage: partsStorage });
 
+// Setup Multer Storage for Vehicle Issue Images
+const issueUploadDir = path.join(__dirname, 'public', 'uploads', 'issues');
+if (!fs.existsSync(issueUploadDir)) {
+  fs.mkdirSync(issueUploadDir, { recursive: true });
+}
+
+const issueStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, issueUploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname) || '.jpg';
+    cb(null, 'issue-' + uniqueSuffix + ext);
+  }
+});
+const uploadIssue = multer({ storage: issueStorage });
+
 // Serve static uploads directory
 app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads')));
 app.use(express.json());
@@ -123,6 +141,9 @@ async function initDatabase() {
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'paid'`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS duration VARCHAR(100)`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS estimated_completion TIMESTAMP`);
+    await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS image_url TEXT`);
+    await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS images TEXT`);
+    await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS items_breakdown JSONB`);
 
     // Booking & Pre-Booking Dues Migrations
     await pool.query(`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(50) DEFAULT 'online'`);
@@ -780,7 +801,7 @@ app.get('/api/maintenance', authenticateToken, async (req, res) => {
       SELECT 
         m.id, m.vehicle_id, m.service_type, m.issue_description, m.parts_replaced,
         m.cost, m.status, m.date_reported, m.user_id, m.billed_to, m.payment_status,
-        m.duration, m.estimated_completion,
+        m.duration, m.estimated_completion, m.image_url, m.images, m.items_breakdown,
         v.model as vehicle_model, v.location as vehicle_location,
         u.name as user_name, u.phone as user_phone, u.email as user_email,
         COALESCE(u.security_deposit_balance, 0) as security_deposit_balance
@@ -812,7 +833,10 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       billed_to,
       payment_status,
       duration,
-      estimated_completion
+      estimated_completion,
+      image_url,
+      images,
+      items_breakdown
     } = req.body;
 
     if (!vehicle_id || !issue_description) {
@@ -821,32 +845,26 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Resolve vehicle_id: frontend sends display code (e.g. "LT001") — resolve to actual DB integer id
-    let resolvedVehicleId = vehicle_id;
-    // If it's not purely numeric, try to find the vehicle by model or formatted serial
-    if (isNaN(parseInt(vehicle_id, 10)) || String(parseInt(vehicle_id, 10)) !== String(vehicle_id)) {
-      // Try matching by model (exact, case-insensitive)
-      const vByModel = await client.query(
-        'SELECT id FROM vehicles WHERE UPPER(TRIM(model)) = $1 LIMIT 1',
-        [vehicle_id.trim().toUpperCase()]
-      );
-      if (vByModel.rows.length > 0) {
-        resolvedVehicleId = vByModel.rows[0].id;
-      } else {
-        // Try matching LT-prefixed code against formatted serial id (e.g. LT005 -> id=5)
-        const ltMatch = vehicle_id.trim().toUpperCase().match(/^[A-Z]{2}(\d+)$/);
-        if (ltMatch) {
-          const numericId = parseInt(ltMatch[1], 10);
-          const vById = await client.query('SELECT id FROM vehicles WHERE id = $1 LIMIT 1', [numericId]);
-          if (vById.rows.length > 0) resolvedVehicleId = numericId;
-        } else {
-          // Try matching registration_number
-          const vByReg = await client.query(
-            'SELECT id FROM vehicles WHERE UPPER(TRIM(registration_number)) = $1 LIMIT 1',
-            [vehicle_id.trim().toUpperCase()]
-          );
-          if (vByReg.rows.length > 0) resolvedVehicleId = vByReg.rows[0].id;
-        }
+    // Resolve vehicle_id: frontend sends display code (e.g. "LT001" or "0001") — resolve to actual DB vehicle id
+    let resolvedVehicleId = String(vehicle_id).trim();
+    // First, check if vehicle exists directly by id or registration_number or model
+    const directMatch = await client.query(
+      'SELECT id FROM vehicles WHERE id = $1 OR UPPER(TRIM(registration_number)) = $2 OR UPPER(TRIM(model)) = $2 LIMIT 1',
+      [resolvedVehicleId, resolvedVehicleId.toUpperCase()]
+    );
+    if (directMatch.rows.length > 0) {
+      resolvedVehicleId = directMatch.rows[0].id;
+    } else {
+      // Try matching LT-prefixed code against formatted serial id (e.g. LT005 -> id matching '0005' or 5)
+      const ltMatch = resolvedVehicleId.toUpperCase().match(/^[A-Z]{2}(\d+)$/);
+      if (ltMatch) {
+        const rawNum = ltMatch[1];
+        const numericId = parseInt(rawNum, 10);
+        const vById = await client.query(
+          'SELECT id FROM vehicles WHERE id = $1 OR id = $2 OR registration_number = $1 OR registration_number = $2 LIMIT 1',
+          [rawNum, String(numericId)]
+        );
+        if (vById.rows.length > 0) resolvedVehicleId = vById.rows[0].id;
       }
     }
 
@@ -859,8 +877,8 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
 
     const result = await client.query(`
       INSERT INTO maintenance_logs (
-        vehicle_id, service_type, issue_description, parts_replaced, cost, status, date_reported, user_id, billed_to, payment_status, duration, estimated_completion
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        vehicle_id, service_type, issue_description, parts_replaced, cost, status, date_reported, user_id, billed_to, payment_status, duration, estimated_completion, image_url, images, items_breakdown
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
       RETURNING *
     `, [
       resolvedVehicleId,
@@ -874,7 +892,10 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       finalBilledTo,
       finalPaymentStatus,
       duration || null,
-      estimated_completion ? new Date(estimated_completion) : null
+      estimated_completion ? new Date(estimated_completion) : null,
+      image_url || null,
+      images || null,
+      items_breakdown ? (typeof items_breakdown === 'string' ? items_breakdown : JSON.stringify(items_breakdown)) : null
     ]);
 
     // If parts were replaced, automatically deduct stock from parts catalog
@@ -926,7 +947,10 @@ app.put('/api/maintenance/:id', authenticateToken, async (req, res) => {
       billed_to,
       payment_status,
       duration,
-      estimated_completion
+      estimated_completion,
+      image_url,
+      images,
+      items_breakdown
     } = req.body;
 
     await client.query('BEGIN');
@@ -966,8 +990,9 @@ app.put('/api/maintenance/:id', authenticateToken, async (req, res) => {
       UPDATE maintenance_logs
       SET vehicle_id = $1, service_type = $2, issue_description = $3, parts_replaced = $4,
           cost = $5, status = $6, date_reported = $7, user_id = $8, billed_to = $9, payment_status = $10,
-          duration = COALESCE($11, duration), estimated_completion = COALESCE($12, estimated_completion)
-      WHERE id = $13
+          duration = COALESCE($11, duration), estimated_completion = COALESCE($12, estimated_completion),
+          image_url = COALESCE($13, image_url), images = COALESCE($14, images), items_breakdown = COALESCE($15, items_breakdown)
+      WHERE id = $16
       RETURNING *
     `, [
       resolvedVehicleIdPut,
@@ -982,6 +1007,9 @@ app.put('/api/maintenance/:id', authenticateToken, async (req, res) => {
       payment_status,
       duration || null,
       estimated_completion ? new Date(estimated_completion) : null,
+      image_url || null,
+      images || null,
+      items_breakdown ? (typeof items_breakdown === 'string' ? items_breakdown : JSON.stringify(items_breakdown)) : null,
       id
     ]);
 
@@ -3655,8 +3683,74 @@ app.post('/api/wallet_approvals/:id/approve', authenticateToken, async (req, res
           VALUES ($1, $2, 'debit', $3, $4, 'success', CURRENT_TIMESTAMP)
         `, [`TXN-REF-${Date.now()}`, walletRes.rows[0].id, amount, `Deposit Refund to ${utr}`]);
       }
+    } else if (utr.includes('DUE_PAYMENT') || utr.includes('PAY_DUE')) {
+      // 3. Due Payment (Rental Cycle Due / Security Deposit Shortfall)
+      await client.query("UPDATE wallet_approvals SET status = 'success' WHERE id = $1", [id]);
+
+      // Parse deposit amount if specified in UTR
+      const depMatch = utr.match(/Deposit:\s*₹?(\d+(\.\d+)?)/i);
+      const depPaid = depMatch ? parseFloat(depMatch[1]) : 0;
+
+      // Parse cycle amount if specified in UTR
+      const cycMatch = utr.match(/Cycle:\s*₹?(\d+(\.\d+)?)/i);
+      const cycPaid = cycMatch ? parseFloat(cycMatch[1]) : 0;
+
+      // If deposit was paid, credit to users.security_deposit_balance
+      if (depPaid > 0) {
+        const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+        const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+        const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+        const curBal = parseFloat(userRes.rows[0]?.security_deposit_balance || 0);
+        const newBal = curBal + depPaid;
+        const isPaid = newBal >= minDeposit;
+
+        await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newBal, isPaid, user_id]);
+
+        await client.query(`
+          INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+          VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+        `, [user_id, depPaid, `Security Deposit Restored (${utr})`]);
+      }
+
+      // If cycle payment was included, extend the active rental's next_payment_date
+      if (cycPaid > 0 || (depPaid === 0 && amount > 0)) {
+        const activeRentalRes = await client.query(
+          "SELECT r.*, p.billing_cycle, p.duration_days FROM rentals r LEFT JOIN plans p ON p.id = r.plan_id WHERE r.user_id = $1 AND r.status = 'active' ORDER BY r.id DESC LIMIT 1",
+          [user_id]
+        );
+        if (activeRentalRes.rows.length > 0) {
+          const rental = activeRentalRes.rows[0];
+          let daysToAdd = 7;
+          if (rental.billing_cycle === 'monthly' || rental.duration_days === 30) daysToAdd = 30;
+          else if (rental.billing_cycle === 'daily' || rental.duration_days === 1) daysToAdd = 1;
+          else if (rental.duration_days) daysToAdd = parseInt(rental.duration_days, 10);
+
+          const baseDate = rental.next_payment_date && new Date(rental.next_payment_date) > new Date()
+            ? new Date(rental.next_payment_date)
+            : new Date();
+          const newDueDate = new Date(baseDate.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+
+          await client.query(
+            "UPDATE rentals SET next_payment_date = $1 WHERE id = $2",
+            [newDueDate.toISOString(), rental.id]
+          );
+        }
+      }
+
+      // Log audit transaction into wallet_transactions
+      let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+      if (walletRes.rows.length > 0) {
+        await client.query(`
+          INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp) 
+          VALUES ($1, $2, 'credit', $3, $4, 'success', CURRENT_TIMESTAMP)
+        `, [`TXN-DUE-${Date.now()}`, walletRes.rows[0].id, amount, `Due Payment Approved (${utr})`]);
+      }
+
+      await client.query('COMMIT');
+      return res.json({ success: true, message: 'Due payment verified and approved successfully!' });
     } else {
-      // 3. Wallet Recharge
+      // 4. Wallet Recharge
       await client.query("UPDATE wallet_approvals SET status = 'success' WHERE id = $1", [id]);
 
       let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
@@ -3751,6 +3845,39 @@ app.post('/api/wallet/recharge', authenticateToken, async (req, res) => {
   }
 });
 
+// Mobile App Submit Rental Due Payment Request (Deposit Deficit and/or Cycle Dues)
+app.post('/api/rentals/pay-due', authenticateToken, async (req, res) => {
+  try {
+    const { amount, cycle_amount, deposit_amount } = req.body;
+    const user_id = req.user.id;
+    const numAmount = parseFloat(amount || 0);
+
+    if (numAmount <= 0) {
+      return res.status(400).json({ error: 'Valid due payment amount is required' });
+    }
+
+    const depAmt = parseFloat(deposit_amount || 0);
+    const cycAmt = parseFloat(cycle_amount || 0);
+    const approvalId = `WAP-${Date.now()}`;
+    const utrStr = `DUE_PAYMENT: ₹${numAmount} (Deposit: ₹${depAmt}, Cycle: ₹${cycAmt})`;
+
+    const result = await pool.query(`
+      INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date)
+      VALUES ($1, $2, $3, $4, 'pending', CURRENT_TIMESTAMP)
+      RETURNING *
+    `, [approvalId, user_id, numAmount, utrStr]);
+
+    res.json({
+      success: true,
+      message: 'Due payment request submitted for admin approval',
+      request: result.rows[0]
+    });
+  } catch (err) {
+    console.error('Pay due submit error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Mobile App Fetch Current Wallet & Transactions
 app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
   try {
@@ -3791,11 +3918,12 @@ app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
     // Pending approvals
     pendingRes.rows.forEach(p => {
       const isPlan = p.utr?.includes('PLAN');
+      const isDue = p.utr?.includes('DUE_PAYMENT');
       txns.push({
         id: `REQ-${p.id}`,
         type: isPlan ? 'debit' : 'credit',
         amount: parseFloat(p.amount),
-        description: isPlan ? `${p.utr} (Pending Verification)` : `Wallet Recharge (Pending Approval)`,
+        description: isDue ? `Due Payment (Pending Admin Approval)` : isPlan ? `${p.utr} (Pending Verification)` : `Wallet Recharge (Pending Approval)`,
         date: new Date(p.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
         timestamp: new Date(p.date).getTime(),
         status: 'pending'
@@ -4208,7 +4336,22 @@ app.post('/api/users/push-token', authenticateToken, async (req, res) => {
   }
 });
 
-// 6. Mobile App: Rider Vehicle Issue Reporting & Support
+// 6. Mobile App & Admin: Upload Vehicle Problem Image
+app.post('/api/upload/issue-image', authenticateToken, uploadIssue.any(), async (req, res) => {
+  try {
+    const file = req.files && req.files.length > 0 ? req.files[0] : (req.file || null);
+    if (!file) {
+      return res.status(400).json({ error: 'No image file uploaded' });
+    }
+    const imageUrl = `/uploads/issues/${file.filename}`;
+    res.json({ success: true, imageUrl, message: 'Image uploaded successfully' });
+  } catch (err) {
+    console.error('Issue image upload error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mobile App: Rider Vehicle Issue Reporting & Support
 app.get('/api/maintenance/my-issues', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -4216,7 +4359,7 @@ app.get('/api/maintenance/my-issues', authenticateToken, async (req, res) => {
       SELECT 
         m.id, m.vehicle_id, m.service_type, m.issue_description, m.parts_replaced,
         m.cost, m.status, m.date_reported, m.user_id, m.billed_to, m.payment_status,
-        m.duration, m.estimated_completion,
+        m.duration, m.estimated_completion, m.image_url, m.images, m.items_breakdown,
         v.model as vehicle_model, v.location as vehicle_location
       FROM maintenance_logs m
       LEFT JOIN vehicles v ON v.id = m.vehicle_id
@@ -4233,22 +4376,21 @@ app.get('/api/maintenance/my-issues', authenticateToken, async (req, res) => {
 
 app.post('/api/maintenance/report-issue', authenticateToken, async (req, res) => {
   try {
-    const { vehicle_id, service_type, issue_description, priority } = req.body;
+    const { vehicle_id, service_type, issue_description, priority, image_url, images } = req.body;
     const userId = req.user.id;
 
     if (!issue_description) {
       return res.status(400).json({ error: 'Issue description is required' });
     }
 
+    // Always prioritize currently active/assigned rental for this user to lock vehicle
     let targetVehicleId = vehicle_id;
-    if (!targetVehicleId) {
-      const activeRental = await pool.query(
-        "SELECT vehicle_id FROM rentals WHERE user_id = $1 AND status = 'active' LIMIT 1",
-        [userId]
-      );
-      if (activeRental.rows.length > 0) {
-        targetVehicleId = activeRental.rows[0].vehicle_id;
-      }
+    const activeRental = await pool.query(
+      "SELECT vehicle_id FROM rentals WHERE user_id = $1 AND status IN ('active', 'in_use', 'pending_return') ORDER BY start_time DESC LIMIT 1",
+      [userId]
+    );
+    if (activeRental.rows.length > 0 && activeRental.rows[0].vehicle_id) {
+      targetVehicleId = activeRental.rows[0].vehicle_id;
     }
 
     let resolvedVehicleId = targetVehicleId;
@@ -4266,11 +4408,11 @@ app.post('/api/maintenance/report-issue', authenticateToken, async (req, res) =>
 
     const result = await pool.query(`
       INSERT INTO maintenance_logs (
-        vehicle_id, service_type, issue_description, cost, status, date_reported, user_id, billed_to, payment_status
+        vehicle_id, service_type, issue_description, cost, status, date_reported, user_id, billed_to, payment_status, image_url, images
       )
-      VALUES ($1, $2, $3, 0.00, 'reported', CURRENT_DATE, $4, 'company', 'unpaid')
+      VALUES ($1, $2, $3, 0.00, 'reported', CURRENT_DATE, $4, 'company', 'unpaid', $5, $6)
       RETURNING *
-    `, [resolvedVehicleId || null, service_type || 'General Issue', fullDesc, userId]);
+    `, [resolvedVehicleId || null, service_type || 'General Issue', fullDesc, userId, image_url || null, images || null]);
 
     res.json({
       success: true,
@@ -4280,6 +4422,356 @@ app.post('/api/maintenance/report-issue', authenticateToken, async (req, res) =>
   } catch (err) {
     console.error('Report issue error:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Helper to generate self-contained, itemized Service & Parts Invoice HTML
+function generateServiceInvoiceHTML(srv, baseUrl = '') {
+  const serviceCost = parseFloat(srv.cost || 0);
+  const serviceDate = srv.date_reported ? new Date(srv.date_reported) : new Date();
+  const formattedDate = serviceDate.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata'
+  });
+  const serviceId = `SER-${String(srv.id || '').replace(/\\D/g, '').slice(-5) || '10001'}`;
+  const vehicleCode = srv.vehicle_id || 'LT-EV';
+  const vehicleModel = srv.vehicle_model || 'LT.ev Smart Scooter';
+  const riderName = srv.user_name || 'Fleet Maintenance';
+  const riderPhone = srv.user_phone || 'N/A';
+  const serviceType = srv.service_type || 'General Service & Tuning';
+  const issueDesc = srv.issue_description || 'General maintenance and component inspection.';
+  const billedTo = (srv.billed_to || 'company').toUpperCase();
+  const paymentStatus = (srv.payment_status || 'paid').toUpperCase();
+  const isRiderBilled = billedTo === 'RIDER';
+  const companyLegal = 'Wheely Buzz Localtoto Transport Solution Private Limited';
+  const companyAddress = 'Rukanpura, Bailey Road, Patna - 800014 | Helpline: +91 78705 7249';
+
+  // Parse itemized parts and charges list
+  let items = [];
+  if (Array.isArray(srv.items_breakdown) && srv.items_breakdown.length > 0) {
+    items = srv.items_breakdown.map((it, idx) => ({
+      sno: idx + 1,
+      name: it.name || it.item_name || 'Service Component',
+      type: it.type || (it.is_labor ? 'Labor Charge' : 'Spare Part'),
+      qty: parseInt(it.qty || it.quantity || 1, 10),
+      rate: parseFloat(it.rate || it.price || it.amount || 0),
+      amount: parseFloat(it.amount || ((it.qty || 1) * (it.rate || it.price || 0)))
+    }));
+  } else if (typeof srv.items_breakdown === 'string') {
+    try {
+      const parsed = JSON.parse(srv.items_breakdown);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        items = parsed.map((it, idx) => ({
+          sno: idx + 1,
+          name: it.name || it.item_name || 'Service Component',
+          type: it.type || (it.is_labor ? 'Labor Charge' : 'Spare Part'),
+          qty: parseInt(it.qty || it.quantity || 1, 10),
+          rate: parseFloat(it.rate || it.price || it.amount || 0),
+          amount: parseFloat(it.amount || ((it.qty || 1) * (it.rate || it.price || 0)))
+        }));
+      }
+    } catch (e) {}
+  }
+
+  // Fallback: If no structured items_breakdown, parse from parts_replaced string
+  if (items.length === 0 && srv.parts_replaced) {
+    const partsArr = String(srv.parts_replaced).split(',').map(s => s.trim()).filter(Boolean);
+    let calculatedSum = 0;
+    partsArr.forEach((partStr, idx) => {
+      let cleanName = partStr;
+      let qty = 1;
+      let amt = 0;
+
+      const qtyMatch = cleanName.match(/^(\d+)\s*[xX*]?\s+(.+)$/);
+      if (qtyMatch) {
+        qty = parseInt(qtyMatch[1], 10) || 1;
+        cleanName = qtyMatch[2].trim();
+      }
+
+      const amtMatch = cleanName.match(/₹\s*([\d,.]+)/);
+      if (amtMatch) {
+        amt = parseFloat(amtMatch[1].replace(/,/g, '')) || 0;
+        cleanName = cleanName.replace(/\s*\(\s*₹\s*[\d,.]+\s*\)/gi, '').trim();
+      }
+
+      calculatedSum += amt;
+      items.push({
+        sno: idx + 1,
+        name: cleanName || 'Spare Part',
+        type: 'Spare Part',
+        qty: qty,
+        rate: amt > 0 ? (amt / qty) : 0,
+        amount: amt
+      });
+    });
+
+    const diff = serviceCost - calculatedSum;
+    if (diff > 0) {
+      items.push({
+        sno: items.length + 1,
+        name: `${serviceType} — Workshop Labor & Inspection Charge`,
+        type: 'Labor & Service',
+        qty: 1,
+        rate: diff,
+        amount: diff
+      });
+    }
+  }
+
+  if (items.length === 0) {
+    items.push({
+      sno: 1,
+      name: serviceType,
+      type: 'General Service',
+      qty: 1,
+      rate: serviceCost,
+      amount: serviceCost
+    });
+  }
+
+  const partsTotal = items.filter(it => it.type === 'Spare Part').reduce((a, b) => a + b.amount, 0);
+  const laborTotal = items.filter(it => it.type !== 'Spare Part').reduce((a, b) => a + b.amount, 0);
+  const totalAmount = items.reduce((a, b) => a + b.amount, 0) || serviceCost;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Service Invoice — EV ${vehicleCode} (${serviceId})</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f8fafc; color: #0f172a; padding: 0; }
+    .action-bar { position: sticky; top: 0; background: #0f172a; color: #ffffff; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 100; }
+    .action-bar-title { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; }
+    .action-bar-badge { background: #00a66c; color: #ffffff; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 800; font-family: monospace; }
+    .action-buttons { display: flex; gap: 8px; }
+    .btn { padding: 8px 14px; border-radius: 8px; border: none; font-weight: 700; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+    .btn-pdf { background: #00a66c; color: #ffffff; }
+    .btn-print { background: #334155; color: #ffffff; }
+    .btn-close { background: #e2e8f0; color: #334155; }
+    .invoice-wrapper { max-width: 800px; margin: 24px auto; background: #ffffff; padding: 36px 40px; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }
+    .brand-header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 20px; border-bottom: 2px solid #00a66c; margin-bottom: 20px; }
+    .brand-legal { font-size: 16px; font-weight: 800; color: #0f172a; letter-spacing: -0.3px; }
+    .brand-contact { font-size: 11px; color: #64748b; margin-top: 3px; }
+    .invoice-badge-box { text-align: right; }
+    .invoice-number { font-size: 20px; font-weight: 900; color: #00a66c; font-family: monospace; }
+    .invoice-date { font-size: 12px; color: #64748b; margin-top: 2px; }
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; padding: 16px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; }
+    .meta-col h4 { font-size: 11px; text-transform: uppercase; color: #64748b; font-weight: 800; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .meta-item { font-size: 13px; color: #334155; margin-bottom: 4px; }
+    .meta-item strong { color: #0f172a; font-weight: 700; }
+    .table-container { margin-bottom: 24px; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th { background: #0f172a; color: #ffffff; padding: 10px 14px; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; }
+    td { padding: 12px 14px; border-bottom: 1px solid #e2e8f0; font-size: 13px; vertical-align: middle; }
+    .text-center { text-align: center; }
+    .text-right { text-align: right; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; }
+    .summary-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 20px; margin-bottom: 28px; }
+    .payment-notes { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; }
+    .payment-notes h5 { font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 8px; }
+    .payment-notes ul { padding-left: 18px; font-size: 12px; color: #475569; }
+    .payment-notes li { margin-bottom: 4px; }
+    .totals-box { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; }
+    .totals-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; color: #475569; }
+    .totals-row.highlight { background: #f0fdf4; padding: 8px 10px; border-radius: 8px; margin: 6px 0; }
+    .totals-row strong { color: #0f172a; font-weight: 700; }
+    .invoice-bottom-section { border-top: 1px dashed #cbd5e1; padding-top: 20px; }
+    .sign-section { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 16px; }
+    .company-stamp { font-size: 12px; color: #334155; }
+    .sign-box { text-align: center; }
+    .sign-line { width: 180px; border-bottom: 1px solid #0f172a; margin-bottom: 4px; }
+    .sign-label { font-size: 11px; color: #64748b; font-weight: 700; }
+    .footer-note { text-align: center; font-size: 11px; color: #94a3b8; }
+    @media print {
+      body { background: #ffffff; }
+      .action-bar { display: none !important; }
+      .invoice-wrapper { margin: 0; padding: 10px; box-shadow: none; border: none; max-width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="action-bar">
+    <div class="action-bar-title">
+      <span>LT EV — Workshop Service & Parts Invoice</span>
+      <span class="action-bar-badge">${serviceId}</span>
+    </div>
+    <div class="action-buttons">
+      <button class="btn btn-pdf" onclick="downloadPDF()">Download PDF</button>
+      <button class="btn btn-print" onclick="window.print()">Print Invoice</button>
+    </div>
+  </div>
+
+  <div class="invoice-wrapper" id="printable-invoice">
+    <div class="brand-header">
+      <div>
+        <div class="brand-legal">${companyLegal}</div>
+        <div class="brand-contact">${companyAddress}</div>
+      </div>
+      <div class="invoice-badge-box">
+        <div class="invoice-number">${serviceId}</div>
+        <div class="invoice-date">Service Date: ${formattedDate}</div>
+      </div>
+    </div>
+
+    <div class="meta-grid">
+      <div class="meta-col">
+        <h4>Customer & Vehicle Details</h4>
+        <div class="meta-item">Billed To: <strong>${riderName}</strong></div>
+        <div class="meta-item">Mobile: <strong style="font-family: monospace;">${riderPhone}</strong></div>
+        <div class="meta-item">Vehicle Number: <strong style="color: #00a66c; font-size: 14px;">${vehicleCode}</strong></div>
+        <div class="meta-item">Vehicle Model: <strong>${vehicleModel}</strong></div>
+      </div>
+      <div class="meta-col">
+        <h4>Service & Payment Record</h4>
+        <div class="meta-item">Job Card ID: <strong style="font-family: monospace;">${serviceId}</strong></div>
+        <div class="meta-item">Service Type: <strong>${serviceType}</strong></div>
+        <div class="meta-item">Billed To: <strong>${isRiderBilled ? 'Rider Account' : 'Company Fleet'}</strong></div>
+        <div class="meta-item">Payment Status: <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'};">${paymentStatus === 'PAID' ? 'PAID & SETTLED' : 'PENDING'}</strong></div>
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 8%;">#</th>
+            <th style="width: 46%;">Item / Part / Service Description</th>
+            <th style="width: 18%;">Category</th>
+            <th class="text-center" style="width: 10%;">Qty</th>
+            <th class="text-right" style="width: 18%;">Amount (₹)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(it => `
+          <tr>
+            <td style="color: #64748b; font-weight: 600;">${it.sno}</td>
+            <td>
+              <div style="font-weight: 700; color: #0f172a;">${it.name}</div>
+              <div style="font-size: 11px; color: #64748b;">Genuine component / authorized service task</div>
+            </td>
+            <td>
+              <span class="badge" style="background: ${it.type === 'Spare Part' ? '#e0f2fe' : '#f1f5f9'}; color: ${it.type === 'Spare Part' ? '#0369a1' : '#475569'};">
+                ${it.type}
+              </span>
+            </td>
+            <td class="text-center" style="font-weight: 600; color: #0f172a;">${it.qty}</td>
+            <td class="text-right" style="font-weight: 700; color: #0f172a;">₹${it.amount.toLocaleString('en-IN')}.00</td>
+          </tr>
+          `).join('')}
+          <tr style="font-weight: 800; font-size: 15px; background: #f8fafc; border-top: 2px solid #e2e8f0;">
+            <td colspan="4" style="color: #0f172a; text-align: right; padding-right: 16px;">Total Invoice Amount</td>
+            <td class="text-right" style="color: #00a66c; font-size: 16px;">₹${totalAmount.toLocaleString('en-IN')}.00</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="summary-grid">
+      <div class="payment-notes">
+        <h5>Maintenance & Warranty Notes:</h5>
+        <ul>
+          <li>Fitted components carry a 7-day workshop service warranty against manufacturing defects.</li>
+          <li>Service done for EV <strong>${vehicleCode}</strong>. Issue details: <em>${issueDesc}</em></li>
+          <li>For any performance queries, visit authorized LocalToto Stand Workshop.</li>
+          <li>Customer Support: <strong>+91 78705 7249</strong></li>
+        </ul>
+      </div>
+
+      <div class="totals-box">
+        ${partsTotal > 0 ? `
+        <div class="totals-row">
+          <span>Spare Parts Total</span>
+          <span>₹${partsTotal.toLocaleString('en-IN')}.00</span>
+        </div>` : ''}
+        ${laborTotal > 0 ? `
+        <div class="totals-row">
+          <span>Labor & Service Charges</span>
+          <span>₹${laborTotal.toLocaleString('en-IN')}.00</span>
+        </div>` : ''}
+        <div class="totals-row" style="border-top: 1px solid #e2e8f0; font-weight: 800; font-size: 15px; color: #0f172a;">
+          <span>Grand Total</span>
+          <span style="color: #00a66c;">₹${totalAmount.toLocaleString('en-IN')}.00</span>
+        </div>
+        <div class="totals-row highlight">
+          <span style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'}; font-weight: 700;">Payment Status</span>
+          <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'};">${paymentStatus === 'PAID' ? 'PAID & SETTLED' : 'PENDING PAYMENT'}</strong>
+        </div>
+        <div class="totals-row">
+          <span>Billed To</span>
+          <strong>${isRiderBilled ? 'Rider Account' : 'Company Fleet'}</strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="invoice-bottom-section">
+      <div class="sign-section">
+        <div class="company-stamp">
+          <div><strong>${companyLegal}</strong></div>
+          <div>Authorized Workshop Maintenance Center • Patna</div>
+        </div>
+
+        <div class="sign-box">
+          <div class="sign-line"></div>
+          <div class="sign-label">Technician / Stand Manager Sign</div>
+        </div>
+      </div>
+
+      <div class="footer-note">
+        ${companyLegal} • www.ltev.in • Helpline: +91 78705 7249
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function downloadPDF() {
+      const element = document.getElementById('printable-invoice');
+      const opt = {
+        margin: [10, 10, 10, 10],
+        filename: 'LT_EV_Service_${serviceId}.pdf',
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      };
+      if (window.html2pdf) {
+        html2pdf().set(opt).from(element).save();
+      } else {
+        window.print();
+      }
+    }
+  </script>
+</body>
+</html>`;
+}
+
+// 7. Mobile App & Admin: Public / Authorized Service Invoice Download HTML
+app.get('/api/maintenance/:id/invoice', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const srvRes = await pool.query(`
+      SELECT 
+        m.*, v.model as vehicle_model,
+        u.name as user_name, u.phone as user_phone, u.email as user_email
+      FROM maintenance_logs m
+      LEFT JOIN vehicles v ON v.id = m.vehicle_id
+      LEFT JOIN users u ON u.id = m.user_id
+      WHERE m.id = $1
+    `, [id]);
+
+    if (srvRes.rows.length === 0) {
+      return res.status(404).send('<h1>Service Invoice Not Found</h1><p>Record ID ' + id + ' does not exist.</p>');
+    }
+
+    const html = generateServiceInvoiceHTML(srvRes.rows[0]);
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  } catch (err) {
+    console.error('Generate service invoice error:', err);
+    res.status(500).send('Error generating invoice: ' + err.message);
   }
 });
 

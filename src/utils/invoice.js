@@ -506,7 +506,7 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
   // 4. WORKSHOP SERVICE & PARTS REPLACEMENT INVOICE TEMPLATE (SER)
   // ============================================================
   if (type === 'service_parts') {
-    const serviceCost = parseFloat(data.cost || data.total_cost || 450);
+    const serviceCost = parseFloat(data.cost || data.total_cost || 0);
     const serviceDate = data.date_reported || data.service_date || data.date || Date.now();
     const formattedDate = formatIndianDate(serviceDate);
     const serviceId = getShortBookingId(data.id || data.service_id, 'SER');
@@ -515,9 +515,96 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
     const cleanPhone = data.user_phone || data.phone || '';
     const serviceType = data.service_type || 'General Periodic Service & Tuning';
     const issueDesc = data.issue_description || 'Front brake shoe replaced, chain adjustment & inspection.';
-    const partsReplaced = data.parts_replaced || 'Front Brake Shoe Kit, Chain Lube';
     const billedTo = (data.billed_to || 'rider').toUpperCase();
     const paymentStatus = (data.payment_status || 'paid').toUpperCase();
+    const isRiderBilled = billedTo === 'RIDER';
+
+    // Parse itemized parts and charges
+    let items = [];
+    if (Array.isArray(data.items_breakdown) && data.items_breakdown.length > 0) {
+      items = data.items_breakdown.map((it, idx) => ({
+        sno: idx + 1,
+        name: it.name || it.item_name || 'Service Component',
+        type: it.type || (it.is_labor ? 'Labor Charge' : 'Spare Part'),
+        qty: parseInt(it.qty || it.quantity || 1, 10),
+        rate: parseFloat(it.rate || it.price || it.amount || 0),
+        amount: parseFloat(it.amount || ((it.qty || 1) * (it.rate || it.price || 0)))
+      }));
+    } else if (typeof data.items_breakdown === 'string') {
+      try {
+        const parsed = JSON.parse(data.items_breakdown);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          items = parsed.map((it, idx) => ({
+            sno: idx + 1,
+            name: it.name || it.item_name || 'Service Component',
+            type: it.type || (it.is_labor ? 'Labor Charge' : 'Spare Part'),
+            qty: parseInt(it.qty || it.quantity || 1, 10),
+            rate: parseFloat(it.rate || it.price || it.amount || 0),
+            amount: parseFloat(it.amount || ((it.qty || 1) * (it.rate || it.price || 0)))
+          }));
+        }
+      } catch (e) {}
+    }
+
+    // Fallback: If no structured items_breakdown, parse from parts_replaced string
+    if (items.length === 0 && data.parts_replaced) {
+      const partsArr = String(data.parts_replaced).split(',').map(s => s.trim()).filter(Boolean);
+      let calculatedSum = 0;
+      partsArr.forEach((partStr, idx) => {
+        let cleanName = partStr;
+        let qty = 1;
+        let amt = 0;
+
+        const qtyMatch = cleanName.match(/^(\d+)\s*[xX*]?\s+(.+)$/);
+        if (qtyMatch) {
+          qty = parseInt(qtyMatch[1], 10) || 1;
+          cleanName = qtyMatch[2].trim();
+        }
+
+        const amtMatch = cleanName.match(/₹\s*([\d,.]+)/);
+        if (amtMatch) {
+          amt = parseFloat(amtMatch[1].replace(/,/g, '')) || 0;
+          cleanName = cleanName.replace(/\s*\(\s*₹\s*[\d,.]+\s*\)/gi, '').trim();
+        }
+
+        calculatedSum += amt;
+        items.push({
+          sno: idx + 1,
+          name: cleanName || 'Spare Part',
+          type: 'Spare Part',
+          qty: qty,
+          rate: amt > 0 ? (amt / qty) : 0,
+          amount: amt
+        });
+      });
+
+      const diff = serviceCost - calculatedSum;
+      if (diff > 0) {
+        items.push({
+          sno: items.length + 1,
+          name: `${serviceType} — Workshop Labor & Inspection Charge`,
+          type: 'Labor & Service',
+          qty: 1,
+          rate: diff,
+          amount: diff
+        });
+      }
+    }
+
+    if (items.length === 0) {
+      items.push({
+        sno: 1,
+        name: serviceType,
+        type: 'General Service',
+        qty: 1,
+        rate: serviceCost,
+        amount: serviceCost
+      });
+    }
+
+    const partsTotal = items.filter(it => it.type === 'Spare Part').reduce((a, b) => a + b.amount, 0);
+    const laborTotal = items.filter(it => it.type !== 'Spare Part').reduce((a, b) => a + b.amount, 0);
+    const totalAmount = items.reduce((a, b) => a + b.amount, 0) || serviceCost;
 
     const title = `Service Invoice — EV ${vehicleCode} (${serviceId})`;
 
@@ -537,8 +624,9 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
     
     <div class="meta-grid">
       <div class="meta-col">
-        <h4>Vehicle & Service Info</h4>
+        <h4>Vehicle & Customer Details</h4>
         <div class="meta-item">Billed To: <strong>${riderName}</strong></div>
+        <div class="meta-item">Mobile: <strong style="font-family: monospace;">${cleanPhone || 'N/A'}</strong></div>
         <div class="meta-item">Vehicle Number: <strong style="color: #0284c7; font-size: 14px;">${vehicleCode}</strong></div>
         <div class="meta-item">Service Category: <strong>${serviceType}</strong></div>
       </div>
@@ -546,7 +634,8 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
         <h4>Job Card & Payment Status</h4>
         <div class="meta-item">Job Card ID: <strong style="font-family: monospace;">${serviceId}</strong></div>
         <div class="meta-item">Service Date: <strong>${formattedDate}</strong></div>
-        <div class="meta-item">Payment Status: <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#dc2626'};">${paymentStatus === 'PAID' ? 'PAID' : 'PENDING'}</strong></div>
+        <div class="meta-item">Billed To: <strong>${isRiderBilled ? 'Rider Account' : 'Company Fleet Expense'}</strong></div>
+        <div class="meta-item">Payment Status: <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#dc2626'};">${paymentStatus === 'PAID' ? 'PAID & SETTLED' : 'PENDING'}</strong></div>
       </div>
     </div>
 
@@ -554,21 +643,33 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
       <table>
         <thead>
           <tr>
-            <th style="width: 70%;">Replaced Components & Service Item</th>
-            <th class="text-right" style="width: 30%;">Total (₹)</th>
+            <th style="width: 8%;">#</th>
+            <th style="width: 46%;">Replaced Components & Service Items</th>
+            <th style="width: 18%;">Category / Type</th>
+            <th class="text-center" style="width: 10%;">Qty</th>
+            <th class="text-right" style="width: 18%;">Total (₹)</th>
           </tr>
         </thead>
         <tbody>
+          ${items.map(it => `
           <tr>
+            <td style="color: #64748b; font-weight: 600;">${it.sno}</td>
             <td>
-              <div style="font-weight: 700; color: #0f172a;">${partsReplaced || 'Workshop Service & Consumables'}</div>
-              <div style="font-size: 11px; color: #64748b;">Genuine replacement components & workshop maintenance labor.</div>
+              <div style="font-weight: 700; color: #0f172a;">${it.name}</div>
+              <div style="font-size: 11px; color: #64748b;">Genuine replacement component / workshop maintenance labor.</div>
             </td>
-            <td class="text-right" style="font-weight: 600;">₹${serviceCost.toLocaleString('en-IN')}.00</td>
+            <td>
+              <span style="display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; background: ${it.type === 'Spare Part' ? '#e0f2fe' : '#f1f5f9'}; color: ${it.type === 'Spare Part' ? '#0369a1' : '#475569'};">
+                ${it.type}
+              </span>
+            </td>
+            <td class="text-center" style="font-weight: 600; color: #0f172a;">${it.qty}</td>
+            <td class="text-right" style="font-weight: 700; color: #0f172a;">₹${it.amount.toLocaleString('en-IN')}.00</td>
           </tr>
-          <tr style="font-weight: 700; font-size: 15px; background: #f8fafc;">
-            <td style="color: #0f172a;">Total Invoice Amount</td>
-            <td class="text-right" style="color: #0f172a; font-size: 16px;">₹${serviceCost.toLocaleString('en-IN')}.00</td>
+          `).join('')}
+          <tr style="font-weight: 800; font-size: 15px; background: #f8fafc; border-top: 2px solid #e2e8f0;">
+            <td colspan="4" style="color: #0f172a; text-align: right; padding-right: 16px;">Total Invoice Amount</td>
+            <td class="text-right" style="color: #16a34a; font-size: 16px;">₹${totalAmount.toLocaleString('en-IN')}.00</td>
           </tr>
         </tbody>
       </table>
@@ -579,18 +680,30 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
         <h5>Warranty & Maintenance Notes:</h5>
         <ul>
           <li>Fitted components carry a 7-day workshop service warranty against manufacturing defects.</li>
+          <li>Service done for EV <strong>${vehicleCode}</strong>. Issue: <em>${issueDesc}</em></li>
           <li>For any performance queries, visit authorized LocalToto Stand Workshop.</li>
+          <li>Helpline: <strong>${helplinePhone}</strong></li>
         </ul>
       </div>
 
       <div class="totals-box">
+        ${partsTotal > 0 ? `
         <div class="totals-row">
-          <span>Parts & Labor Cost</span>
-          <span>₹${serviceCost.toLocaleString('en-IN')}.00</span>
+          <span>Spare Parts Total</span>
+          <span>₹${partsTotal.toLocaleString('en-IN')}.00</span>
+        </div>` : ''}
+        ${laborTotal > 0 ? `
+        <div class="totals-row">
+          <span>Labor & Workshop Charges</span>
+          <span>₹${laborTotal.toLocaleString('en-IN')}.00</span>
+        </div>` : ''}
+        <div class="totals-row" style="border-top: 1px solid #e2e8f0; font-weight: 800; font-size: 15px;">
+          <span>Grand Total</span>
+          <span style="color: #16a34a;">₹${totalAmount.toLocaleString('en-IN')}.00</span>
         </div>
-        <div class="totals-row highlight" style="background: #f0fdf4;">
-          <span style="color: #16a34a;">Amount Due</span>
-          <strong style="color: #16a34a;">₹${serviceCost.toLocaleString('en-IN')}.00</strong>
+        <div class="totals-row highlight" style="background: ${paymentStatus === 'PAID' ? '#f0fdf4' : '#fff7ed'};">
+          <span style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'};">Status</span>
+          <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'};">${paymentStatus === 'PAID' ? 'PAID & SETTLED' : 'PENDING'}</strong>
         </div>
       </div>
     </div>

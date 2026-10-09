@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { 
   Wrench, Bike, User, DollarSign, Calendar, Clock, Plus, Search, 
   Filter, CheckCircle2, AlertTriangle, Share2, Printer, Edit3, 
-  Trash2, X, ShieldAlert, Check, RefreshCw, Send, ArrowRight, FileText, Package
+  Trash2, X, ShieldAlert, Check, RefreshCw, Send, ArrowRight, FileText, Package,
+  Eye, ExternalLink, Phone, MessageSquare, AlertCircle
 } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
@@ -31,8 +32,11 @@ export default function VehicleServices() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterVehicle, setFilterVehicle] = useState('all');
-  const [filterBilledTo, setFilterBilledTo] = useState('all'); // 'all' | 'rider' | 'company'
+  const [filterBilledTo, setFilterBilledTo] = useState('all'); // 'all' | 'issues' | 'rider' | 'company' | 'completed'
   const [filterStatus, setFilterStatus] = useState('all');
+
+  // Problem Image Preview Modal
+  const [previewImage, setPreviewImage] = useState(null);
 
   // Receipt Modal State
   const [receiptModalOpen, setReceiptModalOpen] = useState(false);
@@ -201,6 +205,21 @@ export default function VehicleServices() {
     }
   };
 
+  // Quick Status Updater for Reported Issues
+  const handleUpdateStatus = async (id, newStatus, currentSrv) => {
+    try {
+      await axios.put(`${import.meta.env.VITE_API_URL || ''}/api/maintenance/${id}`, {
+        ...currentSrv,
+        status: newStatus
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      fetchData();
+    } catch (err) {
+      alert('Error updating status: ' + (err.response?.data?.error || err.message));
+    }
+  };
+
   // Deduct from Rider Security Deposit
   const handleDeductFromDeposit = async (srv) => {
     if (!srv.user_id) {
@@ -280,6 +299,7 @@ _Support: +91 9113750231 | https://ltev.in_`;
   const totalExpenditure = services.reduce((acc, s) => acc + (parseFloat(s.cost) || 0), 0);
   const pendingRiderBills = services.filter(s => s.billed_to === 'rider' && s.payment_status === 'pending');
   const totalPendingAmount = pendingRiderBills.reduce((acc, s) => acc + (parseFloat(s.cost) || 0), 0);
+  const openRiderIssues = services.filter(s => s.status === 'reported' || s.status === 'in_progress');
 
   // Filtered Services
   const filteredServices = services.filter(s => {
@@ -291,7 +311,11 @@ _Support: +91 9113750231 | https://ltev.in_`;
       (s.user_phone || '').includes(searchQuery);
 
     const matchesVehicle = filterVehicle === 'all' || s.vehicle_id === filterVehicle;
-    const matchesBilledTo = filterBilledTo === 'all' || s.billed_to === filterBilledTo;
+    const matchesBilledTo = 
+      filterBilledTo === 'all' ? true :
+      filterBilledTo === 'issues' ? (s.status === 'reported' || s.status === 'in_progress' || (s.user_id && s.status !== 'completed')) :
+      filterBilledTo === 'completed' ? (s.status === 'completed') :
+      s.billed_to === filterBilledTo;
     const matchesStatus = filterStatus === 'all' || s.status === filterStatus;
 
     return matchesSearch && matchesVehicle && matchesBilledTo && matchesStatus;
@@ -306,7 +330,7 @@ _Support: +91 9113750231 | https://ltev.in_`;
             Vehicle Service & Parts Replacement
           </h1>
           <p style={{ color: '#64748b', margin: 0 }}>
-            Log bike maintenance, replace parts, bill damages to riders, and send UPI payment links.
+            Log bike maintenance, replace parts, view rider-reported issues & photos, bill damages, and generate itemized invoices.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '10px' }}>
@@ -339,7 +363,7 @@ _Support: +91 9113750231 | https://ltev.in_`;
       </div>
 
       {/* Metrics Ribbon */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '16px', marginBottom: '24px' }}>
         <div style={{ background: 'white', padding: '20px', borderRadius: '16px', border: '1px solid #f1f5f9', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#64748b', fontSize: '13px', fontWeight: '600' }}>
             <span>Total Services Logged</span>
@@ -347,6 +371,27 @@ _Support: +91 9113750231 | https://ltev.in_`;
           </div>
           <div style={{ fontSize: '28px', fontWeight: '800', color: '#0f172a', marginTop: '8px' }}>
             {services.length} <span style={{ fontSize: '14px', fontWeight: '600', color: '#64748b' }}>Records</span>
+          </div>
+        </div>
+
+        <div 
+          onClick={() => setFilterBilledTo('issues')}
+          style={{ 
+            background: openRiderIssues.length > 0 ? '#fffbeb' : 'white', 
+            padding: '20px', 
+            borderRadius: '16px', 
+            border: openRiderIssues.length > 0 ? '1.5px solid #fde68a' : '1px solid #f1f5f9', 
+            boxShadow: '0 2px 4px rgba(0,0,0,0.02)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#b45309', fontSize: '13px', fontWeight: '700' }}>
+            <span>Rider Reported Issues</span>
+            <AlertCircle size={20} color="#d97706" />
+          </div>
+          <div style={{ fontSize: '28px', fontWeight: '800', color: '#d97706', marginTop: '8px' }}>
+            {openRiderIssues.length} <span style={{ fontSize: '13px', fontWeight: '700', color: openRiderIssues.length > 0 ? '#dc2626' : '#64748b' }}>({openRiderIssues.filter(s => s.status === 'reported').length} Open)</span>
           </div>
         </div>
 
@@ -390,18 +435,20 @@ _Support: +91 9113750231 | https://ltev.in_`;
           onChange={(e) => setFilterVehicle(e.target.value)}
           style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', background: '#f8fafc', fontSize: '13px', fontWeight: '600', color: '#0f172a', outline: 'none' }}
         >
-          <option value="all">All Bikes (16 Fleet)</option>
+          <option value="all">All Bikes ({vehicles.length} Fleet)</option>
           {vehicles.map(v => (
             <option key={v.id} value={v.id}>{v.id} - {v.model}</option>
           ))}
         </select>
 
-        {/* Billed To Filter */}
-        <div style={{ display: 'flex', gap: '6px' }}>
+        {/* Billed To & Status Filter */}
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
           {[
-            { id: 'all', label: 'All Services' },
+            { id: 'all', label: `All Services (${services.length})` },
+            { id: 'issues', label: `🚨 Rider Issues (${openRiderIssues.length})` },
             { id: 'rider', label: 'Billed to Rider' },
             { id: 'company', label: 'Company Expense' },
+            { id: 'completed', label: 'Completed' },
           ].map(tab => (
             <button
               key={tab.id}
@@ -413,7 +460,7 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 fontWeight: '700',
                 fontSize: '12px',
                 cursor: 'pointer',
-                background: filterBilledTo === tab.id ? '#0f172a' : '#f1f5f9',
+                background: filterBilledTo === tab.id ? (tab.id === 'issues' ? '#dc2626' : '#0f172a') : '#f1f5f9',
                 color: filterBilledTo === tab.id ? '#ffffff' : '#64748b'
               }}
             >
@@ -429,6 +476,12 @@ _Support: +91 9113750231 | https://ltev.in_`;
           const isBilledToRider = srv.billed_to === 'rider';
           const isPending = srv.payment_status === 'pending';
           const isDepositDeducted = srv.payment_status === 'deducted_from_deposit';
+          const isReported = srv.status === 'reported';
+          const isInProgress = srv.status === 'in_progress';
+          const isCompleted = srv.status === 'completed';
+          const isUrgent = (srv.issue_description || '').toUpperCase().includes('[URGENT') || (srv.issue_description || '').toLowerCase().includes('breakdown');
+          const hasImage = Boolean(srv.image_url);
+          const fullImgUrl = hasImage ? (srv.image_url.startsWith('http') ? srv.image_url : `${import.meta.env.VITE_API_URL || ''}${srv.image_url}`) : null;
 
           return (
             <div 
@@ -437,19 +490,22 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 background: 'white',
                 borderRadius: '18px',
                 padding: '22px 26px',
-                border: isBilledToRider && isPending ? '1.5px solid #fed7aa' : '1px solid #f1f5f9',
-                boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)',
+                border: isReported 
+                  ? '2px solid #f59e0b' 
+                  : (isBilledToRider && isPending ? '1.5px solid #fed7aa' : '1px solid #f1f5f9'),
+                boxShadow: isReported ? '0 4px 12px rgba(245, 158, 11, 0.12)' : '0 4px 6px -1px rgba(0,0,0,0.02)',
                 display: 'grid',
-                gridTemplateColumns: '1.2fr 1.6fr 1fr auto',
+                gridTemplateColumns: '1.2fr 1.8fr 1.1fr auto',
                 gap: '20px',
-                alignItems: 'center'
+                alignItems: 'center',
+                position: 'relative'
               }}
             >
               {/* Col 1: Vehicle & Date */}
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-                  <div style={{ width: '38px', height: '38px', borderRadius: '10px', background: 'rgba(2, 132, 199, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Bike size={18} color="#0284c7" />
+                  <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: isReported ? '#fef3c7' : 'rgba(2, 132, 199, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {isReported ? <AlertCircle size={20} color="#d97706" /> : <Bike size={20} color="#0284c7" />}
                   </div>
                   <div>
                     <h3 style={{ fontSize: '16px', fontWeight: '800', color: '#0f172a', margin: 0 }}>
@@ -461,39 +517,136 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 <div style={{ fontSize: '12px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <Calendar size={13} /> {new Date(srv.date_reported).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                 </div>
+                {srv.user_name && (
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#334155', fontWeight: '600' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#475569' }}>
+                      <User size={12} color="#0284c7" /> {srv.user_name}
+                    </div>
+                    {srv.user_phone && (
+                      <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px', fontFamily: 'monospace' }}>
+                        📞 {srv.user_phone}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
-              {/* Col 2: Service & Parts Replaced */}
+              {/* Col 2: Service & Reported Problem Details */}
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                  <span style={{ fontSize: '14px', fontWeight: '800', color: '#0f172a' }}>{srv.service_type}</span>
+                {/* Status and Urgency Badges */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>{srv.service_type}</span>
                   <span style={{
                     fontSize: '11px',
                     fontWeight: '800',
-                    padding: '2px 8px',
+                    padding: '3px 9px',
                     borderRadius: '12px',
-                    background: srv.status === 'completed' ? '#dcfce7' : '#fef3c7',
-                    color: srv.status === 'completed' ? '#15803d' : '#b45309',
-                    textTransform: 'uppercase'
+                    background: isCompleted ? '#dcfce7' : isInProgress ? '#eff6ff' : '#fef3c7',
+                    color: isCompleted ? '#15803d' : isInProgress ? '#2563eb' : '#b45309',
+                    textTransform: 'uppercase',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px'
                   }}>
+                    {isCompleted ? <CheckCircle2 size={11} /> : isInProgress ? <Clock size={11} /> : <AlertTriangle size={11} />}
                     {srv.status}
                   </span>
+
+                  {isUrgent && (
+                    <span style={{
+                      fontSize: '10px',
+                      fontWeight: '800',
+                      padding: '2px 8px',
+                      borderRadius: '10px',
+                      background: '#fee2e2',
+                      color: '#dc2626',
+                      letterSpacing: '0.3px'
+                    }}>
+                      ⚡ URGENT BREAKDOWN
+                    </span>
+                  )}
+
+                  {isReported && (
+                    <span style={{
+                      fontSize: '10px',
+                      fontWeight: '800',
+                      padding: '2px 8px',
+                      borderRadius: '10px',
+                      background: '#fff7ed',
+                      color: '#c2410c',
+                      border: '1px solid #ffedd5'
+                    }}>
+                      🚨 RIDER REPORTED
+                    </span>
+                  )}
                 </div>
 
-                <p style={{ margin: '0 0 6px 0', fontSize: '13px', color: '#334155', lineHeight: '1.4' }}>
-                  {srv.issue_description}
+                {/* Issue Description */}
+                <p style={{ margin: '0 0 6px 0', fontSize: '13px', color: '#334155', lineHeight: '1.45', background: isReported ? '#fffbeb' : 'transparent', padding: isReported ? '8px 10px' : '0', borderRadius: isReported ? '8px' : '0' }}>
+                  {srv.issue_description || 'No description provided.'}
                 </p>
 
+                {/* Problem Photo Attached Preview */}
+                {fullImgUrl && (
+                  <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div 
+                      onClick={() => setPreviewImage(fullImgUrl)}
+                      style={{ 
+                        cursor: 'pointer',
+                        position: 'relative',
+                        display: 'inline-block'
+                      }}
+                    >
+                      <img 
+                        src={fullImgUrl} 
+                        alt="Issue photo" 
+                        style={{ 
+                          width: '56px', 
+                          height: '56px', 
+                          borderRadius: '10px', 
+                          objectFit: 'cover', 
+                          border: '2px solid #0284c7',
+                          boxShadow: '0 2px 6px rgba(0,0,0,0.1)'
+                        }} 
+                      />
+                    </div>
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewImage(fullImgUrl)}
+                        style={{
+                          background: '#f0f9ff',
+                          color: '#0284c7',
+                          border: '1px solid #bae6fd',
+                          borderRadius: '8px',
+                          padding: '5px 10px',
+                          fontSize: '11px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '5px'
+                        }}
+                      >
+                        <Eye size={13} /> View Problem Photo
+                      </button>
+                      <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                        Captured by rider via app
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {srv.parts_replaced && (
-                  <div style={{ fontSize: '12px', color: '#0369a1', fontWeight: '600' }}>
+                  <div style={{ fontSize: '12px', color: '#0369a1', fontWeight: '600', marginTop: '6px' }}>
                     🔩 Replaced: {srv.parts_replaced}
                   </div>
                 )}
               </div>
 
-              {/* Col 3: Financials & Rider Info */}
+              {/* Col 3: Financials & Billing Info */}
               <div>
-                <div style={{ fontSize: '16px', fontWeight: '800', color: '#0f172a', marginBottom: '4px' }}>
+                <div style={{ fontSize: '18px', fontWeight: '800', color: '#0f172a', marginBottom: '4px' }}>
                   ₹{parseFloat(srv.cost || 0).toLocaleString('en-IN')}
                 </div>
 
@@ -509,11 +662,6 @@ _Support: +91 9113750231 | https://ltev.in_`;
                   </span>
                 </div>
 
-                {isBilledToRider && srv.user_name && (
-                  <div style={{ fontSize: '12px', color: '#475569', fontWeight: '600' }}>
-                    {srv.user_name} (📞 {srv.user_phone})
-                  </div>
-                )}
                 {isDepositDeducted && (
                   <div style={{ fontSize: '11px', color: '#16a34a', fontWeight: '700', marginTop: '2px' }}>
                     ✓ Settled from Security Deposit
@@ -522,7 +670,73 @@ _Support: +91 9113750231 | https://ltev.in_`;
               </div>
 
               {/* Col 4: Action Controls */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end', minWidth: '160px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end', minWidth: '180px' }}>
+                {/* Quick actions for reported issues */}
+                {isReported && (
+                  <div style={{ display: 'flex', gap: '6px', width: '100%', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => handleUpdateStatus(srv.id, 'in_progress', srv)}
+                      title="Mark as In Progress and start attending bike"
+                      style={{
+                        background: '#0284c7',
+                        color: 'white',
+                        border: 'none',
+                        padding: '6px 12px',
+                        borderRadius: '8px',
+                        fontWeight: '700',
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px'
+                      }}
+                    >
+                      <Clock size={13} /> Start Repair
+                    </button>
+                    <button
+                      onClick={() => handleOpenEditModal(srv)}
+                      title="Attend issue, record replaced parts and cost"
+                      style={{
+                        background: '#0f172a',
+                        color: 'white',
+                        border: 'none',
+                        padding: '6px 12px',
+                        borderRadius: '8px',
+                        fontWeight: '700',
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px'
+                      }}
+                    >
+                      <Wrench size={13} /> Attend & Bill
+                    </button>
+                  </div>
+                )}
+
+                {isInProgress && (
+                  <button
+                    onClick={() => handleUpdateStatus(srv.id, 'completed', srv)}
+                    title="Mark service as completed"
+                    style={{
+                      background: '#16a34a',
+                      color: 'white',
+                      border: 'none',
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      fontWeight: '700',
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px'
+                    }}
+                  >
+                    <CheckCircle2 size={13} /> Mark Resolved
+                  </button>
+                )}
+
                 {isBilledToRider && isPending && (
                   <button
                     onClick={() => handleSendPaymentReminder(srv)}
@@ -546,12 +760,21 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 )}
 
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {/* Itemized Service Invoice PDF / Download */}
                   <button
-                    onClick={() => handleOpenReceipt(srv)}
-                    title="Generate & Print Official Service Receipt"
+                    onClick={() => window.open(`${import.meta.env.VITE_API_URL || ''}/api/maintenance/${srv.id}/invoice`, '_blank')}
+                    title="Open official itemized invoice with parts and charges breakdown"
                     style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
                   >
-                    <FileText size={13} /> Bill / Receipt
+                    <FileText size={13} /> Invoice (PDF)
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenReceipt(srv)}
+                    title="Print Standard Service Receipt"
+                    style={{ background: '#f8fafc', color: '#334155', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    <Printer size={13} /> Receipt
                   </button>
 
                   {isBilledToRider && isPending && parseFloat(srv.security_deposit_balance || 0) >= parseFloat(srv.cost || 0) && (
@@ -566,7 +789,7 @@ _Support: +91 9113750231 | https://ltev.in_`;
 
                   <button
                     onClick={() => handleOpenEditModal(srv)}
-                    title="Edit Service Record"
+                    title="Edit Service Record / Parts"
                     style={{ background: '#f1f5f9', color: '#0f172a', border: '1px solid #cbd5e1', padding: '6px 8px', borderRadius: '8px', cursor: 'pointer' }}
                   >
                     <Edit3 size={13} />
@@ -912,6 +1135,95 @@ _Support: +91 9113750231 | https://ltev.in_`;
         onClose={() => setReceiptModalOpen(false)}
         data={selectedReceiptData}
       />
+
+      {/* Problem Image Preview Modal */}
+      {previewImage && (
+        <div 
+          onClick={() => setPreviewImage(null)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.85)',
+            backdropFilter: 'blur(5px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2000,
+            padding: '24px'
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#ffffff',
+              borderRadius: '20px',
+              maxWidth: '720px',
+              width: '100%',
+              overflow: 'hidden',
+              boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #e2e8f0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Eye size={18} color="#0284c7" />
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '800', color: '#0f172a' }}>
+                  Problem Photo Attached by Rider
+                </h3>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <a 
+                  href={previewImage} 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '4px', 
+                    background: '#f0f9ff', 
+                    color: '#0284c7', 
+                    padding: '6px 12px', 
+                    borderRadius: '8px', 
+                    textDecoration: 'none', 
+                    fontSize: '12px', 
+                    fontWeight: '700',
+                    border: '1px solid #bae6fd'
+                  }}
+                >
+                  <ExternalLink size={14} /> Open Full Size
+                </a>
+                <button 
+                  onClick={() => setPreviewImage(null)}
+                  style={{ 
+                    background: '#f1f5f9', 
+                    border: 'none', 
+                    borderRadius: '50%', 
+                    width: '32px', 
+                    height: '32px', 
+                    cursor: 'pointer', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'center' 
+                  }}
+                >
+                  <X size={18} color="#64748b" />
+                </button>
+              </div>
+            </div>
+            <div style={{ padding: '20px', background: '#090d16', display: 'flex', justifyContent: 'center' }}>
+              <img 
+                src={previewImage} 
+                alt="Reported Issue Problem" 
+                style={{ maxWidth: '100%', maxHeight: '68vh', objectFit: 'contain', borderRadius: '8px' }} 
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

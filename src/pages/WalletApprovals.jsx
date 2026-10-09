@@ -214,6 +214,7 @@ export default function WalletApprovals() {
     const utrStr = (req.utr || '').toUpperCase();
     const isPlan = utrStr.includes('PLAN_BOOKING') || utrStr.includes('PLAN_PAYMENT');
     const isRefund = utrStr.includes('DEPOSIT_REFUND') || utrStr.includes('REFUND');
+    const isDue = utrStr.includes('DUE_PAYMENT') || utrStr.includes('PAY_DUE');
 
     setSelectedReceiptData({
       receiptNumber: `REC-${String(req.id).padStart(6, '0')}`,
@@ -222,8 +223,8 @@ export default function WalletApprovals() {
       riderPhone: req.phone,
       riderEmail: req.email || 'N/A',
       vehicleModel: 'LT EV Fleet',
-      planName: isPlan ? 'Plan Subscription' : isRefund ? 'Security Deposit Refund' : 'Wallet Recharge Top-Up',
-      planType: isPlan ? 'Subscription' : isRefund ? 'Refund' : 'Top-Up',
+      planName: isDue ? 'Rental Due / Security Deposit' : isPlan ? 'Plan Subscription' : isRefund ? 'Security Deposit Refund' : 'Wallet Recharge Top-Up',
+      planType: isDue ? 'Due Payment' : isPlan ? 'Subscription' : isRefund ? 'Refund' : 'Top-Up',
       amountPaid: req.amount || 0,
       paymentMode: 'Online UPI / Bank Transfer',
       remarks: `Reference UTR: ${req.utr || 'N/A'} (Status: APPROVED)`
@@ -239,7 +240,8 @@ export default function WalletApprovals() {
     const utrStr = (req.utr || '').toUpperCase();
     const isPlan = utrStr.includes('PLAN_BOOKING') || utrStr.includes('PLAN_PAYMENT');
     const isRefund = utrStr.includes('DEPOSIT_REFUND') || utrStr.includes('REFUND');
-    const isRecharge = !isPlan && !isRefund;
+    const isDue = utrStr.includes('DUE_PAYMENT') || utrStr.includes('PAY_DUE');
+    const isRecharge = !isPlan && !isRefund && !isDue;
 
     const matchesSearch = 
       (req.user || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -252,6 +254,7 @@ export default function WalletApprovals() {
     if (filterType === 'plan') return isPlan;
     if (filterType === 'recharge') return isRecharge;
     if (filterType === 'refund') return isRefund;
+    if (filterType === 'due') return isDue;
     if (filterType === 'pending') return req.status === 'pending';
 
     return true;
@@ -392,6 +395,7 @@ export default function WalletApprovals() {
             { id: 'all', label: `All (${requests.length + dueRenewals.length})` },
             { id: 'due_renewals', label: `⚡ Plan Renewals Due (${dueRenewals.length})` },
             { id: 'pending', label: `Pending Approvals (${pendingApprovalsCount})` },
+            { id: 'due', label: 'Due Payments' },
             { id: 'recharge', label: 'Wallet Topups' },
             { id: 'plan', label: 'Plan Bookings' },
             { id: 'refund', label: 'Deposit Refunds' },
@@ -611,7 +615,8 @@ export default function WalletApprovals() {
                 const utrStr = (req.utr || '').toUpperCase();
                 const isPlan = utrStr.includes('PLAN_BOOKING') || utrStr.includes('PLAN_PAYMENT');
                 const isRefund = utrStr.includes('DEPOSIT_REFUND') || utrStr.includes('REFUND');
-                const isRecharge = !isPlan && !isRefund;
+                const isDue = utrStr.includes('DUE_PAYMENT') || utrStr.includes('PAY_DUE');
+                const isRecharge = !isPlan && !isRefund && !isDue;
 
                 return (
                   <tr key={req.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
@@ -621,6 +626,15 @@ export default function WalletApprovals() {
                       <div style={{ fontSize: '12px', color: '#64748b' }}>📞 {req.phone || 'N/A'}</div>
                     </td>
                     <td style={{ padding: '16px 18px' }}>
+                      {isDue && (
+                        <div>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#fef3c7', color: '#b45309', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '800', marginBottom: '4px' }}>
+                            <CreditCard size={12} /> DUE PAYMENT (CYCLE / DEPOSIT)
+                          </span>
+                          <div style={{ fontSize: '12px', color: '#475569', fontWeight: '600' }}>{req.utr}</div>
+                        </div>
+                      )}
+
                       {isPlan && (
                         <div>
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#dcfce7', color: '#15803d', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '800', marginBottom: '4px' }}>
@@ -658,7 +672,7 @@ export default function WalletApprovals() {
                       {req.status === 'pending' ? (
                         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
                           <button 
-                            onClick={() => approveRequest(req.id, isPlan ? 'plan' : isRefund ? 'refund' : 'recharge')}
+                            onClick={() => approveRequest(req.id, isDue ? 'due' : isPlan ? 'plan' : isRefund ? 'refund' : 'recharge')}
                             style={{ background: '#00a66c', color: 'white', padding: '7px 14px', borderRadius: '8px', border: 'none', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}>
                             ✓ Approve Payment
                           </button>
