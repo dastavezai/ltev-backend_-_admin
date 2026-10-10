@@ -18,7 +18,7 @@ export default function Sidebar() {
     { name: 'Stands', path: '/stands', icon: <Map size={20} /> },
     { name: 'Rentals', path: '/rentals', icon: <FileText size={20} /> },
     { name: 'Rental Requests', path: '/rental-requests', icon: <ClipboardList size={20} /> },
-    { name: 'Users', path: '/users', icon: <Users size={20} /> },
+    { name: 'Riders', path: '/users', icon: <Users size={20} /> },
     { name: 'Account Approvals', path: '/account-approvals', icon: <ShieldCheck size={20} /> },
     { name: 'Wallet Approvals', path: '/wallet-approvals', icon: <Wallet size={20} /> },
     { name: 'Security Deposits', path: '/security-deposits', icon: <ShieldAlert size={20} /> },
