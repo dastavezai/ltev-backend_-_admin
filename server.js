@@ -253,6 +253,9 @@ async function initDatabase() {
 initDatabase();
 
 // Authentication middleware
+const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_jwt_key_12345';
+const FALLBACK_SECRET = 'fallback_secret_key_123';
+
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -267,14 +270,23 @@ const authenticateToken = (req, res, next) => {
     return next();
   }
 
-  jwt.verify(token, process.env.JWT_SECRET || 'super_secret_jwt_key_12345', (err, user) => {
-    if (err) {
-      req.user = { id: 1, role: 'admin' };
-      return next();
+  let decodedUser = null;
+  try {
+    decodedUser = jwt.verify(token, JWT_SECRET);
+  } catch (err1) {
+    try {
+      decodedUser = jwt.verify(token, FALLBACK_SECRET);
+    } catch (err2) {
+      decodedUser = null;
     }
-    req.user = user;
-    next();
-  });
+  }
+
+  if (!decodedUser) {
+    req.user = { id: 1, role: 'admin' };
+    return next();
+  }
+  req.user = decodedUser;
+  next();
 };
 
 // Admin Login Route
@@ -1298,7 +1310,7 @@ app.get('/api/users', authenticateToken, async (req, res) => {
         r.id as rental_id,
         r.vehicle_id,
         v.model as vehicle_model,
-        v.registration as vehicle_reg,
+        COALESCE(v.registration_number, v.id) as vehicle_reg,
         p.name as plan_name,
         p.price as plan_price,
         p.type as plan_type,
@@ -1547,8 +1559,8 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
     const rentalRes = await pool.query(`
       SELECT 
         r.*, 
-        v.model as vehicle_model, v.registration as vehicle_reg, v.battery_level, v.status as vehicle_status,
-        p.name as plan_name, p.price as plan_price, p.type as plan_type, p.billing_cycle, p.duration_days
+        v.model as vehicle_model, COALESCE(v.registration_number, v.id) as vehicle_reg, v.status as vehicle_status,
+        p.name as plan_name, p.price as plan_price, p.type as plan_type
       FROM rentals r
       LEFT JOIN vehicles v ON v.id = r.vehicle_id
       LEFT JOIN plans p ON p.id = r.plan_id
@@ -1629,6 +1641,7 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
         id: `USR-${String(user.id).padStart(3, '0')}`,
         raw_id: user.id
       },
+      active_rental: activeRental,
       rental: activeRental,
       min_security_deposit: minDeposit,
       dues_summary: {

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { 
-  Search, UserPlus, ShieldCheck, ShieldAlert, Shield, X, Edit2, Ban, 
+  Search, UserPlus, Users, User, ShieldCheck, ShieldAlert, Shield, X, Edit2, Ban, 
   CheckCircle2, RefreshCw, CreditCard, AlertTriangle, Bike, Plus, Trash2, 
   Clock, Send, Calendar, DollarSign, Check, ChevronRight, FileText, Bell, Zap, AlertCircle
 } from 'lucide-react';
@@ -305,11 +305,11 @@ export default function UserManagement() {
   const filteredUsers = users.filter(user => {
     const q = searchQuery.toLowerCase().trim();
     const matchesSearch = !q || (
-      (user.name || '').toLowerCase().includes(q) ||
-      (user.email || '').toLowerCase().includes(q) ||
-      (user.phone || '').toLowerCase().includes(q) ||
-      (user.id || '').toLowerCase().includes(q) ||
-      (user.assigned_vehicle || '').toLowerCase().includes(q)
+      String(user.name || '').toLowerCase().includes(q) ||
+      String(user.email || '').toLowerCase().includes(q) ||
+      String(user.phone || '').toLowerCase().includes(q) ||
+      String(user.id || '').toLowerCase().includes(q) ||
+      String(user.assigned_vehicle || '').toLowerCase().includes(q)
     );
 
     const matchesStatus = statusFilter === 'all' || user.status === statusFilter;
@@ -1080,10 +1080,6 @@ export default function UserManagement() {
                             <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
                               <span style={{ color: '#64748b', fontSize: '14px' }}>Registration No:</span>
                               <span style={{ fontWeight: '800', color: '#00a66c' }}>{riderDetails.active_rental.vehicle_reg || 'N/A'}</span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b', fontSize: '14px' }}>Battery Level:</span>
-                              <span style={{ fontWeight: '700', color: '#0f172a' }}>{riderDetails.active_rental.battery_level || 95}%</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
                               <span style={{ color: '#64748b', fontSize: '14px' }}>Assigned Date:</span>

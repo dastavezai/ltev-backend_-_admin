@@ -69,13 +69,13 @@ export default function VehicleServices() {
       const [srvRes, vehRes, usrRes, prtRes] = await Promise.all([
         axios.get(`${import.meta.env.VITE_API_URL || ''}/api/maintenance`, {
           headers: { Authorization: `Bearer ${token}` }
-        }),
+        }).catch(() => ({ data: [] })),
         axios.get(`${import.meta.env.VITE_API_URL || ''}/api/vehicles`, {
           headers: { Authorization: `Bearer ${token}` }
-        }),
+        }).catch(() => ({ data: [] })),
         axios.get(`${import.meta.env.VITE_API_URL || ''}/api/users`, {
           headers: { Authorization: `Bearer ${token}` }
-        }),
+        }).catch(() => ({ data: [] })),
         axios.get(`${import.meta.env.VITE_API_URL || ''}/api/catalog/parts`, {
           headers: { Authorization: `Bearer ${token}` }
         }).catch(() => ({ data: [] }))

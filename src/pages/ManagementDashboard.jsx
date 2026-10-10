@@ -75,6 +75,7 @@ export default function ManagementDashboard() {
     payment_status: 'paid'
   });
   const [submittingService, setSubmittingService] = useState(false);
+  const [serviceRecordsFilter, setServiceRecordsFilter] = useState('all'); // 'all' | 'reported' | 'in_progress' | 'completed'
 
   // -------------------------------------------------------------
   // TAB 2: RENT & PAYMENTS STATE
@@ -145,12 +146,12 @@ export default function ManagementDashboard() {
     setLoading(true);
     try {
       const [vehRes, standsRes, bkgRes, usrRes, plnRes, mntRes, catSvcRes, catPrtRes] = await Promise.all([
-        axios.get('/api/vehicles', authHeaders),
-        axios.get('/api/stands', authHeaders),
-        axios.get('/api/bookings/all', authHeaders),
-        axios.get('/api/users', authHeaders),
-        axios.get('/api/plans', authHeaders),
-        axios.get('/api/maintenance', authHeaders),
+        axios.get('/api/vehicles', authHeaders).catch(() => ({ data: [] })),
+        axios.get('/api/stands', authHeaders).catch(() => ({ data: [] })),
+        axios.get('/api/bookings/all', authHeaders).catch(() => ({ data: [] })),
+        axios.get('/api/users', authHeaders).catch(() => ({ data: [] })),
+        axios.get('/api/plans', authHeaders).catch(() => ({ data: [] })),
+        axios.get('/api/maintenance', authHeaders).catch(() => ({ data: [] })),
         axios.get('/api/catalog/services', authHeaders).catch(() => ({ data: [] })),
         axios.get('/api/catalog/parts', authHeaders).catch(() => ({ data: [] }))
       ]);
@@ -1689,90 +1690,174 @@ export default function ManagementDashboard() {
 
           </div>{/* end two-column grid */}
 
-          {/* Bottom Table: Active / Recent Service Records */}
+          {/* Bottom Table: Active / Recent Service Records & Rider Issue Reports */}
           <div style={{ gridColumn: '1 / -1', background: 'white', border: '1px solid #e2e8f0', borderRadius: '10px', overflow: 'hidden' }}>
-            <div style={{ padding: '14px 18px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ margin: 0, fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>
-                Recent Service Records & Tickets
-              </h3>
-              <span style={{ fontSize: '12px', color: '#64748b' }}>
-                Total: {maintenanceLogs.length}
-              </span>
+            <div style={{ padding: '14px 18px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>
+                  Service Records & Rider Reports
+                </h3>
+                <span style={{ fontSize: '12px', background: '#f1f5f9', color: '#475569', padding: '2px 8px', borderRadius: '6px', fontWeight: '700' }}>
+                  Total: {maintenanceLogs.length}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                {[
+                  { id: 'all', label: `All (${maintenanceLogs.length})` },
+                  { id: 'reported', label: `🚨 Rider Reports (${maintenanceLogs.filter(m => m.status === 'reported').length})`, urgent: maintenanceLogs.filter(m => m.status === 'reported').length > 0 },
+                  { id: 'in_progress', label: `In Progress (${maintenanceLogs.filter(m => m.status === 'in_progress').length})` },
+                  { id: 'completed', label: 'Completed' }
+                ].map(flt => (
+                  <button
+                    key={flt.id}
+                    type="button"
+                    onClick={() => setServiceRecordsFilter(flt.id)}
+                    style={{
+                      background: serviceRecordsFilter === flt.id ? (flt.urgent ? '#dc2626' : '#0284c7') : (flt.urgent ? '#fee2e2' : '#f8fafc'),
+                      color: serviceRecordsFilter === flt.id ? '#ffffff' : (flt.urgent ? '#dc2626' : '#475569'),
+                      border: flt.urgent && serviceRecordsFilter !== flt.id ? '1px solid #fca5a5' : '1px solid #cbd5e1',
+                      padding: '5px 12px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: '700',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {flt.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontSize: '12px', fontWeight: '600' }}>
-                  <th style={{ padding: '10px 16px' }}>Vehicle</th>
-                  <th style={{ padding: '10px 16px' }}>Service Type</th>
-                  <th style={{ padding: '10px 16px' }}>Cost</th>
-                  <th style={{ padding: '10px 16px' }}>Billed To</th>
-                  <th style={{ padding: '10px 16px' }}>Status</th>
-                  <th style={{ padding: '10px 16px', textAlign: 'right' }}>Action</th>
+                  <th style={{ padding: '12px 16px' }}>Vehicle</th>
+                  <th style={{ padding: '12px 16px' }}>Service / Problem Description</th>
+                  <th style={{ padding: '12px 16px' }}>Cost</th>
+                  <th style={{ padding: '12px 16px' }}>Billed To</th>
+                  <th style={{ padding: '12px 16px' }}>Status</th>
+                  <th style={{ padding: '12px 16px', textAlign: 'right' }}>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {maintenanceLogs.slice(0, 10).map(log => (
-                  <tr key={log.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                    <td style={{ padding: '10px 16px', fontWeight: '800', color: '#0369a1' }}>
-                      {getVehicleCode(log.vehicle_id)}
-                    </td>
-                    <td style={{ padding: '10px 16px' }}>
-                      <div>{log.service_type || 'General Service'}</div>
-                      <div style={{ fontSize: '11px', color: '#64748b' }}>{log.issue_description}</div>
-                    </td>
-                    <td style={{ padding: '10px 16px', fontWeight: '600' }}>
-                      ₹{parseFloat(log.cost || 0).toLocaleString('en-IN')}
-                    </td>
-                    <td style={{ padding: '10px 16px', textTransform: 'capitalize' }}>
-                      {log.billed_to}
-                    </td>
-                    <td style={{ padding: '10px 16px' }}>
-                      {log.status === 'in_progress' ? (
-                        <span style={{ background: '#fef3c7', color: '#b45309', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600' }}>
-                          In Progress
-                        </span>
-                      ) : (
-                        <span style={{ background: '#dcfce7', color: '#16a34a', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600' }}>
-                          Completed
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: '10px 16px', textAlign: 'right' }}>
-                      <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center' }}>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenServiceInvoice(log)}
-                          style={{
-                            background: '#f0f9ff',
-                            color: '#0284c7',
-                            border: '1px solid #bae6fd',
-                            padding: '4px 9px',
-                            borderRadius: '4px',
-                            fontSize: '11px',
-                            fontWeight: '600',
-                            cursor: 'pointer',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '4px'
-                          }}
-                          title="Download / Print Service Invoice"
-                        >
-                          <FileText size={12} />
-                          <span>Invoice</span>
-                        </button>
-                        {log.status === 'in_progress' && (
-                          <button
-                            onClick={() => handleMarkServiceCompleted(log.id, log.vehicle_id)}
-                            style={{ background: '#0f172a', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', cursor: 'pointer' }}
-                          >
-                            Mark Ready
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {(() => {
+                  const filteredLogs = maintenanceLogs.filter(log => {
+                    if (serviceRecordsFilter === 'reported') return log.status === 'reported';
+                    if (serviceRecordsFilter === 'in_progress') return log.status === 'in_progress';
+                    if (serviceRecordsFilter === 'completed') return log.status === 'completed';
+                    return true;
+                  });
+
+                  if (filteredLogs.length === 0) {
+                    return (
+                      <tr>
+                        <td colSpan={6} style={{ textAlign: 'center', padding: '36px 16px', color: '#94a3b8' }}>
+                          <Wrench size={32} color="#cbd5e1" style={{ marginBottom: '8px' }} />
+                          <div style={{ fontWeight: '700', color: '#475569' }}>No service or maintenance records found</div>
+                          <div style={{ fontSize: '12px' }}>Filter: {serviceRecordsFilter}</div>
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  return filteredLogs.slice(0, 25).map(log => {
+                    const isReported = log.status === 'reported';
+                    const hasPhoto = Boolean(log.image_url || (Array.isArray(log.images) && log.images.length > 0));
+                    return (
+                      <tr key={log.id} style={{ borderBottom: '1px solid #f1f5f9', background: isReported ? '#fffbeb' : 'transparent' }}>
+                        <td style={{ padding: '12px 16px', fontWeight: '800', color: '#0369a1' }}>
+                          {getVehicleCode(log.vehicle_id)}
+                        </td>
+                        <td style={{ padding: '12px 16px' }}>
+                          <div style={{ fontWeight: '700', color: '#0f172a' }}>{log.service_type || 'General Service'}</div>
+                          {log.issue_description && (
+                            <div style={{ fontSize: '12px', color: isReported ? '#b45309' : '#64748b', marginTop: '2px' }}>
+                              {log.issue_description}
+                            </div>
+                          )}
+                          {log.user_name && (
+                            <div style={{ fontSize: '11px', color: '#0284c7', fontWeight: '600', marginTop: '3px' }}>
+                              👤 Rider: {log.user_name} ({log.user_phone})
+                            </div>
+                          )}
+                          {hasPhoto && (
+                            <a 
+                              href={log.image_url || log.images[0]} 
+                              target="_blank" 
+                              rel="noreferrer"
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#d97706', fontWeight: '700', marginTop: '4px', textDecoration: 'none' }}
+                            >
+                              📷 View Issue Photo
+                            </a>
+                          )}
+                        </td>
+                        <td style={{ padding: '12px 16px', fontWeight: '600' }}>
+                          ₹{parseFloat(log.cost || 0).toLocaleString('en-IN')}
+                        </td>
+                        <td style={{ padding: '12px 16px', textTransform: 'capitalize' }}>
+                          {log.billed_to}
+                        </td>
+                        <td style={{ padding: '12px 16px' }}>
+                          {isReported ? (
+                            <span style={{ background: '#fee2e2', color: '#dc2626', border: '1px solid #fecaca', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '800' }}>
+                              🚨 REPORTED
+                            </span>
+                          ) : log.status === 'in_progress' ? (
+                            <span style={{ background: '#fef3c7', color: '#b45309', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '600' }}>
+                              In Progress
+                            </span>
+                          ) : (
+                            <span style={{ background: '#dcfce7', color: '#16a34a', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '600' }}>
+                              Completed
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenServiceInvoice(log)}
+                              style={{
+                                background: '#f0f9ff',
+                                color: '#0284c7',
+                                border: '1px solid #bae6fd',
+                                padding: '4px 9px',
+                                borderRadius: '4px',
+                                fontSize: '11px',
+                                fontWeight: '600',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px'
+                              }}
+                              title="Download / Print Service Invoice"
+                            >
+                              <FileText size={12} />
+                              <span>Invoice</span>
+                            </button>
+                            {isReported && (
+                              <button
+                                onClick={() => navigate('/services')}
+                                style={{ background: '#dc2626', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '700', cursor: 'pointer' }}
+                              >
+                                Resolve Issue
+                              </button>
+                            )}
+                            {log.status === 'in_progress' && (
+                              <button
+                                onClick={() => handleMarkServiceCompleted(log.id, log.vehicle_id)}
+                                style={{ background: '#0f172a', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', cursor: 'pointer' }}
+                              >
+                                Mark Ready
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  });
+                })()}
               </tbody>
             </table>
           </div>
@@ -2291,7 +2376,8 @@ export default function ManagementDashboard() {
       {assignSlotModalOpen && selectedBookingForSlot && (() => {
         const prevPaid = parseFloat(selectedBookingForSlot.total_cost || selectedBookingForSlot.collected_amount || 0);
         const prevDue = Math.max(0, 5100 - prevPaid);
-        const currentAddedPayment = assignSlotPaymentRows.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+        const addedPaid = assignSlotPaymentRows.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+        const currentAddedPayment = addedPaid;
         const remainingDueAfter = Math.max(0, prevDue - currentAddedPayment);
 
         const filteredVehiclesForSlot = vehicles.filter(v => {

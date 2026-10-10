@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { 
   CalendarCheck, CalendarPlus, Bike, User, DollarSign, Calendar, Clock, Plus, Search, 
   AlertTriangle, Send, Trash2, X, ShieldAlert, RefreshCw, Phone, Edit3, ArrowUpDown, ArrowUp, ArrowDown, Check, Download, FileText, ShieldCheck
@@ -220,10 +220,10 @@ export default function Bookings() {
     try {
       const headers = authToken ? { Authorization: `Bearer ${authToken}` } : {};
       const [bkgRes, usrRes, vehRes, plnRes] = await Promise.all([
-        axios.get('/api/bookings/all', { headers }),
-        axios.get('/api/users', { headers }),
-        axios.get('/api/vehicles', { headers }),
-        axios.get('/api/plans', { headers })
+        axios.get('/api/bookings/all', { headers }).catch(() => ({ data: [] })),
+        axios.get('/api/users', { headers }).catch(() => ({ data: [] })),
+        axios.get('/api/vehicles', { headers }).catch(() => ({ data: [] })),
+        axios.get('/api/plans', { headers }).catch(() => ({ data: [] }))
       ]);
 
       setBookings(bkgRes.data || []);
