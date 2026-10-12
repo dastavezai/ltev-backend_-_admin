@@ -4313,6 +4313,128 @@ app.post('/api/rentals/pay-due', authenticateToken, async (req, res) => {
   }
 });
 
+// Mobile App Deduct Rental Due from Wallet Balance Directly
+app.post('/api/wallet/pay-due-balance', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { amount, cycle_amount, deposit_amount, extra_dues_amount } = req.body;
+    const user_id = req.user.id;
+    const numAmount = parseFloat(amount || 0);
+
+    if (numAmount <= 0) {
+      return res.status(400).json({ error: 'Valid due payment amount is required' });
+    }
+
+    await client.query('BEGIN');
+
+    // 1. Fetch current wallet balance
+    let walletRes = await client.query('SELECT * FROM wallets WHERE user_id = $1 FOR UPDATE', [user_id]);
+    if (walletRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Wallet not found' });
+    }
+
+    const currentBalance = parseFloat(walletRes.rows[0].balance || 0);
+    if (currentBalance < numAmount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        error: `Insufficient wallet balance. Available: ₹${currentBalance}, Required: ₹${numAmount}` 
+      });
+    }
+
+    const newBalance = currentBalance - numAmount;
+    await client.query('UPDATE wallets SET balance = $1 WHERE id = $2', [newBalance, walletRes.rows[0].id]);
+
+    const depAmt = parseFloat(deposit_amount || 0);
+    const cycAmt = parseFloat(cycle_amount || 0);
+    const extraAmt = parseFloat(extra_dues_amount || 0);
+
+    // 2. If deposit shortfall was paid, credit to user's security_deposit_balance
+    if (depAmt > 0) {
+      const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+      const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+      const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+      const curBal = parseFloat(userRes.rows[0]?.security_deposit_balance || 0);
+      const newSecBal = curBal + depAmt;
+      const isPaid = newSecBal >= minDeposit;
+
+      await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newSecBal, isPaid, user_id]);
+
+      await client.query(`
+        INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+        VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+      `, [user_id, depAmt, 'Security Deposit Restored via Wallet Balance']);
+    }
+
+    // 3. If cycle payment was included, extend active rental's next_payment_date
+    if (cycAmt > 0 || (depAmt === 0 && numAmount > 0)) {
+      const activeRentalRes = await client.query(
+        "SELECT r.*, p.billing_cycle, p.duration_days FROM rentals r LEFT JOIN plans p ON p.id = r.plan_id WHERE r.user_id = $1 AND r.status = 'active' ORDER BY r.id DESC LIMIT 1",
+        [user_id]
+      );
+      if (activeRentalRes.rows.length > 0) {
+        const rental = activeRentalRes.rows[0];
+        let daysToAdd = 7;
+        if (rental.billing_cycle === 'monthly' || rental.duration_days === 30) daysToAdd = 30;
+        else if (rental.billing_cycle === 'daily' || rental.duration_days === 1) daysToAdd = 1;
+        else if (rental.duration_days) daysToAdd = parseInt(rental.duration_days, 10);
+
+        const baseDate = rental.next_payment_date && new Date(rental.next_payment_date) > new Date()
+          ? new Date(rental.next_payment_date)
+          : new Date();
+        const newDueDate = new Date(baseDate.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+
+        await client.query(
+          "UPDATE rentals SET next_payment_date = $1 WHERE id = $2",
+          [newDueDate.toISOString(), rental.id]
+        );
+      }
+    }
+
+    // 4. Mark all pending extra dues for this rider as paid
+    if (extraAmt > 0) {
+      await client.query(
+        "UPDATE rider_dues SET status = 'paid', paid_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND status = 'pending'",
+        [user_id]
+      );
+    }
+
+    // 5. Log debit transaction in wallet_transactions
+    const parts = [];
+    if (cycAmt > 0) parts.push(`Rental Cycle: ₹${cycAmt}`);
+    if (depAmt > 0) parts.push(`Security Deposit: ₹${depAmt}`);
+    if (extraAmt > 0) parts.push(`Extra Dues: ₹${extraAmt}`);
+    const details = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+    const txnDesc = `Due Payment Deducted from Wallet${details}`;
+
+    await client.query(`
+      INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp) 
+      VALUES ($1, $2, 'debit', $3, $4, 'success', CURRENT_TIMESTAMP)
+    `, [`TXN-DUE-WLT-${Date.now()}`, walletRes.rows[0].id, numAmount, txnDesc]);
+
+    // 6. Broadcast notification to user
+    await client.query(`
+      INSERT INTO broadcast_notifications (user_id, title, message, category, action_type, status, recipient_count, created_at)
+      VALUES ($1, '✅ Dues Paid via Wallet Balance', $2, 'due_cleared', 'none', 'sent', 1, CURRENT_TIMESTAMP)
+    `, [user_id, `₹${numAmount.toLocaleString('en-IN')} was deducted from your wallet balance. All outstanding dues have been settled instantly!`]);
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      message: 'Due payment successfully deducted from wallet balance!',
+      new_balance: newBalance
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Wallet due deduction error:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+
 // Mobile App Fetch Current Wallet & Transactions
 app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
   try {
