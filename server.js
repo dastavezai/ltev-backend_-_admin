@@ -4133,15 +4133,16 @@ app.post('/api/wallet_approvals/:id/approve', authenticateToken, async (req, res
       // If cycle payment was included, extend the active rental's next_payment_date
       if (cycPaid > 0 || (depPaid === 0 && amount > 0)) {
         const activeRentalRes = await client.query(
-          "SELECT r.*, p.billing_cycle, p.duration_days FROM rentals r LEFT JOIN plans p ON p.id = r.plan_id WHERE r.user_id = $1 AND r.status = 'active' ORDER BY r.id DESC LIMIT 1",
+          "SELECT r.*, p.name as plan_name, p.type as plan_type FROM rentals r LEFT JOIN plans p ON p.id = r.plan_id WHERE r.user_id = $1 AND r.status = 'active' ORDER BY r.id DESC LIMIT 1",
           [user_id]
         );
         if (activeRentalRes.rows.length > 0) {
           const rental = activeRentalRes.rows[0];
+          const planType = (rental.plan_type || rental.plan_name || '').toLowerCase();
           let daysToAdd = 7;
-          if (rental.billing_cycle === 'monthly' || rental.duration_days === 30) daysToAdd = 30;
-          else if (rental.billing_cycle === 'daily' || rental.duration_days === 1) daysToAdd = 1;
-          else if (rental.duration_days) daysToAdd = parseInt(rental.duration_days, 10);
+          if (planType.includes('monthly') || planType.includes('30')) daysToAdd = 30;
+          else if (planType.includes('daily') || planType.includes('1')) daysToAdd = 1;
+          else if (planType.includes('weekly') || planType.includes('7')) daysToAdd = 7;
 
           const baseDate = rental.next_payment_date && new Date(rental.next_payment_date) > new Date()
             ? new Date(rental.next_payment_date)
@@ -4370,15 +4371,16 @@ app.post('/api/wallet/pay-due-balance', authenticateToken, async (req, res) => {
     // 3. If cycle payment was included, extend active rental's next_payment_date
     if (cycAmt > 0 || (depAmt === 0 && numAmount > 0)) {
       const activeRentalRes = await client.query(
-        "SELECT r.*, p.billing_cycle, p.duration_days FROM rentals r LEFT JOIN plans p ON p.id = r.plan_id WHERE r.user_id = $1 AND r.status = 'active' ORDER BY r.id DESC LIMIT 1",
+        "SELECT r.*, p.name as plan_name, p.type as plan_type FROM rentals r LEFT JOIN plans p ON p.id = r.plan_id WHERE r.user_id = $1 AND r.status = 'active' ORDER BY r.id DESC LIMIT 1",
         [user_id]
       );
       if (activeRentalRes.rows.length > 0) {
         const rental = activeRentalRes.rows[0];
+        const planType = (rental.plan_type || rental.plan_name || '').toLowerCase();
         let daysToAdd = 7;
-        if (rental.billing_cycle === 'monthly' || rental.duration_days === 30) daysToAdd = 30;
-        else if (rental.billing_cycle === 'daily' || rental.duration_days === 1) daysToAdd = 1;
-        else if (rental.duration_days) daysToAdd = parseInt(rental.duration_days, 10);
+        if (planType.includes('monthly') || planType.includes('30')) daysToAdd = 30;
+        else if (planType.includes('daily') || planType.includes('1')) daysToAdd = 1;
+        else if (planType.includes('weekly') || planType.includes('7')) daysToAdd = 7;
 
         const baseDate = rental.next_payment_date && new Date(rental.next_payment_date) > new Date()
           ? new Date(rental.next_payment_date)
