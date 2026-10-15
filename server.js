@@ -1734,10 +1734,42 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
         SELECT * FROM wallet_transactions
         WHERE wallet_id = $1
         ORDER BY timestamp DESC
-        LIMIT 20
+        LIMIT 30
       `, [walletRes.rows[0].id]);
       walletTransactions = txnRes.rows;
     }
+
+    // Include Cashfree online orders in rider's transaction history for admin visibility
+    const cfAdminRes = await pool.query(`
+      SELECT * FROM cashfree_orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20
+    `, [id]);
+    cfAdminRes.rows.forEach(c => {
+      const orderId = c.order_id || '';
+      const alreadyInTxns = walletTransactions.some(t => 
+        (t.description && t.description.includes(orderId)) || (t.id && t.id.includes(orderId))
+      );
+      if (!alreadyInTxns) {
+        const isRecharge = c.payment_type === 'recharge';
+        const isDue = c.payment_type === 'due';
+        const label = isRecharge ? 'Cashfree Online Recharge' : isDue ? 'Due Payment via Cashfree' : 'Plan Booking via Cashfree';
+        const isSuccess = c.is_fulfilled || c.order_status === 'PAID';
+        const isPending = c.order_status === 'ACTIVE' && (Date.now() - new Date(c.created_at).getTime() < 20 * 60 * 1000);
+        const status = isSuccess ? 'success' : isPending ? 'pending' : 'failed';
+        const suffix = isSuccess ? '' : isPending ? ' (Awaiting Confirmation)' : ' (Failed / Incomplete)';
+
+        walletTransactions.push({
+          id: `CF-${orderId}`,
+          wallet_id: walletRes.rows[0]?.id || 0,
+          type: isRecharge ? 'credit' : 'debit',
+          amount: parseFloat(c.amount || 0),
+          description: `${label} (${orderId})${suffix}`,
+          status: status,
+          timestamp: c.created_at
+        });
+      }
+    });
+
+    walletTransactions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
     // 5. Pending / Recent Wallet Approvals
     const appRes = await pool.query(`
@@ -4925,11 +4957,12 @@ app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
       LIMIT 40
     `, [wallet.id]);
 
-    // 2. Fetch pending approvals for this user
+    // 2. Fetch manual payment approvals (pending and rejected) for this user
     const pendingRes = await pool.query(`
       SELECT * FROM wallet_approvals
-      WHERE user_id = $1 AND status = 'pending'
+      WHERE user_id = $1 AND status IN ('pending', 'rejected')
       ORDER BY date DESC
+      LIMIT 20
     `, [user_id]);
 
     // 3. Fetch security deposit transactions
@@ -4940,20 +4973,37 @@ app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
       LIMIT 20
     `, [user_id]);
 
+    // 4. Fetch online payment gateway orders (Cashfree)
+    const cfOrdersRes = await pool.query(`
+      SELECT * FROM cashfree_orders
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      LIMIT 25
+    `, [user_id]);
+
     const txns = [];
 
-    // Pending approvals
+    // Manual approvals & rejected requests
     pendingRes.rows.forEach(p => {
       const isPlan = p.utr?.includes('PLAN');
       const isDue = p.utr?.includes('DUE_PAYMENT');
+      const isRejected = p.status === 'rejected';
+
+      let desc = isDue ? `Due Payment (Direct UPI)` : isPlan ? `${p.utr}` : `Wallet Recharge (Direct UPI)`;
+      if (isRejected) {
+        desc += ` - Rejected by Admin`;
+      } else {
+        desc += ` (Pending Verification)`;
+      }
+
       txns.push({
         id: `REQ-${p.id}`,
         type: isPlan ? 'debit' : 'credit',
         amount: parseFloat(p.amount),
-        description: isDue ? `Due Payment (Pending Admin Approval)` : isPlan ? `${p.utr} (Pending Verification)` : `Wallet Recharge (Pending Approval)`,
+        description: desc,
         date: new Date(p.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
         timestamp: new Date(p.date).getTime(),
-        status: 'pending'
+        status: isRejected ? 'failed' : 'pending'
       });
     });
 
@@ -5010,6 +5060,74 @@ app.get('/api/wallet/my-wallet', authenticateToken, async (req, res) => {
         timestamp: sTime,
         status: 'success'
       });
+    });
+
+    // Online Cashfree Payment Gateway Orders (Successful, Failed, or Pending)
+    cfOrdersRes.rows.forEach(c => {
+      const orderId = c.order_id || '';
+      // If order is fulfilled, check if already included in wallet_transactions
+      const alreadyInTxns = txnRes.rows.some(t => 
+        (t.description && t.description.includes(orderId)) || (t.id && t.id.includes(orderId))
+      );
+      if (alreadyInTxns) return;
+
+      const isRecharge = c.payment_type === 'recharge';
+      const isDue = c.payment_type === 'due';
+      const label = isRecharge ? 'Cashfree Online Recharge' : isDue ? 'Due Payment via Cashfree' : 'Plan Booking via Cashfree';
+      const numAmount = parseFloat(c.amount || 0);
+      const cTime = new Date(c.created_at).getTime();
+      const ageMs = Date.now() - cTime;
+
+      if (c.is_fulfilled || c.order_status === 'PAID') {
+        txns.push({
+          id: `CF-${orderId}`,
+          type: isRecharge ? 'credit' : 'debit',
+          amount: numAmount,
+          description: `${label} (${orderId})`,
+          date: new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
+          timestamp: cTime,
+          status: 'success',
+          gateway: 'cashfree'
+        });
+      } else if (['FAILED', 'CANCELLED', 'USER_DROPPED', 'EXPIRED'].includes(c.order_status)) {
+        const reason = c.order_status === 'USER_DROPPED' ? 'Cancelled by user' : 'Payment Failed';
+        txns.push({
+          id: `CF-${orderId}`,
+          type: isRecharge ? 'credit' : 'debit',
+          amount: numAmount,
+          description: `${label} (${orderId}) - ${reason}`,
+          date: new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
+          timestamp: cTime,
+          status: 'failed',
+          gateway: 'cashfree'
+        });
+      } else if (c.order_status === 'ACTIVE') {
+        if (ageMs > 20 * 60 * 1000) {
+          // Unfinished order older than 20 minutes -> Mark as expired / failed
+          txns.push({
+            id: `CF-${orderId}`,
+            type: isRecharge ? 'credit' : 'debit',
+            amount: numAmount,
+            description: `${label} (${orderId}) - Expired / Incomplete`,
+            date: new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
+            timestamp: cTime,
+            status: 'failed',
+            gateway: 'cashfree'
+          });
+        } else {
+          // Ongoing active attempt within last 20 mins -> Show as pending
+          txns.push({
+            id: `CF-${orderId}`,
+            type: isRecharge ? 'credit' : 'debit',
+            amount: numAmount,
+            description: `${label} (${orderId}) - Awaiting Confirmation`,
+            date: new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
+            timestamp: cTime,
+            status: 'pending',
+            gateway: 'cashfree'
+          });
+        }
+      }
     });
 
     // Sort by timestamp descending
@@ -5961,8 +6079,6 @@ async function fulfillCashfreeOrder(orderRecord, cfData = {}) {
       return { success: true, alreadyFulfilled: true };
     }
 
-    const approvalId = `WAP-CF-${Date.now()}`;
-
     if (payment_type === 'recharge') {
       // 1. Credit wallet
       let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
@@ -5975,15 +6091,11 @@ async function fulfillCashfreeOrder(orderRecord, cfData = {}) {
         await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [numAmount, walletId]);
       }
 
+      // Log directly to wallet_transactions as automated success (No admin approval required)
       await client.query(`
         INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp) 
         VALUES ($1, $2, 'credit', $3, $4, 'success', CURRENT_TIMESTAMP)
       `, [`TXN-CF-${Date.now()}`, walletId, numAmount, `Cashfree Online Recharge (${order_id})`]);
-
-      await client.query(`
-        INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date)
-        VALUES ($1, $2, $3, $4, 'success', CURRENT_TIMESTAMP)
-      `, [approvalId, user_id, numAmount, `CASHFREE_RECHARGE: ₹${numAmount} | Order: ${order_id}`]);
 
       // Auto-deduct any pending overdue rentals from newly credited balance
       await autoDeductRentalDueFromWallet(user_id);
@@ -6037,11 +6149,19 @@ async function fulfillCashfreeOrder(orderRecord, cfData = {}) {
         [user_id]
       );
 
-      // Record in wallet_approvals as success
+      // Log due payment directly to wallet_transactions (No admin approval required)
+      let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+      let walletId = null;
+      if (walletRes.rows.length === 0) {
+        const newW = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, 0) RETURNING id', [user_id]);
+        walletId = newW.rows[0].id;
+      } else {
+        walletId = walletRes.rows[0].id;
+      }
       await client.query(`
-        INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date)
-        VALUES ($1, $2, $3, $4, 'success', CURRENT_TIMESTAMP)
-      `, [approvalId, user_id, numAmount, `CASHFREE_DUE_PAYMENT: ₹${numAmount} | Order: ${order_id}`]);
+        INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp) 
+        VALUES ($1, $2, 'debit', $3, $4, 'success', CURRENT_TIMESTAMP)
+      `, [`TXN-CF-DUE-${Date.now()}`, walletId, numAmount, `Due Payment via Cashfree (${order_id})`]);
 
       // Send notification to rider
       await client.query(`
@@ -6058,7 +6178,7 @@ async function fulfillCashfreeOrder(orderRecord, cfData = {}) {
       const planRes = await client.query('SELECT * FROM plans WHERE id = $1', [planId]);
       const plan = planRes.rows[0];
 
-      // Insert pending rental
+      // Insert pending rental for vehicle assignment at hub
       await client.query(
         'INSERT INTO rentals (id, user_id, plan_id, total_cost, status) VALUES ($1, $2, $3, $4, $5)',
         [rentalId, user_id, planId, plan ? plan.price : numAmount, 'pending_assignment']
@@ -6080,10 +6200,25 @@ async function fulfillCashfreeOrder(orderRecord, cfData = {}) {
         `, [user_id, depositAmt, `Security Deposit via Cashfree for ${plan ? plan.name : 'Plan'} (${rentalId})`]);
       }
 
+      // Log plan payment directly to wallet_transactions (No admin approval required)
+      let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+      let walletId = null;
+      if (walletRes.rows.length === 0) {
+        const newW = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, 0) RETURNING id', [user_id]);
+        walletId = newW.rows[0].id;
+      } else {
+        walletId = walletRes.rows[0].id;
+      }
       await client.query(`
-        INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date)
-        VALUES ($1, $2, $3, $4, 'success', CURRENT_TIMESTAMP)
-      `, [approvalId, user_id, numAmount, `CASHFREE_PLAN_BOOKING: ${plan ? plan.name : 'Plan'} (${rentalId}) | Order: ${order_id}`]);
+        INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp) 
+        VALUES ($1, $2, 'debit', $3, $4, 'success', CURRENT_TIMESTAMP)
+      `, [`TXN-CF-PLAN-${Date.now()}`, walletId, numAmount, `Plan Booking via Cashfree: ${plan ? plan.name : 'Plan'} (${rentalId})`]);
+
+      // Send notification to rider
+      await client.query(`
+        INSERT INTO broadcast_notifications (user_id, title, message, category, action_type, status, recipient_count, created_at)
+        VALUES ($1, '✅ Plan Booked Online', $2, 'plan_booked', 'none', 'sent', 1, CURRENT_TIMESTAMP)
+      `, [user_id, `Your payment for ${plan ? plan.name : 'Plan'} has been verified! Visit the LT.ev hub to collect your EV.`]);
     }
 
     // Mark order fulfilled
@@ -6139,7 +6274,7 @@ app.post('/api/payments/cashfree/create-order', authenticateToken, async (req, r
       },
       order_note: `LT.ev ${payment_type} (User ${user_id})`,
       order_meta: {
-        return_url: `${process.env.PUBLIC_API_URL || 'https://ltev-backend-admin-production.up.railway.app'}/api/payments/cashfree/return?order_id={order_id}`
+        return_url: `${process.env.PUBLIC_API_URL || 'https://api.ltev.in'}/api/payments/cashfree/return?order_id={order_id}`
       }
     };
 
@@ -6172,7 +6307,7 @@ app.post('/api/payments/cashfree/create-order', authenticateToken, async (req, r
     ]);
 
     // Construct direct checkout payment URL using Cashfree JS SDK v3 launcher
-    const publicUrl = process.env.PUBLIC_API_URL || 'https://ltev-backend-admin-production.up.railway.app';
+    const publicUrl = process.env.PUBLIC_API_URL || 'https://api.ltev.in';
     const paymentUrl = `${publicUrl}/api/payments/cashfree/checkout?payment_session_id=${paymentSessionId}`;
 
     res.json({
@@ -6230,11 +6365,58 @@ app.post('/api/payments/cashfree/verify-order', authenticateToken, async (req, r
       });
     }
 
+    // Check payment attempts for specific failure or drop reasons
+    let failureReason = null;
+    let actualStatus = orderStatus;
+    try {
+      const pmRes = await axios.get(`${CASHFREE_PG_BASE_URL}/orders/${order_id}/payments`, {
+        headers: {
+          'x-client-id': CASHFREE_PG_APP_ID,
+          'x-client-secret': CASHFREE_PG_SECRET,
+          'x-api-version': '2023-08-01'
+        }
+      });
+      const payments = Array.isArray(pmRes.data) ? pmRes.data : [];
+      if (payments.length > 0) {
+        const lastPayment = payments[0];
+        if (lastPayment.payment_status === 'SUCCESS') {
+          if (!orderRecord.is_fulfilled) {
+            await fulfillCashfreeOrder(orderRecord, cfData);
+          }
+          return res.json({
+            success: true,
+            order_status: 'PAID',
+            fulfilled: true,
+            amount: orderRecord.amount,
+            payment_type: orderRecord.payment_type,
+            message: 'Payment confirmed and account updated successfully!'
+          });
+        } else if (lastPayment.payment_status === 'FAILED') {
+          actualStatus = 'FAILED';
+          failureReason = lastPayment.payment_message || lastPayment.error_details?.error_description || 'Payment failed on gateway';
+        } else if (lastPayment.payment_status === 'USER_DROPPED') {
+          actualStatus = 'USER_DROPPED';
+          failureReason = 'Payment was cancelled or closed by user';
+        }
+      }
+    } catch (pe) {
+      // payments query error can be ignored if order has no attempts yet
+    }
+
+    // Persist status update in cashfree_orders
+    await pool.query(
+      `UPDATE cashfree_orders 
+       SET order_status = $1, cf_response = $2, updated_at = CURRENT_TIMESTAMP 
+       WHERE order_id = $3`,
+      [actualStatus, JSON.stringify({ ...cfData, failure_reason: failureReason }), order_id]
+    );
+
     res.json({
       success: false,
-      order_status: orderStatus,
+      order_status: actualStatus,
       fulfilled: false,
-      message: `Order status is currently ${orderStatus}.`
+      failure_reason: failureReason,
+      message: failureReason ? `Payment failed: ${failureReason}` : `Order status is currently ${actualStatus}.`
     });
   } catch (err) {
     console.error('Cashfree Verify Order Error:', err.response?.data || err.message);
@@ -6249,9 +6431,22 @@ app.post('/api/payments/cashfree/webhook', async (req, res) => {
     const orderId = event?.data?.order?.order_id || event?.order_id;
     if (orderId) {
       const orderRes = await pool.query('SELECT * FROM cashfree_orders WHERE order_id = $1', [orderId]);
-      if (orderRes.rows.length > 0 && !orderRes.rows[0].is_fulfilled) {
-        if (event?.type === 'PAYMENT_SUCCESS_WEBHOOK' || event?.event === 'order.paid' || event?.data?.payment?.payment_status === 'SUCCESS') {
-          await fulfillCashfreeOrder(orderRes.rows[0], event);
+      if (orderRes.rows.length > 0) {
+        const orderRecord = orderRes.rows[0];
+        if (!orderRecord.is_fulfilled) {
+          if (event?.type === 'PAYMENT_SUCCESS_WEBHOOK' || event?.event === 'order.paid' || event?.data?.payment?.payment_status === 'SUCCESS') {
+            await fulfillCashfreeOrder(orderRecord, event);
+          } else if (event?.type === 'PAYMENT_FAILED_WEBHOOK' || event?.data?.payment?.payment_status === 'FAILED' || event?.event === 'order.failed') {
+            await pool.query(
+              `UPDATE cashfree_orders SET order_status = 'FAILED', cf_response = $1, updated_at = CURRENT_TIMESTAMP WHERE order_id = $2`,
+              [JSON.stringify(event), orderId]
+            );
+          } else if (event?.type === 'PAYMENT_USER_DROPPED_WEBHOOK' || event?.data?.payment?.payment_status === 'USER_DROPPED') {
+            await pool.query(
+              `UPDATE cashfree_orders SET order_status = 'USER_DROPPED', cf_response = $1, updated_at = CURRENT_TIMESTAMP WHERE order_id = $2`,
+              [JSON.stringify(event), orderId]
+            );
+          }
         }
       }
     }
@@ -6344,6 +6539,10 @@ app.get('/api/payments/cashfree/checkout', (req, res) => {
 // 5. Return URL callback page when customer completes payment on Cashfree Checkout
 app.get('/api/payments/cashfree/return', async (req, res) => {
   const { order_id } = req.query;
+  let isPaid = false;
+  let orderStatus = 'UNKNOWN';
+  let failureReason = null;
+
   if (order_id) {
     try {
       const cfRes = await axios.get(`${CASHFREE_PG_BASE_URL}/orders/${order_id}`, {
@@ -6353,23 +6552,69 @@ app.get('/api/payments/cashfree/return', async (req, res) => {
           'x-api-version': '2023-08-01'
         }
       });
-      if (cfRes.data?.order_status === 'PAID') {
+      orderStatus = cfRes.data?.order_status || 'UNKNOWN';
+
+      if (orderStatus === 'PAID') {
+        isPaid = true;
         const localOrder = await pool.query('SELECT * FROM cashfree_orders WHERE order_id = $1', [order_id]);
         if (localOrder.rows.length > 0 && !localOrder.rows[0].is_fulfilled) {
           await fulfillCashfreeOrder(localOrder.rows[0], cfRes.data);
         }
+      } else {
+        // Fetch payment attempts for detailed reason
+        try {
+          const pmRes = await axios.get(`${CASHFREE_PG_BASE_URL}/orders/${order_id}/payments`, {
+            headers: {
+              'x-client-id': CASHFREE_PG_APP_ID,
+              'x-client-secret': CASHFREE_PG_SECRET,
+              'x-api-version': '2023-08-01'
+            }
+          });
+          const payments = Array.isArray(pmRes.data) ? pmRes.data : [];
+          if (payments.length > 0) {
+            const last = payments[0];
+            if (last.payment_status === 'SUCCESS') {
+              isPaid = true;
+              const localOrder = await pool.query('SELECT * FROM cashfree_orders WHERE order_id = $1', [order_id]);
+              if (localOrder.rows.length > 0 && !localOrder.rows[0].is_fulfilled) {
+                await fulfillCashfreeOrder(localOrder.rows[0], cfRes.data);
+              }
+            } else if (last.payment_status === 'FAILED') {
+              orderStatus = 'FAILED';
+              failureReason = last.payment_message || 'Payment failed';
+            } else if (last.payment_status === 'USER_DROPPED') {
+              orderStatus = 'USER_DROPPED';
+              failureReason = 'Payment was cancelled by user';
+            }
+          }
+        } catch (pe) {}
+
+        await pool.query(
+          `UPDATE cashfree_orders SET order_status = $1, cf_response = $2, updated_at = CURRENT_TIMESTAMP WHERE order_id = $3`,
+          [orderStatus, JSON.stringify({ ...cfRes.data, failure_reason: failureReason }), order_id]
+        );
       }
     } catch (e) {
       console.error('Error auto-verifying order on return URL:', e.message);
     }
   }
 
+  const primaryColor = isPaid ? '#00a66c' : '#ef4444';
+  const iconBg = isPaid ? 'rgba(0, 166, 108, 0.18)' : 'rgba(239, 68, 68, 0.18)';
+  const badgeBg = isPaid ? 'rgba(0, 166, 108, 0.15)' : 'rgba(239, 68, 68, 0.15)';
+  const iconSymbol = isPaid ? '✓' : '✕';
+  const title = isPaid ? 'Payment Successful!' : 'Payment Incomplete or Failed';
+  const badgeText = isPaid ? 'Instant Verification Confirmed' : `Status: ${orderStatus}`;
+  const description = isPaid
+    ? 'Your payment was confirmed and your account balance or booking has been updated instantly. No admin approval required.'
+    : (failureReason || 'The payment was not completed or was cancelled. Please switch back to the LT.ev app to retry.');
+
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Payment Completed - LT.ev</title>
+  <title>${title} - LT.ev</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -6397,8 +6642,8 @@ app.get('/api/payments/cashfree/return', async (req, res) => {
       width: 72px;
       height: 72px;
       border-radius: 50%;
-      background: rgba(0, 166, 108, 0.18);
-      color: #00a66c;
+      background: ${iconBg};
+      color: ${primaryColor};
       display: flex;
       align-items: center;
       justify-content: center;
@@ -6410,8 +6655,8 @@ app.get('/api/payments/cashfree/return', async (req, res) => {
     p { color: #94a3b8; font-size: 14px; line-height: 1.5; margin: 0 0 24px; }
     .badge {
       display: inline-block;
-      background: rgba(0, 166, 108, 0.15);
-      color: #00a66c;
+      background: ${badgeBg};
+      color: ${primaryColor};
       font-size: 13px;
       font-weight: 700;
       padding: 6px 14px;
@@ -6420,7 +6665,7 @@ app.get('/api/payments/cashfree/return', async (req, res) => {
     }
     .btn {
       display: block;
-      background: #00a66c;
+      background: ${primaryColor};
       color: white;
       padding: 14px 24px;
       border-radius: 12px;
@@ -6435,10 +6680,10 @@ app.get('/api/payments/cashfree/return', async (req, res) => {
 </head>
 <body>
   <div class="card">
-    <div class="icon">✓</div>
-    <div class="badge">Cashfree Payment Gateway</div>
-    <h2>Payment Processed!</h2>
-    <p>Your payment session is complete. Please switch back to the <strong>LT.ev Mobile App</strong> now — your account or booking has been updated.</p>
+    <div class="icon">${iconSymbol}</div>
+    <div class="badge">${badgeText}</div>
+    <h2>${title}</h2>
+    <p>${description}</p>
     <button onclick="window.close()" class="btn">Return to LT.ev App</button>
   </div>
 </body>
