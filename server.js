@@ -6171,9 +6171,9 @@ app.post('/api/payments/cashfree/create-order', authenticateToken, async (req, r
       JSON.stringify(cfData)
     ]);
 
-    // Construct direct checkout payment URL
-    const checkoutHost = CASHFREE_PG_ENV === 'PRODUCTION' ? 'payments.cashfree.com' : 'payments-test.cashfree.com';
-    const paymentUrl = `https://${checkoutHost}/order/#${paymentSessionId}`;
+    // Construct direct checkout payment URL using Cashfree JS SDK v3 launcher
+    const publicUrl = process.env.PUBLIC_API_URL || 'https://ltev-backend-admin-production.up.railway.app';
+    const paymentUrl = `${publicUrl}/api/payments/cashfree/checkout?payment_session_id=${paymentSessionId}`;
 
     res.json({
       success: true,
@@ -6262,7 +6262,86 @@ app.post('/api/payments/cashfree/webhook', async (req, res) => {
   }
 });
 
-// 4. Return URL callback page when customer completes payment on Cashfree Checkout
+// 4. Hosted Checkout Launcher using Cashfree JS SDK v3
+app.get('/api/payments/cashfree/checkout', (req, res) => {
+  const { payment_session_id } = req.query;
+  if (!payment_session_id) {
+    return res.status(400).send('Payment Session ID is required');
+  }
+
+  const mode = CASHFREE_PG_ENV === 'PRODUCTION' ? 'production' : 'sandbox';
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Opening Checkout - LT.ev</title>
+  <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      background: #0f172a;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      text-align: center;
+      padding: 20px;
+    }
+    .spinner {
+      width: 44px;
+      height: 44px;
+      border: 3px solid rgba(0, 166, 108, 0.2);
+      border-top-color: #00a66c;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 32px 24px;
+      max-width: 360px;
+      width: 100%;
+    }
+    h3 { margin: 0 0 6px; font-size: 17px; font-weight: 700; }
+    p { margin: 0; color: #94a3b8; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h3>Opening Cashfree Gateway...</h3>
+    <p>Please wait while we connect your payment options.</p>
+  </div>
+  <script>
+    try {
+      const cashfree = Cashfree({
+        mode: "${mode}"
+      });
+      cashfree.checkout({
+        paymentSessionId: "${payment_session_id}",
+        redirectTarget: "_self"
+      }).then(function(result) {
+        if (result && result.error) {
+          alert('Cashfree Checkout Error: ' + (result.error.message || 'Unable to open checkout'));
+        }
+      });
+    } catch (err) {
+      alert('Error launching checkout: ' + err.message);
+    }
+  </script>
+</body>
+</html>`);
+});
+
+// 5. Return URL callback page when customer completes payment on Cashfree Checkout
 app.get('/api/payments/cashfree/return', async (req, res) => {
   const { order_id } = req.query;
   if (order_id) {

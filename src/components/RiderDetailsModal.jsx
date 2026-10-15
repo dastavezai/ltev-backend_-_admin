@@ -45,8 +45,45 @@ export default function RiderDetailsModal({
   // Direct Notice State
   const [directNotice, setDirectNotice] = useState({ title: '', message: '', sending: false });
 
+  // Payment Confirmation / Cancellation State
+  const [processingApprovalId, setProcessingApprovalId] = useState(null);
+
   const rawId = rider.raw_id || rider.user_id || rider.id;
   const token = localStorage.getItem('token');
+
+  const handleApprovePayment = async (approvalId) => {
+    if (!window.confirm(`Confirm payment for request #${approvalId}? This will approve the payment and credit the rider's account.`)) return;
+    setProcessingApprovalId(approvalId);
+    try {
+      await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/wallet_approvals/${approvalId}/approve`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert(`Payment Request #${approvalId} confirmed successfully!`);
+      if (onRefresh) onRefresh();
+    } catch (error) {
+      console.error('Error approving payment request:', error);
+      alert('Error confirming payment: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setProcessingApprovalId(null);
+    }
+  };
+
+  const handleRejectPayment = async (approvalId) => {
+    if (!window.confirm(`Are you sure you want to cancel payment request #${approvalId}?`)) return;
+    setProcessingApprovalId(approvalId);
+    try {
+      await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/wallet_approvals/${approvalId}/reject`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert(`Payment Request #${approvalId} has been cancelled.`);
+      if (onRefresh) onRefresh();
+    } catch (error) {
+      console.error('Error rejecting payment request:', error);
+      alert('Error cancelling payment: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setProcessingApprovalId(null);
+    }
+  };
 
   // Format clean 10-digit phone for WhatsApp
   const rawPhone = (rider.phone || details?.user?.phone || '').replace(/\D/g, '');
@@ -517,11 +554,11 @@ _Support: +91 9113750231 | https://ltev.in_`;
           }}>
             <div style={{ display: 'flex', gap: '4px' }}>
               {[
-                { id: 'dues', label: '💳 Extra Dues & Challans', badge: pendingDuesCount || null, badgeColor: '#ef4444' },
-                { id: 'kyc', label: '📑 KYC Documents & Photos', badge: kycStatus === 'verified' ? '✓' : '!' },
-                { id: 'vehicle', label: '🛵 EV & Rental Contract', badge: null },
-                { id: 'wallet', label: '💰 Wallet & Approvals', badge: pendingApprovalsCount || null, badgeColor: '#eab308' },
-                { id: 'notice', label: '📢 Direct Notice / Reminders', badge: null }
+                { id: 'dues', label: 'Dues', badge: pendingDuesCount || null, badgeColor: '#ef4444' },
+                { id: 'kyc', label: 'Document', badge: kycStatus === 'verified' ? '✓' : '!' },
+                { id: 'vehicle', label: 'Rentals', badge: null },
+                { id: 'wallet', label: 'Transcation', badge: pendingApprovalsCount || null, badgeColor: '#eab308' },
+                { id: 'notice', label: 'Notification', badge: null }
               ].map(tab => {
                 const isActive = activeTab === tab.id;
                 return (
@@ -1181,12 +1218,12 @@ _Support: +91 9113750231 | https://ltev.in_`;
                       <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
                         <thead style={{ background: '#f8fafc', color: '#64748b', fontSize: '11px', textTransform: 'uppercase' }}>
                           <tr>
-                            <th style={{ padding: '10px 18px', fontWeight: '700' }}>Req ID</th>
+                            <th style={{ padding: '10px 18px', fontWeight: '700', fontSize: '11px' }}>Req ID</th>
                             <th style={{ padding: '10px 18px', fontWeight: '700' }}>Amount</th>
-                            <th style={{ padding: '10px 18px', fontWeight: '700' }}>Reference / UTR</th>
-                            <th style={{ padding: '10px 18px', fontWeight: '700' }}>Screenshot Proof</th>
+                            <th style={{ padding: '10px 18px', fontWeight: '700' }}>Proof</th>
                             <th style={{ padding: '10px 18px', fontWeight: '700' }}>Status</th>
                             <th style={{ padding: '10px 18px', fontWeight: '700' }}>Date</th>
+                            <th style={{ padding: '10px 18px', fontWeight: '700', textAlign: 'right' }}>Actions</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1199,31 +1236,52 @@ _Support: +91 9113750231 | https://ltev.in_`;
                           ) : (
                             details.wallet_approvals.map(app => {
                               const proofUrl = app.proof_image ? (app.proof_image.startsWith('http') ? app.proof_image : `${import.meta.env.VITE_API_URL || ''}${app.proof_image}`) : null;
+                              const hasValidUtr = app.utr && typeof app.utr === 'string' && app.utr.trim() !== '' && app.utr.trim().toUpperCase() !== 'N/A' && app.utr.trim().toLowerCase() !== 'null';
+
                               return (
                                 <tr key={app.id} style={{ borderBottom: '1px solid #f1f5f9', fontSize: '13px' }}>
-                                  <td style={{ padding: '12px 18px', fontWeight: '700', color: '#64748b' }}>#{app.id}</td>
+                                  <td style={{ padding: '12px 18px', fontWeight: '600', color: '#94a3b8', fontSize: '11px' }}>#{app.id}</td>
                                   <td style={{ padding: '12px 18px', fontWeight: '800', color: '#00a66c' }}>₹{parseFloat(app.amount).toLocaleString('en-IN')}</td>
-                                  <td style={{ padding: '12px 18px', fontFamily: 'monospace', fontSize: '12px' }}>{app.utr || 'N/A'}</td>
                                   <td style={{ padding: '12px 18px' }}>
-                                    {proofUrl ? (
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        <div 
-                                          onClick={() => onPreviewDoc({ open: true, title: `Payment Proof #${app.id}`, url: proofUrl, riderName: rider.name })}
-                                          style={{ width: '36px', height: '36px', borderRadius: '6px', overflow: 'hidden', cursor: 'pointer', border: '1px solid #cbd5e1', background: '#0f172a' }}
-                                        >
-                                          <img src={proofUrl} alt="Proof" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                        </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                      {proofUrl && (
                                         <button
                                           type="button"
                                           onClick={() => onPreviewDoc({ open: true, title: `Payment Proof #${app.id}`, url: proofUrl, riderName: rider.name })}
-                                          style={{ background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0', padding: '3px 8px', borderRadius: '5px', fontSize: '11px', fontWeight: '700', cursor: 'pointer' }}
+                                          title="View Uploaded Image Proof"
+                                          style={{
+                                            width: '28px',
+                                            height: '28px',
+                                            borderRadius: '6px',
+                                            background: '#f1f5f9',
+                                            border: '1px solid #cbd5e1',
+                                            color: '#0284c7',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            cursor: 'pointer',
+                                            padding: 0,
+                                            flexShrink: 0,
+                                            transition: 'all 0.15s ease'
+                                          }}
+                                          onMouseEnter={(e) => {
+                                            e.currentTarget.style.background = '#e0f2fe';
+                                            e.currentTarget.style.borderColor = '#7dd3fc';
+                                          }}
+                                          onMouseLeave={(e) => {
+                                            e.currentTarget.style.background = '#f1f5f9';
+                                            e.currentTarget.style.borderColor = '#cbd5e1';
+                                          }}
                                         >
-                                          View
+                                          <Eye size={14} />
                                         </button>
-                                      </div>
-                                    ) : (
-                                      <span style={{ fontSize: '11px', color: '#94a3b8', fontStyle: 'italic' }}>UTR Only</span>
-                                    )}
+                                      )}
+                                      {hasValidUtr && (
+                                        <span style={{ fontFamily: 'monospace', fontSize: '12px', color: '#334155', fontWeight: '600' }}>
+                                          {app.utr}
+                                        </span>
+                                      )}
+                                    </div>
                                   </td>
                                   <td style={{ padding: '12px 18px' }}>
                                     <span style={{
@@ -1236,6 +1294,104 @@ _Support: +91 9113750231 | https://ltev.in_`;
                                   </td>
                                   <td style={{ padding: '12px 18px', fontSize: '12px', color: '#64748b' }}>
                                     {new Date(app.date).toLocaleDateString('en-GB')}
+                                  </td>
+                                  <td style={{ padding: '12px 18px', textAlign: 'right' }}>
+                                    {app.status === 'pending' ? (
+                                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleApprovePayment(app.id)}
+                                          disabled={processingApprovalId === app.id}
+                                          title="Confirm Payment"
+                                          style={{
+                                            width: '30px',
+                                            height: '30px',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            background: '#dcfce7',
+                                            color: '#15803d',
+                                            border: '1px solid #86efac',
+                                            borderRadius: '7px',
+                                            padding: 0,
+                                            cursor: processingApprovalId === app.id ? 'not-allowed' : 'pointer',
+                                            transition: 'all 0.15s ease'
+                                          }}
+                                        >
+                                          <Check size={15} strokeWidth={2.5} />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRejectPayment(app.id)}
+                                          disabled={processingApprovalId === app.id}
+                                          title="Cancel Payment"
+                                          style={{
+                                            width: '30px',
+                                            height: '30px',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            background: '#fee2e2',
+                                            color: '#dc2626',
+                                            border: '1px solid #fca5a5',
+                                            borderRadius: '7px',
+                                            padding: 0,
+                                            cursor: processingApprovalId === app.id ? 'not-allowed' : 'pointer',
+                                            transition: 'all 0.15s ease'
+                                          }}
+                                        >
+                                          <X size={15} strokeWidth={2.5} />
+                                        </button>
+                                      </div>
+                                    ) : app.status === 'success' ? (
+                                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRejectPayment(app.id)}
+                                          disabled={processingApprovalId === app.id}
+                                          title="Cancel Payment"
+                                          style={{
+                                            width: '28px',
+                                            height: '28px',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            background: '#ffffff',
+                                            color: '#dc2626',
+                                            border: '1px solid #fecaca',
+                                            borderRadius: '6px',
+                                            padding: 0,
+                                            cursor: processingApprovalId === app.id ? 'not-allowed' : 'pointer'
+                                          }}
+                                        >
+                                          <X size={14} strokeWidth={2.5} />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleApprovePayment(app.id)}
+                                          disabled={processingApprovalId === app.id}
+                                          title="Confirm Payment"
+                                          style={{
+                                            width: '28px',
+                                            height: '28px',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            background: '#ffffff',
+                                            color: '#15803d',
+                                            border: '1px solid #bbf7d0',
+                                            borderRadius: '6px',
+                                            padding: 0,
+                                            cursor: processingApprovalId === app.id ? 'not-allowed' : 'pointer'
+                                          }}
+                                        >
+                                          <Check size={14} strokeWidth={2.5} />
+                                        </button>
+                                      </div>
+                                    )}
                                   </td>
                                 </tr>
                               );

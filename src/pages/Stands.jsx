@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { MapPin, Download, Plus, Map, Settings, Trash2, X } from 'lucide-react';
 import axios from 'axios';
 
-export default function Stands() {
+const Stands = forwardRef(function Stands(props, ref) {
   const [stands, setStands] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -103,17 +103,13 @@ export default function Stands() {
     img.src = 'data:image/svg+xml;base64,' + btoa(svgData);
   };
 
+  useImperativeHandle(ref, () => ({
+    refresh: fetchStands,
+    openAddModal: () => setShowAddModal(true)
+  }));
+
   return (
     <div style={{ animation: 'fadeIn 0.4s ease' }}>
-      {/* Action Header */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: '20px' }}>
-        <button 
-          onClick={() => setShowAddModal(true)}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#0284c7', color: 'white', padding: '9px 16px', borderRadius: '10px', border: 'none', fontWeight: '600', fontSize: '13px', cursor: 'pointer', boxShadow: '0 4px 12px rgba(2, 132, 199, 0.25)' }}
-        >
-          <Plus size={16} /> Add New Stand
-        </button>
-      </div>
 
       {loading ? (
         <div style={{ padding: '40px', textAlign: 'center', color: '#94a3b8' }}>Loading stands...</div>
@@ -269,4 +265,6 @@ export default function Stands() {
       )}
     </div>
   );
-}
+});
+
+export default Stands;

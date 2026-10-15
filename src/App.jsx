@@ -34,12 +34,12 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
-const Layout = ({ children }) => {
+const Layout = ({ children, noPadding = false }) => {
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100%', background: 'var(--bg-primary)', overflow: 'hidden' }}>
       <Sidebar />
-      <div style={{ flex: 1, padding: '40px 60px', overflowY: 'auto', background: '#f8fafc' }}>
-        <div style={{ maxWidth: '1440px', margin: '0 auto' }}>
+      <div style={{ flex: 1, padding: noPadding ? 0 : '40px 60px', overflowY: 'auto', background: '#f8fafc' }}>
+        <div style={{ maxWidth: noPadding ? 'none' : '1440px', margin: '0 auto', height: noPadding ? '100%' : 'auto' }}>
           {children}
         </div>
       </div>
@@ -58,7 +58,7 @@ function App() {
           <Route path="/management" element={<ProtectedRoute><ManagementLayout><ManagementDashboard /></ManagementLayout></ProtectedRoute>} />
           <Route path="/operations" element={<ProtectedRoute><ManagementLayout><ManagementDashboard /></ManagementLayout></ProtectedRoute>} />
           <Route path="/current-rent" element={<ProtectedRoute><Layout><CurrentRent /></Layout></ProtectedRoute>} />
-          <Route path="/assets" element={<ProtectedRoute><Layout><Assets /></Layout></ProtectedRoute>} />
+          <Route path="/assets" element={<ProtectedRoute><Layout noPadding><Assets /></Layout></ProtectedRoute>} />
           <Route path="/bookings" element={<ProtectedRoute><Layout><Bookings /></Layout></ProtectedRoute>} />
           <Route path="/updates" element={<ProtectedRoute><Layout><Updates /></Layout></ProtectedRoute>} />
           <Route path="/broadcast" element={<ProtectedRoute><Layout><Broadcast /></Layout></ProtectedRoute>} />

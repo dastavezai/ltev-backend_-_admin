@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { 
   Search, MapPin, Bike, Plus, AlertCircle, CheckCircle2, X, 
   ArrowUpDown, Filter, RefreshCw, ChevronDown, Check, ShieldCheck,
@@ -7,7 +7,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 
-export default function Vehicles() {
+const Vehicles = forwardRef(function Vehicles(props, ref) {
   const [vehicles, setVehicles] = useState([]);
   const [stands, setStands] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -61,6 +61,11 @@ export default function Vehicles() {
       console.error('Error fetching vehicles:', error);
     }
   };
+
+  useImperativeHandle(ref, () => ({
+    refresh: fetchVehicles,
+    openAddModal: () => setShowAddModal(true)
+  }));
 
   const handleAddVehicle = async (e) => {
     e.preventDefault();
@@ -185,22 +190,6 @@ export default function Vehicles() {
 
   return (
     <div style={{ animation: 'fadeIn 0.4s ease', paddingBottom: '40px' }}>
-      {/* Action Header */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: '20px', gap: '10px' }}>
-        <button 
-          onClick={fetchVehicles}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'white', border: '1px solid #cbd5e1', padding: '9px 14px', borderRadius: '10px', fontWeight: '600', fontSize: '13px', color: '#475569', cursor: 'pointer' }}
-        >
-          <RefreshCw size={15} /> Refresh
-        </button>
-        <button 
-          onClick={() => setShowAddModal(true)}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#0284c7', color: 'white', padding: '9px 16px', borderRadius: '10px', border: 'none', fontWeight: '600', fontSize: '13px', cursor: 'pointer', boxShadow: '0 4px 12px rgba(2, 132, 199, 0.25)' }}
-        >
-          <Plus size={16} /> Add Vehicle
-        </button>
-      </div>
-
       {/* Fleet Overview KPI Counters */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
         <div 
@@ -477,4 +466,6 @@ export default function Vehicles() {
       )}
     </div>
   );
-}
+});
+
+export default Vehicles;

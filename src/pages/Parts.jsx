@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import { 
   Package, Plus, Search, Filter, Edit3, Trash2, X, Check, RefreshCw, 
   Upload, Image as ImageIcon, AlertTriangle, ArrowUpDown, IndianRupee, 
@@ -18,7 +18,7 @@ const CATEGORIES = [
   'General & Consumables'
 ];
 
-export default function Parts() {
+const Parts = forwardRef(function Parts(props, ref) {
   const { token } = useAuth();
   const [parts, setParts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -61,6 +61,11 @@ export default function Parts() {
       setLoading(false);
     }
   };
+
+  useImperativeHandle(ref, () => ({
+    refresh: fetchParts,
+    openAddModal: handleOpenCreateModal
+  }));
 
   useEffect(() => {
     fetchParts();
@@ -242,24 +247,6 @@ export default function Parts() {
 
   return (
     <div style={{ paddingBottom: '60px' }}>
-      
-      {/* Action Header */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: '20px', gap: '10px' }}>
-        <button
-          onClick={fetchParts}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#ffffff', border: '1px solid #cbd5e1', padding: '9px 14px', borderRadius: '8px', fontSize: '13px', fontWeight: '600', color: '#334155', cursor: 'pointer' }}
-        >
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
-        </button>
-
-        <button
-          onClick={handleOpenCreateModal}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#0284c7', color: '#ffffff', border: 'none', padding: '9px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: '700', cursor: 'pointer', boxShadow: '0 4px 12px rgba(2, 132, 199, 0.25)' }}
-        >
-          <Plus size={16} /> Add New Spare Part
-        </button>
-      </div>
-
       {/* KPI Metric Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '24px' }}>
         
@@ -911,4 +898,6 @@ export default function Parts() {
 
     </div>
   );
-}
+});
+
+export default Parts;

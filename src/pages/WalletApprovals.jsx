@@ -730,10 +730,10 @@ export default function WalletApprovals() {
           <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
             <thead style={{ background: '#f8fafc', color: '#64748b', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
               <tr>
-                <th style={{ padding: '14px 18px', fontWeight: '600' }}>Req ID</th>
+                <th style={{ padding: '14px 18px', fontWeight: '600', fontSize: '11px' }}>Req ID</th>
                 <th style={{ padding: '14px 18px', fontWeight: '600' }}>Driver Details</th>
                 <th style={{ padding: '14px 18px', fontWeight: '600' }}>Payment Type & Reference</th>
-                <th style={{ padding: '14px 18px', fontWeight: '600' }}>Payment Proof</th>
+                <th style={{ padding: '14px 18px', fontWeight: '600' }}>Proof</th>
                 <th style={{ padding: '14px 18px', fontWeight: '600' }}>Amount</th>
                 <th style={{ padding: '14px 18px', fontWeight: '600' }}>Status</th>
                 <th style={{ padding: '14px 18px', fontWeight: '600', textAlign: 'right' }}>Actions</th>
@@ -749,7 +749,7 @@ export default function WalletApprovals() {
 
                 return (
                   <tr key={req.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                    <td style={{ padding: '16px 18px', fontFamily: 'monospace', color: '#64748b', fontSize: '13px', fontWeight: '700' }}>#{req.id}</td>
+                    <td style={{ padding: '16px 18px', fontFamily: 'monospace', color: '#94a3b8', fontSize: '11px', fontWeight: '600' }}>#{req.id}</td>
                     <td style={{ padding: '16px 18px' }}>
                       <div style={{ fontWeight: '700', color: '#0f172a' }}>{req.user || 'Anonymous Rider'}</div>
                       <div style={{ fontSize: '12px', color: '#64748b' }}>📞 {req.phone || 'N/A'}</div>
@@ -878,16 +878,18 @@ export default function WalletApprovals() {
                     </td>
                     <td style={{ padding: '16px 18px', textAlign: 'right' }}>
                       {req.status === 'pending' ? (
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
                           <button 
                             onClick={() => approveRequest(req.id, isDue ? 'due' : isPlan ? 'plan' : isRefund ? 'refund' : 'recharge')}
-                            style={{ background: '#00a66c', color: 'white', padding: '7px 14px', borderRadius: '8px', border: 'none', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}>
-                            ✓ Approve Payment
+                            title="Confirm Payment"
+                            style={{ width: '32px', height: '32px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#00a66c', color: 'white', borderRadius: '8px', border: 'none', cursor: 'pointer', padding: 0 }}>
+                            <Check size={16} strokeWidth={2.5} />
                           </button>
                           <button 
                             onClick={() => rejectRequest(req.id)}
-                            style={{ background: '#fee2e2', color: '#dc2626', padding: '7px 14px', borderRadius: '8px', border: 'none', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}>
-                            Reject
+                            title="Cancel Payment"
+                            style={{ width: '32px', height: '32px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#fee2e2', color: '#dc2626', borderRadius: '8px', border: '1px solid #fca5a5', cursor: 'pointer', padding: 0 }}>
+                            <X size={16} strokeWidth={2.5} />
                           </button>
                         </div>
                       ) : (
