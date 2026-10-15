@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { 
   Search, MapPin, Bike, Plus, AlertCircle, CheckCircle2, X, 
-  ArrowUpDown, Filter, RefreshCw, ChevronDown, Check, ShieldCheck 
+  ArrowUpDown, Filter, RefreshCw, ChevronDown, Check, ShieldCheck,
+  User, Phone, Calendar, Clock, ExternalLink
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -184,26 +185,20 @@ export default function Vehicles() {
 
   return (
     <div style={{ animation: 'fadeIn 0.4s ease', paddingBottom: '40px' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
-        <div>
-          <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#0f172a', margin: '0 0 4px 0' }}>Vehicle Fleet Management</h1>
-          <p style={{ color: '#64748b', margin: 0, fontSize: '14px' }}>Monitor live fleet availability, rider assignments, battery health, and maintenance.</p>
-        </div>
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button 
-            onClick={fetchVehicles}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'white', border: '1px solid #cbd5e1', padding: '10px 14px', borderRadius: '10px', fontWeight: '600', color: '#475569', cursor: 'pointer' }}
-          >
-            <RefreshCw size={15} /> Refresh
-          </button>
-          <button 
-            onClick={() => setShowAddModal(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#3b82f6', color: 'white', padding: '10px 18px', borderRadius: '10px', border: 'none', fontWeight: '600', cursor: 'pointer', boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)' }}
-          >
-            <Plus size={18} /> Add Vehicle
-          </button>
-        </div>
+      {/* Action Header */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: '20px', gap: '10px' }}>
+        <button 
+          onClick={fetchVehicles}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'white', border: '1px solid #cbd5e1', padding: '9px 14px', borderRadius: '10px', fontWeight: '600', fontSize: '13px', color: '#475569', cursor: 'pointer' }}
+        >
+          <RefreshCw size={15} /> Refresh
+        </button>
+        <button 
+          onClick={() => setShowAddModal(true)}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#0284c7', color: 'white', padding: '9px 16px', borderRadius: '10px', border: 'none', fontWeight: '600', fontSize: '13px', cursor: 'pointer', boxShadow: '0 4px 12px rgba(2, 132, 199, 0.25)' }}
+        >
+          <Plus size={16} /> Add Vehicle
+        </button>
       </div>
 
       {/* Fleet Overview KPI Counters */}
@@ -346,7 +341,7 @@ export default function Vehicles() {
               <th style={{ padding: '16px 24px', fontWeight: '600' }}>Vehicle</th>
               <th style={{ padding: '16px 24px', fontWeight: '600' }}>Live Status</th>
               <th style={{ padding: '16px 24px', fontWeight: '600' }}>Current Stand</th>
-              <th style={{ padding: '16px 24px', fontWeight: '600' }}>Assigned Rider</th>
+              <th style={{ padding: '16px 24px', fontWeight: '600' }}>Current Rider (Live)</th>
               <th style={{ padding: '16px 24px', fontWeight: '600', textAlign: 'right' }}>Actions</th>
             </tr>
           </thead>
@@ -360,46 +355,79 @@ export default function Vehicles() {
                 </td>
               </tr>
             ) : (
-              filteredAndSortedVehicles.map(vehicle => (
-                <tr 
-                  key={vehicle.id} 
-                  onClick={() => navigate(`/vehicles/${vehicle.id}`)}
-                  style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', transition: 'background 0.2s' }}
-                  onMouseEnter={(e) => e.currentTarget.style.background = '#f8fafc'}
-                  onMouseLeave={(e) => e.currentTarget.style.background = 'white'}
-                >
-                  <td style={{ padding: '20px 24px' }}>
-                    <div style={{ fontWeight: '700', color: '#0f172a', fontSize: '15px' }}>{vehicle.model}</div>
-                  </td>
-                  <td style={{ padding: '20px 24px' }}>
-                    {getStatusBadge(vehicle.status, vehicle.renter)}
-                  </td>
-                  <td style={{ padding: '20px 24px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: '#475569', fontWeight: '500' }}>
-                      <MapPin size={16} color="#94a3b8" /> {vehicle.location}
-                    </div>
-                  </td>
-                  <td style={{ padding: '20px 24px' }}>
-                    {vehicle.renter ? (
-                      <div style={{ fontSize: '14px', color: '#15803d', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <Bike size={15} /> {vehicle.renter}
+              filteredAndSortedVehicles.map(vehicle => {
+                const isRented = vehicle.status === 'rented' || vehicle.status === 'in_use' || Boolean(vehicle.renter);
+                return (
+                  <tr 
+                    key={vehicle.id} 
+                    onClick={() => navigate(`/vehicles/${vehicle.id}`)}
+                    style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', transition: 'background 0.2s' }}
+                    onMouseEnter={(e) => e.currentTarget.style.background = '#f8fafc'}
+                    onMouseLeave={(e) => e.currentTarget.style.background = 'white'}
+                  >
+                    <td style={{ padding: '18px 24px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: isRented ? 'rgba(34, 197, 94, 0.1)' : 'rgba(14, 165, 233, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <Bike size={20} color={isRented ? '#16a34a' : '#0284c7'} />
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: '800', color: '#0f172a', fontSize: '15px' }}>{vehicle.model}</div>
+                          <div style={{ fontSize: '12px', color: '#64748b' }}>
+                            {vehicle.type || 'Electric Scooter'} {vehicle.id !== vehicle.model ? `• ID: ${vehicle.id}` : ''}
+                          </div>
+                        </div>
                       </div>
-                    ) : (
-                      <span style={{ fontSize: '13px', color: '#94a3b8' }}>None (Idle)</span>
-                    )}
-                  </td>
-                  <td style={{ padding: '20px 24px', textAlign: 'right' }}>
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); navigate(`/vehicles/${vehicle.id}`); }}
-                      style={{ background: '#f1f5f9', color: '#2563eb', border: 'none', padding: '8px 16px', borderRadius: '8px', fontWeight: '700', cursor: 'pointer', transition: 'all 0.2s' }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = '#e0f2fe'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = '#f1f5f9'; }}
-                    >
-                      View Details
-                    </button>
-                  </td>
-                </tr>
-              ))
+                    </td>
+                    <td style={{ padding: '18px 24px' }}>
+                      {getStatusBadge(vehicle.status, vehicle.renter)}
+                    </td>
+                    <td style={{ padding: '18px 24px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: '#475569', fontWeight: '600' }}>
+                        <MapPin size={16} color="#94a3b8" /> {vehicle.location || 'Khajpura'}
+                      </div>
+                    </td>
+                    <td style={{ padding: '18px 24px' }}>
+                      {vehicle.renter ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                          <div style={{ fontSize: '14px', color: '#15803d', fontWeight: '800', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <User size={15} /> {vehicle.renter}
+                          </div>
+                          {vehicle.renter_phone && (
+                            <div style={{ fontSize: '12px', color: '#475569', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <Phone size={12} color="#64748b" /> {vehicle.renter_phone}
+                            </div>
+                          )}
+                          <div style={{ fontSize: '11px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                            {vehicle.rental_id && (
+                              <span style={{ fontWeight: '700', color: '#0284c7', background: '#e0f2fe', padding: '1px 6px', borderRadius: '4px' }}>
+                                #{vehicle.rental_id}
+                              </span>
+                            )}
+                            {vehicle.current_plan_name && <span>• {vehicle.current_plan_name}</span>}
+                            {vehicle.rental_start_time && (
+                              <span>• Since {new Date(vehicle.rental_start_time).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: '#f8fafc', border: '1px solid #e2e8f0', padding: '5px 10px', borderRadius: '12px', fontSize: '12px', color: '#64748b', fontWeight: '600' }}>
+                          <CheckCircle2 size={13} color="#0284c7" /> Idle (Available at Stand)
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '18px 24px', textAlign: 'right' }}>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); navigate(`/vehicles/${vehicle.id}`); }}
+                        style={{ background: '#f1f5f9', color: '#2563eb', border: 'none', padding: '8px 14px', borderRadius: '8px', fontWeight: '700', cursor: 'pointer', transition: 'all 0.2s', fontSize: '12px' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = '#e0f2fe'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = '#f1f5f9'; }}
+                      >
+                        View Details
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

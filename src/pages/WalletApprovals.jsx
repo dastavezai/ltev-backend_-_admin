@@ -1,5 +1,9 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle2, Clock, XCircle, RefreshCw, Wallet, ArrowRight, CreditCard, ShieldAlert, Tag, Search, Bike, Check, AlertTriangle, Settings, X, FileText } from 'lucide-react';
+import { 
+  CheckCircle2, Clock, XCircle, RefreshCw, Wallet, ArrowRight, CreditCard, 
+  ShieldAlert, Tag, Search, Bike, Check, AlertTriangle, Settings, X, FileText,
+  Eye, ExternalLink, Image as ImageIcon, Camera, PlusCircle, QrCode, Upload
+} from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import ReceiptModal from '../components/ReceiptModal';
@@ -11,6 +15,7 @@ export default function WalletApprovals() {
   const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState('all'); // 'all' | 'due_renewals' | 'plan' | 'recharge' | 'refund' | 'pending'
   const [searchQuery, setSearchQuery] = useState('');
+  const [previewProof, setPreviewProof] = useState(null);
 
   // Receipt Modal State
   const [receiptModalOpen, setReceiptModalOpen] = useState(false);
@@ -23,12 +28,42 @@ export default function WalletApprovals() {
   const [showUpiModal, setShowUpiModal] = useState(false);
   const [upiId, setUpiId] = useState('9113750231@oksbi');
   const [upiName, setUpiName] = useState('LocalToto');
+  const [upiQrImage, setUpiQrImage] = useState(null);
+  const [uploadingQr, setUploadingQr] = useState(false);
   const [savingUpi, setSavingUpi] = useState(false);
+
+  // Manual Record Payment State
+  const [showRecordPaymentModal, setShowRecordPaymentModal] = useState(false);
+  const [usersList, setUsersList] = useState([]);
+  const [recordForm, setRecordForm] = useState({
+    user_id: '',
+    amount: '',
+    payment_type: 'recharge',
+    payment_mode: 'upi',
+    utr: '',
+    remarks: '',
+    proof_image: '',
+    auto_approve: true,
+  });
+  const [submittingRecord, setSubmittingRecord] = useState(false);
+  const [uploadingRecordProof, setUploadingRecordProof] = useState(false);
 
   useEffect(() => {
     fetchData();
     fetchUpiSettings();
   }, [token]);
+
+  const fetchUsers = async () => {
+    if (!token) return;
+    try {
+      const res = await axios.get(`${import.meta.env.VITE_API_URL || ''}/api/users`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setUsersList(res.data || []);
+    } catch (e) {
+      console.error('Error fetching users:', e);
+    }
+  };
 
   const fetchUpiSettings = async () => {
     if (!token) return;
@@ -39,9 +74,95 @@ export default function WalletApprovals() {
       if (res.data?.upi_id) {
         setUpiId(res.data.upi_id);
         setUpiName(res.data.upi_name || 'LocalToto');
+        setUpiQrImage(res.data.upi_qr_image || null);
       }
     } catch (e) {
       console.error('Error fetching UPI settings:', e);
+    }
+  };
+
+  const handleQrUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingQr(true);
+    try {
+      const formData = new FormData();
+      formData.append('image', file);
+      const res = await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/upload/upi-qr`, formData, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      if (res.data?.imageUrl) {
+        setUpiQrImage(res.data.imageUrl);
+        alert('QR Code image uploaded successfully!');
+      }
+    } catch (err) {
+      alert('Error uploading QR code: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setUploadingQr(false);
+    }
+  };
+
+  const handleRecordProofUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingRecordProof(true);
+    try {
+      const formData = new FormData();
+      formData.append('image', file);
+      const res = await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/upload/payment-proof`, formData, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      if (res.data?.imageUrl) {
+        setRecordForm(prev => ({ ...prev, proof_image: res.data.imageUrl }));
+      }
+    } catch (err) {
+      alert('Error uploading proof image: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setUploadingRecordProof(false);
+    }
+  };
+
+  const handleSavePaymentRecord = async (e) => {
+    e.preventDefault();
+    if (!recordForm.user_id) {
+      alert('Please select a rider / user');
+      return;
+    }
+    if (!recordForm.amount || parseFloat(recordForm.amount) <= 0) {
+      alert('Please enter a valid amount');
+      return;
+    }
+    setSubmittingRecord(true);
+    try {
+      await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/wallet_approvals/manual-record`, {
+        ...recordForm,
+        amount: parseFloat(recordForm.amount)
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert('Payment record added successfully!');
+      setShowRecordPaymentModal(false);
+      setRecordForm({
+        user_id: '',
+        amount: '',
+        payment_type: 'recharge',
+        payment_mode: 'upi',
+        utr: '',
+        remarks: '',
+        proof_image: '',
+        auto_approve: true,
+      });
+      fetchData();
+    } catch (err) {
+      alert('Error recording payment: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSubmittingRecord(false);
     }
   };
 
@@ -55,11 +176,12 @@ export default function WalletApprovals() {
     try {
       await axios.put(`${import.meta.env.VITE_API_URL || ''}/api/settings/payment`, {
         upi_id: upiId.trim(),
-        upi_name: upiName.trim()
+        upi_name: upiName.trim(),
+        upi_qr_image: upiQrImage || ''
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      alert('UPI Payment Settings updated successfully! All mobile apps will now use this UPI ID.');
+      alert('UPI Payment Settings updated successfully! All mobile apps will now use this UPI ID and QR code.');
       setShowUpiModal(false);
     } catch (err) {
       alert('Error updating UPI settings: ' + (err.response?.data?.error || err.message));
@@ -278,12 +400,18 @@ export default function WalletApprovals() {
           <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#0f172a', margin: '0 0 4px 0' }}>Payments, Dues & Wallet Approvals</h1>
           <p style={{ color: '#64748b', margin: 0 }}>Review rider plan renewal payments, overdue dues, wallet topups, and deposit refunds.</p>
         </div>
-        <div style={{ display: 'flex', gap: '10px' }}>
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button 
+            onClick={() => { fetchUsers(); setShowRecordPaymentModal(true); }}
+            style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#2563eb', border: 'none', padding: '10px 18px', borderRadius: '12px', fontWeight: '700', color: 'white', cursor: 'pointer', boxShadow: '0 2px 6px rgba(37, 99, 235, 0.25)' }}
+          >
+            <PlusCircle size={16} /> + Record User Payment
+          </button>
           <button 
             onClick={() => { fetchUpiSettings(); setShowUpiModal(true); }}
             style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#00a66c', border: 'none', padding: '10px 18px', borderRadius: '12px', fontWeight: '700', color: 'white', cursor: 'pointer', boxShadow: '0 2px 6px rgba(0, 166, 108, 0.25)' }}
           >
-            <Settings size={16} /> UPI Settings: {upiId}
+            <Settings size={16} /> UPI & QR Settings: {upiId}
           </button>
           <button 
             onClick={fetchData}
@@ -605,6 +733,7 @@ export default function WalletApprovals() {
                 <th style={{ padding: '14px 18px', fontWeight: '600' }}>Req ID</th>
                 <th style={{ padding: '14px 18px', fontWeight: '600' }}>Driver Details</th>
                 <th style={{ padding: '14px 18px', fontWeight: '600' }}>Payment Type & Reference</th>
+                <th style={{ padding: '14px 18px', fontWeight: '600' }}>Payment Proof</th>
                 <th style={{ padding: '14px 18px', fontWeight: '600' }}>Amount</th>
                 <th style={{ padding: '14px 18px', fontWeight: '600' }}>Status</th>
                 <th style={{ padding: '14px 18px', fontWeight: '600', textAlign: 'right' }}>Actions</th>
@@ -662,6 +791,85 @@ export default function WalletApprovals() {
                         </div>
                       )}
                     </td>
+
+                    {/* Payment Screenshot / Proof */}
+                    <td style={{ padding: '16px 18px' }}>
+                      {req.proof_image ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <div 
+                            onClick={() => {
+                              const fullUrl = req.proof_image.startsWith('http') ? req.proof_image : `${import.meta.env.VITE_API_URL || ''}${req.proof_image.startsWith('/') ? '' : '/'}${req.proof_image}`;
+                              setPreviewProof({
+                                url: fullUrl,
+                                user: req.user,
+                                phone: req.phone,
+                                amount: req.amount,
+                                utr: req.utr,
+                                id: req.id,
+                                status: req.status,
+                                date: req.date
+                              });
+                            }}
+                            style={{ 
+                              width: '46px', 
+                              height: '46px', 
+                              borderRadius: '8px', 
+                              overflow: 'hidden', 
+                              cursor: 'pointer', 
+                              border: '1px solid #cbd5e1', 
+                              background: '#0f172a', 
+                              flexShrink: 0,
+                              position: 'relative'
+                            }}
+                          >
+                            <img 
+                              src={req.proof_image.startsWith('http') ? req.proof_image : `${import.meta.env.VITE_API_URL || ''}${req.proof_image.startsWith('/') ? '' : '/'}${req.proof_image}`} 
+                              alt="Payment Proof" 
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            />
+                          </div>
+                          <div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const fullUrl = req.proof_image.startsWith('http') ? req.proof_image : `${import.meta.env.VITE_API_URL || ''}${req.proof_image.startsWith('/') ? '' : '/'}${req.proof_image}`;
+                                setPreviewProof({
+                                  url: fullUrl,
+                                  user: req.user,
+                                  phone: req.phone,
+                                  amount: req.amount,
+                                  utr: req.utr,
+                                  id: req.id,
+                                  status: req.status,
+                                  date: req.date
+                                });
+                              }}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                background: '#f0fdf4',
+                                border: '1px solid #bbf7d0',
+                                color: '#15803d',
+                                padding: '4px 8px',
+                                borderRadius: '6px',
+                                fontSize: '11px',
+                                fontWeight: '700',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <Eye size={12} /> View Proof
+                            </button>
+                            <div style={{ fontSize: '10px', color: '#00a66c', marginTop: '2px', fontWeight: '700' }}>Cloudflare R2</div>
+                          </div>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: '11px', color: '#94a3b8', fontStyle: 'italic' }}>
+                          No screenshot (UTR only)
+                        </span>
+                      )}
+                    </td>
+
                     <td style={{ padding: '16px 18px', fontWeight: '800', color: '#00a66c', fontSize: '16px' }}>₹{parseFloat(req.amount).toLocaleString('en-IN')}</td>
                     <td style={{ padding: '16px 18px' }}>
                       {req.status === 'pending' && <span style={{ background: '#fef3c7', color: '#d97706', padding: '4px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: '800', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Clock size={13}/> PENDING</span>}
@@ -702,7 +910,7 @@ export default function WalletApprovals() {
               })}
               {filteredRequests.length === 0 && !loading && (
                 <tr>
-                  <td colSpan="6" style={{ textAlign: 'center', padding: '40px', color: '#64748b' }}>
+                  <td colSpan="7" style={{ textAlign: 'center', padding: '40px', color: '#64748b' }}>
                     <Wallet size={36} color="#94a3b8" style={{ marginBottom: '8px', opacity: 0.5 }} />
                     <div style={{ fontWeight: '700', fontSize: '15px', color: '#0f172a' }}>No Payment Requests Found</div>
                     <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>When riders pay for plans or recharge their wallets, approvals will appear here.</div>
@@ -820,6 +1028,46 @@ export default function WalletApprovals() {
                 />
               </div>
 
+              <div style={{ marginBottom: '24px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                  Static UPI QR Code Image (For Scanning in Mobile App)
+                </label>
+                {upiQrImage ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '10px', background: '#f8fafc', padding: '12px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                    <img 
+                      src={upiQrImage.startsWith('http') ? upiQrImage : `${import.meta.env.VITE_API_URL || ''}${upiQrImage.startsWith('/') ? '' : '/'}${upiQrImage}`} 
+                      alt="UPI QR Code" 
+                      style={{ width: '80px', height: '80px', objectFit: 'contain', borderRadius: '8px', border: '1px solid #cbd5e1', background: 'white' }}
+                    />
+                    <div>
+                      <div style={{ fontSize: '12px', fontWeight: '700', color: '#059669' }}>✓ Custom QR Code Image Active</div>
+                      <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>Displayed to all riders in app</div>
+                      <button
+                        type="button"
+                        onClick={() => setUpiQrImage(null)}
+                        style={{ marginTop: '6px', fontSize: '11px', color: '#dc2626', background: '#fee2e2', border: 'none', padding: '4px 8px', borderRadius: '6px', cursor: 'pointer', fontWeight: '700' }}
+                      >
+                        Remove Image
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '8px' }}>
+                    No custom QR uploaded. Mobile app dynamically generates QR from UPI ID.
+                  </div>
+                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input 
+                    type="file" 
+                    accept="image/*"
+                    onChange={handleQrUpload}
+                    disabled={uploadingQr}
+                    style={{ fontSize: '12px', color: '#475569' }}
+                  />
+                  {uploadingQr && <span style={{ fontSize: '12px', color: '#00a66c' }}>Uploading QR...</span>}
+                </div>
+              </div>
+
               <div style={{ display: 'flex', gap: '12px' }}>
                 <button
                   type="button"
@@ -862,12 +1110,267 @@ export default function WalletApprovals() {
         </div>
       )}
 
+      {/* Manual User Payment Record Modal */}
+      {showRecordPaymentModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(4px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999, padding: '20px' }}>
+          <div style={{ background: 'white', borderRadius: '20px', width: '100%', maxWidth: '560px', padding: '28px', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <div>
+                <h2 style={{ fontSize: '20px', fontWeight: '800', color: '#0f172a', margin: '0 0 4px 0' }}>Record User Payment</h2>
+                <p style={{ color: '#64748b', margin: 0, fontSize: '13px' }}>Manually upload/add a payment record for a rider (UPI / Cash / Bank).</p>
+              </div>
+              <button onClick={() => setShowRecordPaymentModal(false)} style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <X size={16} color="#64748b" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSavePaymentRecord}>
+              {/* User Select */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>Select Rider / User *</label>
+                <select
+                  value={recordForm.user_id}
+                  onChange={(e) => setRecordForm({ ...recordForm, user_id: e.target.value })}
+                  style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #cbd5e1', fontSize: '14px', fontWeight: '600', outline: 'none' }}
+                  required
+                >
+                  <option value="">-- Choose Rider ({usersList.length} users) --</option>
+                  {usersList.map(u => (
+                    <option key={u.id} value={u.id}>{u.name || 'Unnamed'} ({u.phone})</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Amount & Payment Type */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '16px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>Amount (₹) *</label>
+                  <input 
+                    type="number"
+                    step="any"
+                    min="1"
+                    value={recordForm.amount}
+                    onChange={(e) => setRecordForm({ ...recordForm, amount: e.target.value })}
+                    placeholder="e.g. 1500"
+                    style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #cbd5e1', fontSize: '14px', fontWeight: '700', outline: 'none', boxSizing: 'border-box' }}
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>Payment Purpose *</label>
+                  <select
+                    value={recordForm.payment_type}
+                    onChange={(e) => setRecordForm({ ...recordForm, payment_type: e.target.value })}
+                    style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #cbd5e1', fontSize: '14px', fontWeight: '600', outline: 'none' }}
+                  >
+                    <option value="recharge">Wallet Top-Up</option>
+                    <option value="due">Rental Due Payment</option>
+                    <option value="deposit">Security Deposit</option>
+                    <option value="plan">Plan Booking</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Payment Mode & UTR */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '16px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>Payment Mode *</label>
+                  <select
+                    value={recordForm.payment_mode}
+                    onChange={(e) => setRecordForm({ ...recordForm, payment_mode: e.target.value })}
+                    style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #cbd5e1', fontSize: '14px', fontWeight: '600', outline: 'none' }}
+                  >
+                    <option value="upi">UPI Transfer</option>
+                    <option value="cash">Cash in Hand</option>
+                    <option value="bank_transfer">Bank Transfer (IMPS/NEFT)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>UTR / Reference No.</label>
+                  <input 
+                    type="text"
+                    value={recordForm.utr}
+                    onChange={(e) => setRecordForm({ ...recordForm, utr: e.target.value })}
+                    placeholder="e.g. 412345678901 / Cash Slip #"
+                    style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #cbd5e1', fontSize: '14px', fontWeight: '600', outline: 'none', boxSizing: 'border-box' }}
+                  />
+                </div>
+              </div>
+
+              {/* Upload Receipt / Proof Screenshot */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                  Upload Receipt Slip / Screenshot (Optional)
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <input 
+                    type="file" 
+                    accept="image/*"
+                    onChange={handleRecordProofUpload}
+                    disabled={uploadingRecordProof}
+                    style={{ fontSize: '12px', color: '#475569' }}
+                  />
+                  {uploadingRecordProof && <span style={{ fontSize: '12px', color: '#2563eb' }}>Uploading...</span>}
+                  {recordForm.proof_image && (
+                    <span style={{ fontSize: '12px', color: '#059669', fontWeight: '700' }}>✓ Attached</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Remarks */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>Remarks / Note</label>
+                <input 
+                  type="text"
+                  value={recordForm.remarks}
+                  onChange={(e) => setRecordForm({ ...recordForm, remarks: e.target.value })}
+                  placeholder="e.g. Paid at stand / Verified on phone"
+                  style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #cbd5e1', fontSize: '14px', fontWeight: '600', outline: 'none', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              {/* Auto-Approve Checkbox */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '24px', background: '#f8fafc', padding: '10px 14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                <input 
+                  type="checkbox"
+                  id="autoApprove"
+                  checked={recordForm.auto_approve}
+                  onChange={(e) => setRecordForm({ ...recordForm, auto_approve: e.target.checked })}
+                  style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                />
+                <label htmlFor="autoApprove" style={{ fontSize: '13px', fontWeight: '700', color: '#0f172a', cursor: 'pointer' }}>
+                  Auto-Approve & Settle Immediately (Credits wallet / clears dues instantly)
+                </label>
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowRecordPaymentModal(false)}
+                  style={{ flex: 1, padding: '12px', borderRadius: '10px', border: '1px solid #cbd5e1', background: 'white', color: '#475569', fontWeight: '600', fontSize: '14px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingRecord}
+                  style={{ flex: 1, padding: '12px', borderRadius: '10px', border: 'none', background: '#2563eb', color: 'white', fontWeight: '700', fontSize: '14px', cursor: submittingRecord ? 'not-allowed' : 'pointer' }}
+                >
+                  {submittingRecord ? 'Saving...' : 'Record Payment'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Official Printable / PDF Receipt & Invoice Modal */}
       <ReceiptModal 
         isOpen={receiptModalOpen} 
         onClose={() => setReceiptModalOpen(false)} 
         data={selectedReceiptData} 
       />
+
+      {/* Payment Proof Screenshot Lightbox Modal */}
+      {previewProof && (
+        <div 
+          onClick={() => setPreviewProof(null)}
+          style={{ 
+            position: 'fixed', 
+            top: 0, left: 0, right: 0, bottom: 0, 
+            background: 'rgba(15, 23, 42, 0.85)', 
+            backdropFilter: 'blur(6px)', 
+            display: 'flex', 
+            flexDirection: 'column',
+            justifyContent: 'center', 
+            alignItems: 'center', 
+            zIndex: 9999,
+            padding: '20px'
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{ 
+              background: '#0f172a', 
+              borderRadius: '20px', 
+              overflow: 'hidden', 
+              maxWidth: '90vw', 
+              maxHeight: '92vh', 
+              display: 'flex', 
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              border: '1px solid #334155'
+            }}
+          >
+            {/* Modal Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', background: '#1e293b', borderBottom: '1px solid #334155' }}>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: '800', color: 'white', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <CreditCard size={18} color="#00a66c" /> Payment Proof Screenshot — Req #{previewProof.id}
+                </div>
+                <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>
+                  Rider: <strong style={{ color: 'white' }}>{previewProof.user}</strong> ({previewProof.phone}) • Amount: <strong style={{ color: '#4ade80' }}>₹{parseFloat(previewProof.amount).toLocaleString('en-IN')}</strong> • UTR: {previewProof.utr || 'N/A'}
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {previewProof.status === 'pending' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id = previewProof.id;
+                        setPreviewProof(null);
+                        rejectRequest(id);
+                      }}
+                      style={{ background: '#fee2e2', color: '#dc2626', border: 'none', padding: '7px 14px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', cursor: 'pointer' }}
+                    >
+                      Reject
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id = previewProof.id;
+                        setPreviewProof(null);
+                        approveRequest(id, 'payment');
+                      }}
+                      style={{ background: '#00a66c', color: 'white', border: 'none', padding: '7px 14px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', cursor: 'pointer' }}
+                    >
+                      ✓ Approve Payment
+                    </button>
+                  </>
+                )}
+                <a
+                  href={previewProof.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(255,255,255,0.1)', color: 'white', padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: '600', textDecoration: 'none' }}
+                >
+                  <ExternalLink size={14} /> Open Original
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewProof(null)}
+                  style={{ background: 'rgba(255,255,255,0.1)', border: 'none', color: 'white', width: '32px', height: '32px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body / Image */}
+            <div style={{ padding: '20px', display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#020617', maxHeight: 'calc(92vh - 80px)' }}>
+              <img 
+                src={previewProof.url} 
+                alt="Payment proof screenshot" 
+                style={{ maxWidth: '100%', maxHeight: 'calc(80vh)', objectFit: 'contain', borderRadius: '8px' }} 
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

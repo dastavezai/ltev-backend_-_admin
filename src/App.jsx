@@ -20,6 +20,8 @@ import Bookings from './pages/Bookings';
 import Broadcast from './pages/Broadcast';
 import ManagementDashboard from './pages/ManagementDashboard';
 import InvoiceTestingCenter from './pages/InvoiceTestingCenter';
+import CurrentRent from './pages/CurrentRent';
+import Assets from './pages/Assets';
 import Login from './pages/Login';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import './App.css';
@@ -55,14 +57,16 @@ function App() {
           <Route path="/dashboard" element={<ProtectedRoute><Layout><Dashboard /></Layout></ProtectedRoute>} />
           <Route path="/management" element={<ProtectedRoute><ManagementLayout><ManagementDashboard /></ManagementLayout></ProtectedRoute>} />
           <Route path="/operations" element={<ProtectedRoute><ManagementLayout><ManagementDashboard /></ManagementLayout></ProtectedRoute>} />
+          <Route path="/current-rent" element={<ProtectedRoute><Layout><CurrentRent /></Layout></ProtectedRoute>} />
+          <Route path="/assets" element={<ProtectedRoute><Layout><Assets /></Layout></ProtectedRoute>} />
           <Route path="/bookings" element={<ProtectedRoute><Layout><Bookings /></Layout></ProtectedRoute>} />
           <Route path="/updates" element={<ProtectedRoute><Layout><Updates /></Layout></ProtectedRoute>} />
           <Route path="/broadcast" element={<ProtectedRoute><Layout><Broadcast /></Layout></ProtectedRoute>} />
-          <Route path="/vehicles" element={<ProtectedRoute><Layout><Vehicles /></Layout></ProtectedRoute>} />
+          <Route path="/vehicles" element={<Navigate to="/assets?tab=vehicles" replace />} />
           <Route path="/vehicles/:id" element={<ProtectedRoute><Layout><VehicleDetails /></Layout></ProtectedRoute>} />
           <Route path="/services" element={<ProtectedRoute><Layout><VehicleServices /></Layout></ProtectedRoute>} />
-          <Route path="/parts" element={<ProtectedRoute><Layout><Parts /></Layout></ProtectedRoute>} />
-          <Route path="/stands" element={<ProtectedRoute><Layout><Stands /></Layout></ProtectedRoute>} />
+          <Route path="/parts" element={<Navigate to="/assets?tab=parts" replace />} />
+          <Route path="/stands" element={<Navigate to="/assets?tab=stands" replace />} />
           <Route path="/rentals" element={<ProtectedRoute><Layout><Rentals /></Layout></ProtectedRoute>} />
           <Route path="/rental-requests" element={<ProtectedRoute><Layout><RentalRequests /></Layout></ProtectedRoute>} />
           <Route path="/users" element={<ProtectedRoute><Layout><UserManagement /></Layout></ProtectedRoute>} />

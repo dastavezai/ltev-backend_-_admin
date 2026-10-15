@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import multer from 'multer';
 import axios from 'axios';
+import { uploadToR2 } from './r2Service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,6 +72,42 @@ const issueStorage = multer.diskStorage({
 });
 const uploadIssue = multer({ storage: issueStorage });
 
+// Setup Multer Storage for Payment Proof Screenshots
+const paymentsUploadDir = path.join(__dirname, 'public', 'uploads', 'payments');
+if (!fs.existsSync(paymentsUploadDir)) {
+  fs.mkdirSync(paymentsUploadDir, { recursive: true });
+}
+
+const paymentStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, paymentsUploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname) || '.jpg';
+    cb(null, 'payment-' + uniqueSuffix + ext);
+  }
+});
+const uploadPayment = multer({ storage: paymentStorage });
+
+// Setup Multer Storage for Static UPI QR Code Images
+const qrUploadDir = path.join(__dirname, 'public', 'uploads', 'qr');
+if (!fs.existsSync(qrUploadDir)) {
+  fs.mkdirSync(qrUploadDir, { recursive: true });
+}
+
+const qrStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, qrUploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname) || '.png';
+    cb(null, 'upi-qr-' + uniqueSuffix + ext);
+  }
+});
+const uploadQr = multer({ storage: qrStorage });
+
 // Serve static uploads directory
 app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads')));
 app.use(express.json());
@@ -114,6 +151,7 @@ async function initDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS security_deposit_paid BOOLEAN NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT`);
     await pool.query(`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS next_payment_date TIMESTAMP`);
+    await pool.query(`ALTER TABLE wallet_approvals ADD COLUMN IF NOT EXISTS proof_image TEXT`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS security_deposit_transactions (
         id SERIAL PRIMARY KEY,
@@ -551,28 +589,28 @@ app.post('/api/kyc/upload', authenticateToken, upload.any(), async (req, res) =>
 
     const aadharFrontFile = getFile('aadhar_front');
     if (aadharFrontFile) {
-      aadhar_front_url = `/uploads/kyc/${aadharFrontFile.filename}`;
+      aadhar_front_url = await uploadToR2(aadharFrontFile, aadharFrontFile.filename, 'kyc');
     } else {
       aadhar_front_url = req.body.aadhar_front;
     }
     
     const aadharBackFile = getFile('aadhar_back');
     if (aadharBackFile) {
-      aadhar_back_url = `/uploads/kyc/${aadharBackFile.filename}`;
+      aadhar_back_url = await uploadToR2(aadharBackFile, aadharBackFile.filename, 'kyc');
     } else {
       aadhar_back_url = req.body.aadhar_back;
     }
     
     const panImageFile = getFile('pan_image');
     if (panImageFile) {
-      pan_image_url = `/uploads/kyc/${panImageFile.filename}`;
+      pan_image_url = await uploadToR2(panImageFile, panImageFile.filename, 'kyc');
     } else {
       pan_image_url = req.body.pan_image;
     }
     
     const selfieImageFile = getFile('selfie_image');
     if (selfieImageFile) {
-      selfie_image_url = `/uploads/kyc/${selfieImageFile.filename}`;
+      selfie_image_url = await uploadToR2(selfieImageFile, selfieImageFile.filename, 'kyc');
     } else {
       selfie_image_url = req.body.selfie_image;
     }
@@ -584,15 +622,22 @@ app.post('/api/kyc/upload', authenticateToken, upload.any(), async (req, res) =>
     const result = await pool.query(`
       UPDATE users 
       SET aadhar_front_image = $1, aadhar_back_image = $2, pan_image = $3, selfie_image = $4, kyc_status = 'completed'
-      WHERE id = $5 RETURNING id, name, kyc_status
+      WHERE id = $5 RETURNING id, name, kyc_status, aadhar_front_image, aadhar_back_image, pan_image, selfie_image
     `, [aadhar_front_url, aadhar_back_url, pan_image_url, selfie_image_url, userId]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // Record submission into account_approvals
+    await pool.query(`
+      INSERT INTO account_approvals (user_id, document_type, document_number, status, date)
+      VALUES ($1, 'Aadhaar & PAN Verification', 'KYC Online Submission', 'pending', CURRENT_TIMESTAMP)
+    `).catch(() => {});
+
     res.json({ success: true, user: result.rows[0] });
   } catch (err) {
+    console.error('KYC upload error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -616,20 +661,56 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
   }
 });
 
-// Vehicles API
+// Vehicles API - Single Source of Truth
 app.get('/api/vehicles', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
-        v.id, v.model, v.type, v.status, v.location,
-        v.chassis_number, v.registration_number,
-        u.name as renter,
-        u.phone as renter_phone,
-        u.id as renter_id
+        v.id, 
+        v.model, 
+        v.type, 
+        v.status, 
+        v.location,
+        v.chassis_number, 
+        v.registration_number,
+        cur_rental.user_name as renter,
+        cur_rental.user_phone as renter_phone,
+        cur_rental.user_id as renter_id,
+        cur_rental.rental_id,
+        cur_rental.start_time as rental_start_time,
+        cur_rental.rental_status,
+        cur_rental.plan_name as current_plan_name,
+        cur_rental.plan_type as current_plan_type,
+        cur_rental.total_cost as rental_total_cost,
+        cur_rental.next_payment_date as rental_next_payment_date
       FROM vehicles v
-      LEFT JOIN rentals r ON r.vehicle_id = v.id AND r.status = 'active'
-      LEFT JOIN users u ON u.id = r.user_id
-      ORDER BY v.id ASC
+      LEFT JOIN LATERAL (
+        SELECT 
+          r.id as rental_id,
+          r.user_id,
+          r.start_time,
+          r.status as rental_status,
+          r.total_cost,
+          r.next_payment_date,
+          u.name as user_name,
+          u.phone as user_phone,
+          p.name as plan_name,
+          p.type as plan_type
+        FROM rentals r
+        JOIN users u ON u.id = r.user_id
+        LEFT JOIN plans p ON p.id = r.plan_id
+        WHERE (r.vehicle_id = v.id OR r.vehicle_id = v.model)
+          AND r.status IN ('active', 'in_use', 'pending_return')
+        ORDER BY 
+          CASE WHEN r.status = 'active' THEN 1 WHEN r.status = 'in_use' THEN 2 ELSE 3 END,
+          r.start_time DESC NULLS LAST,
+          r.id DESC
+        LIMIT 1
+      ) cur_rental ON true
+      ORDER BY 
+        NULLIF(regexp_replace(v.model, '\\D', '', 'g'), '')::int NULLS LAST,
+        v.model ASC, 
+        v.id ASC
     `);
     res.json(result.rows);
   } catch (err) {
@@ -677,22 +758,40 @@ app.get('/api/vehicles/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
-    // 1. Get base vehicle info
+    // 1. Get base vehicle info with single active rental
     const vehicleRes = await pool.query(`
       SELECT 
         v.*,
-        u.name as current_renter, u.id as current_renter_id, u.phone as current_renter_phone,
-        r.id as current_rental_id,
-        r.start_time as current_rental_start,
-        r.next_payment_date as current_rental_next_payment,
-        p.name as current_plan_name,
-        p.type as current_plan_type,
-        p.price as current_plan_price
+        cur_rental.user_name as current_renter, 
+        cur_rental.user_id as current_renter_id, 
+        cur_rental.user_phone as current_renter_phone,
+        cur_rental.rental_id as current_rental_id,
+        cur_rental.start_time as current_rental_start,
+        cur_rental.next_payment_date as current_rental_next_payment,
+        cur_rental.plan_name as current_plan_name,
+        cur_rental.plan_type as current_plan_type,
+        cur_rental.plan_price as current_plan_price
       FROM vehicles v
-      LEFT JOIN rentals r ON r.vehicle_id = v.id AND r.status IN ('active', 'in_use', 'pending_return')
-      LEFT JOIN users u ON u.id = r.user_id
-      LEFT JOIN plans p ON p.id = r.plan_id
-      WHERE v.id = $1
+      LEFT JOIN LATERAL (
+        SELECT 
+          r.id as rental_id,
+          r.user_id,
+          r.start_time,
+          r.next_payment_date,
+          u.name as user_name,
+          u.phone as user_phone,
+          p.name as plan_name,
+          p.type as plan_type,
+          p.price as plan_price
+        FROM rentals r
+        JOIN users u ON u.id = r.user_id
+        LEFT JOIN plans p ON p.id = r.plan_id
+        WHERE (r.vehicle_id = v.id OR r.vehicle_id = v.model)
+          AND r.status IN ('active', 'in_use', 'pending_return')
+        ORDER BY r.start_time DESC NULLS LAST, r.id DESC
+        LIMIT 1
+      ) cur_rental ON true
+      WHERE v.id = $1 OR v.model = $1
     `, [id]);
 
     if (vehicleRes.rows.length === 0) {
@@ -701,7 +800,7 @@ app.get('/api/vehicles/:id', authenticateToken, async (req, res) => {
     
     const vehicle = vehicleRes.rows[0];
 
-    // 2. Get Rental History
+    // 2. Get Rental History for this vehicle
     const historyRes = await pool.query(`
       SELECT 
         r.id, r.start_time, r.end_time, r.total_cost, r.status, r.next_payment_date,
@@ -710,18 +809,18 @@ app.get('/api/vehicles/:id', authenticateToken, async (req, res) => {
       FROM rentals r
       JOIN users u ON u.id = r.user_id
       LEFT JOIN plans p ON p.id = r.plan_id
-      WHERE r.vehicle_id = $1
-      ORDER BY r.start_time DESC
-    `, [id]);
+      WHERE (r.vehicle_id = $1 OR r.vehicle_id = $2)
+      ORDER BY r.start_time DESC NULLS LAST, r.id DESC
+    `, [vehicle.id, vehicle.model]);
 
     // 3. Get Maintenance Logs
     const maintenanceRes = await pool.query(`
       SELECT m.*, u.name as user_name, u.phone as user_phone
       FROM maintenance_logs m
       LEFT JOIN users u ON u.id = m.user_id
-      WHERE m.vehicle_id = $1
+      WHERE (m.vehicle_id = $1 OR m.vehicle_id = $2)
       ORDER BY m.date_reported DESC, m.id DESC
-    `, [id]);
+    `, [vehicle.id, vehicle.model]);
 
     res.json({
       ...vehicle,
@@ -924,7 +1023,7 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       finalPaymentStatus,
       duration || null,
       estimated_completion ? new Date(estimated_completion) : null,
-      image_url || null,
+      image_url || req.body.problem_image || null,
       images || null,
       items_breakdown ? (typeof items_breakdown === 'string' ? items_breakdown : JSON.stringify(items_breakdown)) : null
     ]);
@@ -1038,7 +1137,7 @@ app.put('/api/maintenance/:id', authenticateToken, async (req, res) => {
       payment_status,
       duration || null,
       estimated_completion ? new Date(estimated_completion) : null,
-      image_url || null,
+      image_url || req.body.problem_image || null,
       images || null,
       items_breakdown ? (typeof items_breakdown === 'string' ? items_breakdown : JSON.stringify(items_breakdown)) : null,
       id
@@ -1306,8 +1405,9 @@ app.get('/api/users', authenticateToken, async (req, res) => {
       SELECT 
         u.id, u.name, u.email, u.phone, u.status, u.role, u.joined_date, u.kyc_status,
         u.security_deposit_balance, u.security_deposit_paid,
+        u.aadhar_front_image, u.aadhar_back_image, u.pan_image, u.selfie_image,
         COALESCE(w.balance, 0) as wallet_balance,
-        r.id as rental_id,
+        r.rental_id,
         r.vehicle_id,
         v.model as vehicle_model,
         COALESCE(v.registration_number, v.id) as vehicle_reg,
@@ -1321,8 +1421,19 @@ app.get('/api/users', authenticateToken, async (req, res) => {
         ), 0) as extra_dues_total
       FROM users u
       LEFT JOIN wallets w ON w.user_id = u.id
-      LEFT JOIN rentals r ON r.user_id = u.id AND r.status = 'active'
-      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN LATERAL (
+        SELECT 
+          r_sub.id as rental_id,
+          r_sub.vehicle_id,
+          r_sub.plan_id,
+          r_sub.next_payment_date,
+          r_sub.start_time
+        FROM rentals r_sub
+        WHERE r_sub.user_id = u.id AND r_sub.status IN ('active', 'in_use')
+        ORDER BY r_sub.id DESC
+        LIMIT 1
+      ) r ON true
+      LEFT JOIN vehicles v ON (v.id = r.vehicle_id OR v.model = r.vehicle_id)
       LEFT JOIN plans p ON p.id = r.plan_id
       ORDER BY u.id ASC
     `);
@@ -1344,8 +1455,13 @@ app.get('/api/users', authenticateToken, async (req, res) => {
         }
       }
 
-      const walletBal = parseFloat(r.wallet_balance || 0);
-      const depositDeficit = walletBal < minDeposit ? (minDeposit - walletBal) : 0;
+      // Security deposit is ONLY due if the user holds an active vehicle rental/booking.
+      // If the user has not booked/rented any vehicle, or has already satisfied minDeposit, depositDeficit is 0.
+      const hasVehicle = Boolean(r.rental_id || r.vehicle_id);
+      const depositBalance = parseFloat(r.security_deposit_balance || 0);
+      const isDepositPaid = Boolean(r.security_deposit_paid) || depositBalance >= minDeposit;
+      const depositDeficit = hasVehicle ? (isDepositPaid ? 0 : Math.max(0, minDeposit - depositBalance)) : 0;
+
       const extraDuesTotal = parseFloat(r.extra_dues_total || 0);
       const totalDue = cycleDue + depositDeficit + extraDuesTotal;
 
@@ -1589,9 +1705,13 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
       }
     }
 
-    // Deposit Shortfall
-    const walletBal = parseFloat(user.wallet_balance || 0);
-    const depositDeficit = walletBal < minDeposit ? (minDeposit - walletBal) : 0;
+    // Deposit Shortfall:
+    // Only applies if the user currently has an active vehicle rental or vehicle assigned.
+    // If no active rental/vehicle, depositDeficit = 0.
+    const hasVehicle = Boolean(activeRental && (activeRental.vehicle_id || activeRental.id));
+    const depositBalance = parseFloat(user.security_deposit_balance || 0);
+    const isDepositPaid = Boolean(user.security_deposit_paid) || depositBalance >= minDeposit;
+    const depositDeficit = hasVehicle ? (isDepositPaid ? 0 : Math.max(0, minDeposit - depositBalance)) : 0;
 
     // 3. Extra Dues from rider_dues table
     const duesRes = await pool.query(`
@@ -1635,6 +1755,20 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
       LIMIT 15
     `, [id]);
 
+    // 2b. Rental History for this user
+    const rentalHistoryRes = await pool.query(`
+      SELECT 
+        r.id, r.vehicle_id, r.start_time, r.end_time, r.status, r.next_payment_date,
+        v.model as vehicle_model, COALESCE(v.registration_number, v.id) as vehicle_reg,
+        p.name as plan_name, p.price as plan_price, p.type as plan_type
+      FROM rentals r
+      LEFT JOIN vehicles v ON (v.id = r.vehicle_id OR v.model = r.vehicle_id)
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.user_id = $1
+      ORDER BY r.id DESC
+      LIMIT 10
+    `, [id]);
+
     res.json({
       user: {
         ...user,
@@ -1643,12 +1777,18 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
       },
       active_rental: activeRental,
       rental: activeRental,
+      rental_history: rentalHistoryRes.rows,
       min_security_deposit: minDeposit,
       dues_summary: {
         cycle_due: cycleDue,
         overdue_days: overdueDays,
         is_overdue: isOverdue,
+        min_deposit: minDeposit,
+        deposit_balance: depositBalance,
+        is_deposit_paid: isDepositPaid,
+        has_vehicle: hasVehicle,
         deposit_deficit: depositDeficit,
+        pending_extra_dues_total: pendingExtraDuesTotal,
         extra_dues_total: pendingExtraDuesTotal,
         total_due: totalDue,
         has_due: totalDue > 0
@@ -2137,7 +2277,7 @@ app.post('/api/transactions/cash', authenticateToken, async (req, res) => {
 app.post('/api/plans/purchase', authenticateToken, async (req, res) => {
   const client = await pool.connect();
   try {
-    const { plan_id, deposit_to_pay, deposit_paid } = req.body;
+    const { plan_id, deposit_to_pay, deposit_paid, utr, proof_image } = req.body;
     const user_id = req.user.id;
     const depositAmt = parseFloat(deposit_to_pay !== undefined ? deposit_to_pay : (deposit_paid || 0));
 
@@ -2194,12 +2334,14 @@ app.post('/api/plans/purchase', authenticateToken, async (req, res) => {
     `, [`TXN-ORD-${Date.now()}`, walletId, totalPaid, `Plan Booking: ${plan.name} ${depositAmt > 0 ? `(₹${planPrice} + ₹${depositAmt} Deposit)` : ''}`, rentalId]);
 
     // 3. Create a pending payment approval request in wallet_approvals for Admin verification
-    const utrText = `PLAN_BOOKING: ${plan.name} (${rentalId}) ${depositAmt > 0 ? `[Plan ₹${planPrice} + Deposit ₹${depositAmt}]` : `[Plan ₹${planPrice}]`}`;
+    const cleanUtr = utr ? utr.trim() : null;
+    const refSuffix = cleanUtr ? ` | Ref: ${cleanUtr}` : '';
+    const utrText = `PLAN_BOOKING: ${plan.name} (${rentalId})${refSuffix} ${depositAmt > 0 ? `[Plan ₹${planPrice} + Deposit ₹${depositAmt}]` : `[Plan ₹${planPrice}]`}`;
     const approvalId = `WAP-${Date.now()}`;
     await client.query(`
-      INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date)
-      VALUES ($1, $2, $3, $4, 'pending', CURRENT_TIMESTAMP)
-    `, [approvalId, user_id, totalPaid, utrText]);
+      INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date, proof_image)
+      VALUES ($1, $2, $3, $4, 'pending', CURRENT_TIMESTAMP, $5)
+    `, [approvalId, user_id, totalPaid, utrText, proof_image || null]);
 
     await client.query('COMMIT');
     res.json({ success: true, message: 'Plan purchased successfully. Pending EV assignment & admin verification.' });
@@ -3617,13 +3759,13 @@ app.get('/api/rentals', authenticateToken, async (req, res) => {
         r.id, r.start_time, r.end_time, r.total_cost, r.status, r.next_payment_date,
         u.id as user_id, u.name as user_name, u.phone as user_phone, u.email as user_email,
         u.security_deposit_balance, u.security_deposit_paid,
-        v.id as vehicle_id, v.model as vehicle_model, v.type as vehicle_type, NULL as vehicle_battery,
+        v.id as vehicle_id, v.model as vehicle_model, v.type as vehicle_type, v.location as vehicle_location,
         p.id as plan_id, p.name as plan_name, p.type as plan_type, p.price as plan_price
       FROM rentals r
       LEFT JOIN users u ON u.id = r.user_id
-      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN vehicles v ON (v.id = r.vehicle_id OR v.model = r.vehicle_id)
       LEFT JOIN plans p ON p.id = r.plan_id
-      ORDER BY r.id DESC
+      ORDER BY r.start_time DESC NULLS LAST, r.id DESC
     `);
     
     const formatted = result.rows.map(r => {
@@ -3633,9 +3775,10 @@ app.get('/api/rentals', authenticateToken, async (req, res) => {
       let durationText = 'N/A';
       if (start) {
         const endRef = end || new Date();
-        const diffHours = Math.max(1, Math.round((endRef - start) / (1000 * 60 * 60)));
+        const diffMs = Math.max(0, endRef - start);
+        const diffHours = Math.round(diffMs / (1000 * 60 * 60));
         if (diffHours < 24) {
-          durationText = `${diffHours} ${diffHours === 1 ? 'hr' : 'hrs'}`;
+          durationText = `${Math.max(1, diffHours)} ${diffHours <= 1 ? 'hr' : 'hrs'}`;
         } else {
           const days = Math.floor(diffHours / 24);
           const remHours = diffHours % 24;
@@ -3650,8 +3793,9 @@ app.get('/api/rentals', authenticateToken, async (req, res) => {
         user_phone: r.user_phone || 'N/A',
         user_email: r.user_email || 'N/A',
         vehicle_id: r.vehicle_id || null,
-        vehicle_model: r.vehicle_model || (r.vehicle_id ? 'LT.ev Scooter' : 'Pending EV Assignment'),
-        vehicle_battery: r.vehicle_battery !== undefined ? r.vehicle_battery : null,
+        vehicle_model: r.vehicle_model || (r.vehicle_id ? r.vehicle_id : 'Pending EV Assignment'),
+        vehicle_type: r.vehicle_type || 'Electric Scooter',
+        vehicle_location: r.vehicle_location || 'Stand',
         plan_id: r.plan_id,
         plan_name: r.plan_name || 'Standard Rental',
         plan_type: r.plan_type || 'Custom',
@@ -3660,10 +3804,12 @@ app.get('/api/rentals', authenticateToken, async (req, res) => {
         raw_end_time: r.end_time,
         raw_total_cost: r.total_cost,
         raw_next_payment_date: r.next_payment_date,
-        startTime: start ? start.toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Kolkata' }) : 'Awaiting Assignment',
-        endTime: end ? end.toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Kolkata' }) : (r.status === 'active' ? 'Currently In-Use' : r.status === 'pending_return' ? 'Return Requested' : 'N/A'),
+        startTime: start ? start.toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : 'Awaiting Assignment',
+        endTime: end 
+          ? end.toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) 
+          : (r.status === 'active' || r.status === 'in_use' ? 'Currently In-Use' : r.status === 'pending_return' ? 'Return Requested' : 'N/A'),
         duration: durationText,
-        next_payment_date: r.next_payment_date ? new Date(r.next_payment_date).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Kolkata' }) : null,
+        next_payment_date: r.next_payment_date ? new Date(r.next_payment_date).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : null,
         rentCollected: r.total_cost || r.plan_price ? `₹${parseFloat(r.total_cost || r.plan_price || 0).toLocaleString('en-IN')}` : '₹0',
         deposit: r.security_deposit_paid || (parseFloat(r.security_deposit_balance || 0) >= 2000) ? `₹${parseFloat(r.security_deposit_balance || 2000).toLocaleString('en-IN')} (Paid)` : 'Pending',
         status: r.status || 'pending_assignment'
@@ -3673,6 +3819,177 @@ app.get('/api/rentals', authenticateToken, async (req, res) => {
     res.json(formatted);
   } catch (err) {
     console.error('Fetch rentals error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// CURRENT RENT API: Week-wise and Month-wise fleet rental tracking
+// -------------------------------------------------------------
+app.get('/api/current-rent', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        r.id, r.user_id, r.vehicle_id, r.start_time, r.end_time, r.next_payment_date, r.pre_booking_date,
+        r.total_cost, r.due_amount, r.status, r.payment_mode, r.payment_status, r.remarks,
+        r.advance_payment_mode, r.handover_payment_mode, r.advance_paid, r.handover_amount,
+        u.id as rider_user_id, u.name as rider_name, u.phone as rider_phone, u.email as rider_email,
+        u.kyc_status as rider_kyc, u.security_deposit_balance,
+        v.id as vehicle_reg_id, v.model as vehicle_model, v.type as vehicle_type, v.status as vehicle_status,
+        p.id as plan_id, p.name as plan_name, p.type as plan_type, p.price as plan_price
+      FROM rentals r
+      LEFT JOIN users u ON u.id = r.user_id
+      LEFT JOIN vehicles v ON (v.id = r.vehicle_id OR v.model = r.vehicle_id)
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.vehicle_id IS NOT NULL AND r.vehicle_id != ''
+      ORDER BY r.start_time DESC NULLS LAST, r.id DESC
+    `);
+
+    const now = new Date();
+
+    const formatted = result.rows.map(r => {
+      const isMonthly = (r.plan_type || '').toLowerCase().includes('monthly');
+      const cycleDurationDays = isMonthly ? 30 : 7;
+      const planPrice = parseFloat(r.plan_price || (isMonthly ? 6000 : 1600));
+
+      const startTime = r.start_time ? new Date(r.start_time) : (r.pre_booking_date ? new Date(r.pre_booking_date) : now);
+      const nextDue = r.next_payment_date ? new Date(r.next_payment_date) : new Date(startTime.getTime() + cycleDurationDays * 86400000);
+      const cycleStart = new Date(nextDue.getTime() - cycleDurationDays * 86400000);
+
+      // Current cycle day calculation
+      let cycleDayNumber = 1;
+      let cycleDayText = '';
+      let isOverdue = false;
+      let isDueSoon = false;
+      let daysOverdue = 0;
+      let daysRemaining = 0;
+
+      const diffFromCycleStart = now.getTime() - cycleStart.getTime();
+      const diffToDue = nextDue.getTime() - now.getTime();
+
+      if (now > nextDue) {
+        isOverdue = true;
+        daysOverdue = Math.max(1, Math.floor((now.getTime() - nextDue.getTime()) / 86400000));
+        cycleDayNumber = cycleDurationDays + daysOverdue;
+        cycleDayText = `Day ${cycleDurationDays}+ (${daysOverdue}d overdue)`;
+      } else {
+        const daysIn = Math.max(1, Math.min(cycleDurationDays, Math.floor(diffFromCycleStart / 86400000) + 1));
+        cycleDayNumber = daysIn;
+        daysRemaining = Math.max(0, Math.ceil(diffToDue / 86400000));
+        if (daysRemaining <= 2) {
+          isDueSoon = true;
+        }
+        cycleDayText = `Day ${daysIn} of ${cycleDurationDays}`;
+      }
+
+      // Method category & label
+      const modeStr = (r.payment_mode || r.handover_payment_mode || r.advance_payment_mode || 'cash').toLowerCase();
+      let methodCategory = 'office_cash';
+      let methodLabel = 'In Office (Cash)';
+
+      if (modeStr.includes('online') || modeStr.includes('gateway') || modeStr.includes('razorpay') || modeStr.includes('card')) {
+        methodCategory = 'gateway';
+        methodLabel = 'Online Gateway';
+      } else if (modeStr.includes('upi')) {
+        methodCategory = 'office_upi';
+        methodLabel = 'In Office (UPI)';
+      } else if (modeStr.includes('mixed')) {
+        methodCategory = 'office_mixed';
+        methodLabel = 'In Office (Mixed)';
+      } else if (modeStr.includes('cash')) {
+        methodCategory = 'office_cash';
+        methodLabel = 'In Office (Cash)';
+      }
+
+      // Payment Status
+      let paymentStatus = 'paid';
+      let paymentStatusLabel = 'Paid';
+      if (isOverdue) {
+        paymentStatus = 'overdue';
+        paymentStatusLabel = `Overdue (${daysOverdue}d)`;
+      } else if (isDueSoon) {
+        paymentStatus = 'due_soon';
+        paymentStatusLabel = daysRemaining === 0 ? 'Due Today' : `Due in ${daysRemaining}d`;
+      } else {
+        paymentStatus = 'paid';
+        paymentStatusLabel = 'Paid';
+      }
+
+      return {
+        id: r.id,
+        user_id: r.user_id,
+        vehicle_number: r.vehicle_id || r.vehicle_reg_id || r.vehicle_model,
+        vehicle_model: r.vehicle_model || 'Electric Vehicle',
+        vehicle_status: r.vehicle_status || 'rented',
+        rider: {
+          id: r.rider_user_id,
+          name: r.rider_name || 'Anonymous Rider',
+          phone: r.rider_phone || 'N/A',
+          email: r.rider_email,
+          kyc_status: r.rider_kyc || 'pending',
+          deposit_balance: parseFloat(r.security_deposit_balance || 0)
+        },
+        plan: {
+          id: r.plan_id,
+          name: r.plan_name || (isMonthly ? 'Monthly Commuter' : 'Weekly Pass'),
+          type: r.plan_type || (isMonthly ? 'Monthly' : 'Weekly'),
+          price: planPrice
+        },
+        is_monthly: isMonthly,
+        cycle_duration_days: cycleDurationDays,
+        cycle_day_number: cycleDayNumber,
+        cycle_day_text: cycleDayText,
+        cycle_start: cycleStart.toISOString(),
+        cycle_end: nextDue.toISOString(),
+        days_remaining: daysRemaining,
+        days_overdue: daysOverdue,
+        is_overdue: isOverdue,
+        is_due_soon: isDueSoon,
+        payment_status: paymentStatus,
+        payment_status_label: paymentStatusLabel,
+        method_category: methodCategory,
+        method_label: methodLabel,
+        raw_payment_mode: r.payment_mode,
+        total_cost: parseFloat(r.total_cost || 0),
+        due_amount: isOverdue ? (parseFloat(r.due_amount || 0) > 0 ? parseFloat(r.due_amount) : planPrice) : parseFloat(r.due_amount || 0),
+        status: r.status,
+        start_time: r.start_time,
+        end_time: r.end_time,
+        remarks: r.remarks
+      };
+    });
+
+    res.json({
+      success: true,
+      records: formatted,
+      total: formatted.length,
+      weekly_count: formatted.filter(f => !f.is_monthly).length,
+      monthly_count: formatted.filter(f => f.is_monthly).length,
+      as_of: now.toISOString()
+    });
+  } catch (err) {
+    console.error('Fetch current rent error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Switch rental plan (e.g., Weekly <-> Monthly)
+app.post('/api/rentals/:id/switch-plan', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { plan_id } = req.body;
+    const planRes = await pool.query('SELECT * FROM plans WHERE id = $1', [plan_id]);
+    if (planRes.rows.length === 0) return res.status(404).json({ error: 'Plan not found.' });
+    const plan = planRes.rows[0];
+
+    await pool.query('UPDATE rentals SET plan_id = $1 WHERE id = $2', [plan_id, id]);
+    res.json({ 
+      success: true, 
+      message: `Rental plan updated to ${plan.name} (${plan.type})`, 
+      plan 
+    });
+  } catch (err) {
+    console.error('Switch plan error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3733,10 +4050,15 @@ app.post('/api/rentals/record', authenticateToken, async (req, res) => {
 
     // If vehicle assigned and status is active / in_use, update vehicle status to 'rented'
     if (cleanVehicleId && (rentalStatus === 'active' || rentalStatus === 'in_use')) {
+      // Mark any prior active rentals on this vehicle as completed
+      await client.query(
+        "UPDATE rentals SET status = 'completed', end_time = COALESCE(end_time, $1) WHERE (vehicle_id = $2 OR vehicle_id = (SELECT model FROM vehicles WHERE id = $2)) AND status IN ('active', 'in_use') AND id != $3",
+        [finalStartTime, cleanVehicleId, rentalId]
+      );
       await client.query("UPDATE vehicles SET status = 'rented' WHERE id = $1", [cleanVehicleId]);
     } else if (cleanVehicleId && (rentalStatus === 'completed' || rentalStatus === 'cancelled')) {
       const activeCheck = await client.query(
-        "SELECT id FROM rentals WHERE vehicle_id = $1 AND status IN ('active', 'in_use', 'pending_return') AND id != $2",
+        "SELECT id FROM rentals WHERE (vehicle_id = $1 OR vehicle_id = (SELECT model FROM vehicles WHERE id = $1)) AND status IN ('active', 'in_use', 'pending_return') AND id != $2",
         [cleanVehicleId, rentalId]
       );
       if (activeCheck.rows.length === 0) {
@@ -3814,7 +4136,7 @@ app.put('/api/rentals/:id', authenticateToken, async (req, res) => {
     // Handle previous vehicle status release if changed
     if (prevRental.vehicle_id && prevRental.vehicle_id !== newVehicleId) {
       const activeOnOld = await client.query(
-        "SELECT id FROM rentals WHERE vehicle_id = $1 AND status IN ('active', 'in_use', 'pending_return') AND id != $2",
+        "SELECT id FROM rentals WHERE (vehicle_id = $1 OR vehicle_id = (SELECT model FROM vehicles WHERE id = $1)) AND status IN ('active', 'in_use', 'pending_return') AND id != $2",
         [prevRental.vehicle_id, id]
       );
       if (activeOnOld.rows.length === 0) {
@@ -3825,10 +4147,15 @@ app.put('/api/rentals/:id', authenticateToken, async (req, res) => {
     // Handle new vehicle status
     if (newVehicleId) {
       if (newStatus === 'active' || newStatus === 'in_use') {
+        // Complete any older active rentals on this vehicle
+        await client.query(
+          "UPDATE rentals SET status = 'completed', end_time = COALESCE(end_time, $1) WHERE (vehicle_id = $2 OR vehicle_id = (SELECT model FROM vehicles WHERE id = $2)) AND status IN ('active', 'in_use') AND id != $3",
+          [finalStartTime || new Date(), newVehicleId, id]
+        );
         await client.query("UPDATE vehicles SET status = 'rented' WHERE id = $1", [newVehicleId]);
       } else if (newStatus === 'completed' || newStatus === 'cancelled') {
         const activeCheck = await client.query(
-          "SELECT id FROM rentals WHERE vehicle_id = $1 AND status IN ('active', 'in_use', 'pending_return') AND id != $2",
+          "SELECT id FROM rentals WHERE (vehicle_id = $1 OR vehicle_id = (SELECT model FROM vehicles WHERE id = $1)) AND status IN ('active', 'in_use', 'pending_return') AND id != $2",
           [newVehicleId, id]
         );
         if (activeCheck.rows.length === 0) {
@@ -3886,24 +4213,66 @@ app.delete('/api/rentals/:id', authenticateToken, async (req, res) => {
 });
 
 // Account Approvals API
+// Account / KYC Approvals API
 app.get('/api/account_approvals', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
-        a.id, a.document_type, a.document_number, a.status, a.date,
-        u.name as user, u.phone as phone
-      FROM account_approvals a
-      JOIN users u ON u.id = a.user_id
-      ORDER BY a.date DESC
+        u.id as user_id, u.name as user, u.phone, u.email, u.kyc_status, u.joined_date,
+        u.aadhar_front_image, u.aadhar_back_image, u.pan_image, u.selfie_image,
+        COALESCE(
+          (SELECT a.status FROM account_approvals a WHERE a.user_id = u.id ORDER BY a.id DESC LIMIT 1),
+          CASE 
+            WHEN u.kyc_status = 'verified' THEN 'approved'
+            WHEN u.kyc_status = 'failed' OR u.kyc_status = 'rejected' THEN 'rejected'
+            ELSE 'pending'
+          END
+        ) as approval_status,
+        COALESCE(
+          (SELECT a.date FROM account_approvals a WHERE a.user_id = u.id ORDER BY a.id DESC LIMIT 1),
+          u.joined_date
+        ) as date
+      FROM users u
+      WHERE u.aadhar_front_image IS NOT NULL 
+         OR u.pan_image IS NOT NULL 
+         OR u.aadhar_back_image IS NOT NULL
+         OR u.selfie_image IS NOT NULL
+         OR u.kyc_status IN ('pending', 'completed')
+         OR EXISTS (SELECT 1 FROM account_approvals a WHERE a.user_id = u.id)
+      ORDER BY 
+        CASE 
+          WHEN u.kyc_status = 'completed' THEN 0 
+          WHEN u.kyc_status = 'pending' THEN 1 
+          ELSE 2 
+        END,
+        u.id DESC
     `);
-    const formatted = result.rows.map(r => ({
-      id: r.id,
-      user: r.user,
-      phone: r.phone,
-      docs: [r.document_type], // UI expects array
-      status: r.status,
-      date: new Date(r.date).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' })
-    }));
+
+    const formatted = result.rows.map(r => {
+      const docs = [];
+      if (r.aadhar_front_image) docs.push('Aadhaar Front');
+      if (r.aadhar_back_image) docs.push('Aadhaar Back');
+      if (r.pan_image) docs.push('PAN Card');
+      if (r.selfie_image) docs.push('Selfie Photo');
+      if (docs.length === 0) docs.push('Pending Submission');
+
+      return {
+        id: r.user_id,
+        user_id: r.user_id,
+        user: r.user || 'Unnamed Rider',
+        phone: r.phone || 'N/A',
+        email: r.email,
+        docs: docs,
+        status: r.approval_status || (r.kyc_status === 'verified' ? 'approved' : 'pending'),
+        kyc_status: r.kyc_status,
+        date: r.date ? new Date(r.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recent',
+        aadhar_front_image: r.aadhar_front_image,
+        aadhar_back_image: r.aadhar_back_image,
+        pan_image: r.pan_image,
+        selfie_image: r.selfie_image
+      };
+    });
+
     res.json(formatted);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3913,8 +4282,9 @@ app.get('/api/account_approvals', authenticateToken, async (req, res) => {
 app.post('/api/account_approvals/:id/approve', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.query('UPDATE account_approvals SET status = $1 WHERE id = $2', ['approved', id]);
-    res.json({ success: true });
+    await pool.query("UPDATE users SET kyc_status = 'verified' WHERE id = $1", [id]);
+    await pool.query("UPDATE account_approvals SET status = 'approved' WHERE id = $1 OR user_id = $1", [id]);
+    res.json({ success: true, message: 'KYC verified successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3923,8 +4293,9 @@ app.post('/api/account_approvals/:id/approve', authenticateToken, async (req, re
 app.post('/api/account_approvals/:id/reject', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.query('UPDATE account_approvals SET status = $1 WHERE id = $2', ['rejected', id]);
-    res.json({ success: true });
+    await pool.query("UPDATE users SET kyc_status = 'failed' WHERE id = $1", [id]);
+    await pool.query("UPDATE account_approvals SET status = 'rejected' WHERE id = $1 OR user_id = $1", [id]);
+    res.json({ success: true, message: 'KYC rejected' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4008,8 +4379,8 @@ app.get('/api/wallet_approvals', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
-        w.id, w.amount, w.utr, w.status, w.date,
-        u.name as user, u.phone
+        w.id, w.amount, w.utr, w.status, w.date, w.proof_image,
+        u.id as user_id, u.name as user, u.phone, u.email
       FROM wallet_approvals w
       JOIN users u ON u.id = w.user_id
       ORDER BY w.date DESC
@@ -4251,7 +4622,7 @@ app.post('/api/wallet/withdraw-deposit', authenticateToken, async (req, res) => 
 // Mobile App Submit Wallet Recharge Request (for manual or UPI approval)
 app.post('/api/wallet/recharge', authenticateToken, async (req, res) => {
   try {
-    const { amount, utr } = req.body;
+    const { amount, utr, proof_image } = req.body;
     const user_id = req.user.id;
     const rechargeAmt = parseFloat(amount || 0);
 
@@ -4259,14 +4630,14 @@ app.post('/api/wallet/recharge', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Valid recharge amount is required' });
     }
 
-    const utrNum = utr || `UPI_${Date.now()}`;
+    const utrNum = utr ? utr.trim() : `UPI_${Date.now()}`;
     const rechargeId = `WAP-${Date.now()}`;
 
     const result = await pool.query(`
-      INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date)
-      VALUES ($1, $2, $3, $4, 'pending', CURRENT_TIMESTAMP)
+      INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date, proof_image)
+      VALUES ($1, $2, $3, $4, 'pending', CURRENT_TIMESTAMP, $5)
       RETURNING *
-    `, [rechargeId, user_id, rechargeAmt, utrNum]);
+    `, [rechargeId, user_id, rechargeAmt, utrNum, proof_image || null]);
 
     res.json({ success: true, message: 'Recharge request submitted for approval', request: result.rows[0] });
   } catch (err) {
@@ -4278,7 +4649,7 @@ app.post('/api/wallet/recharge', authenticateToken, async (req, res) => {
 // Mobile App Submit Rental Due Payment Request (Deposit Deficit, Cycle Dues, and Extra Dues)
 app.post('/api/rentals/pay-due', authenticateToken, async (req, res) => {
   try {
-    const { amount, cycle_amount, deposit_amount, extra_dues_amount } = req.body;
+    const { amount, cycle_amount, deposit_amount, extra_dues_amount, utr, proof_image } = req.body;
     const user_id = req.user.id;
     const numAmount = parseFloat(amount || 0);
 
@@ -4295,13 +4666,14 @@ app.post('/api/rentals/pay-due', authenticateToken, async (req, res) => {
     if (depAmt > 0) parts.push(`Deposit: ₹${depAmt}`);
     if (extraAmt > 0) parts.push(`Extra Dues: ₹${extraAmt}`);
     const details = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-    const utrStr = `DUE_PAYMENT: ₹${numAmount}${details}`;
+    const cleanUtr = utr ? utr.trim() : `UPI_${Date.now()}`;
+    const utrStr = `DUE_PAYMENT: ₹${numAmount}${details} | Ref: ${cleanUtr}`;
 
     const result = await pool.query(`
-      INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date)
-      VALUES ($1, $2, $3, $4, 'pending', CURRENT_TIMESTAMP)
+      INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date, proof_image)
+      VALUES ($1, $2, $3, $4, 'pending', CURRENT_TIMESTAMP, $5)
       RETURNING *
-    `, [approvalId, user_id, numAmount, utrStr]);
+    `, [approvalId, user_id, numAmount, utrStr, proof_image || null]);
 
     res.json({
       success: true,
@@ -4311,6 +4683,102 @@ app.post('/api/rentals/pay-due', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Pay due submit error:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin Panel: Manually Record / Upload User Payment Entry
+app.post('/api/wallet_approvals/manual-record', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { user_id, amount, payment_type, payment_mode, utr, remarks, proof_image, auto_approve } = req.body;
+    if (!user_id || !amount || parseFloat(amount) <= 0) {
+      return res.status(400).json({ error: 'User ID and a valid payment amount are required.' });
+    }
+    const numAmount = parseFloat(amount);
+    const mode = (payment_mode || 'cash').toLowerCase();
+    const refUtr = utr ? utr.trim() : `${mode.toUpperCase()}_ADMIN_${Date.now()}`;
+    const approvalId = `WAP-${Date.now()}`;
+    const isAutoApprove = auto_approve !== false; // Default true for direct admin entry
+
+    await client.query('BEGIN');
+
+    let fullUtr = refUtr;
+    if (payment_type === 'plan') {
+      fullUtr = `PLAN_PAYMENT: [${mode.toUpperCase()}] Ref: ${refUtr} ${remarks ? `(${remarks})` : ''}`;
+    } else if (payment_type === 'due') {
+      fullUtr = `DUE_PAYMENT: [${mode.toUpperCase()}] Ref: ${refUtr} ${remarks ? `(${remarks})` : ''}`;
+    } else if (payment_type === 'deposit') {
+      fullUtr = `SECURITY_DEPOSIT: [${mode.toUpperCase()}] Ref: ${refUtr} ${remarks ? `(${remarks})` : ''}`;
+    } else {
+      fullUtr = `MANUAL_RECHARGE: [${mode.toUpperCase()}] Ref: ${refUtr} ${remarks ? `(${remarks})` : ''}`;
+    }
+
+    const approvalStatus = isAutoApprove ? 'success' : 'pending';
+    await client.query(`
+      INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date, proof_image)
+      VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, $6)
+    `, [approvalId, user_id, numAmount, fullUtr, approvalStatus, proof_image || null]);
+
+    if (isAutoApprove) {
+      if (payment_type === 'deposit') {
+        const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+        const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+        const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+        const curBal = parseFloat(userRes.rows[0]?.security_deposit_balance || 0);
+        const newBal = curBal + numAmount;
+        const isPaid = newBal >= minDeposit;
+        await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newBal, isPaid, user_id]);
+        await client.query(`
+          INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+          VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+        `, [user_id, numAmount, `Admin Manual Payment (${mode.toUpperCase()}): ${refUtr}`]);
+      } else if (payment_type === 'due') {
+        await client.query(
+          "UPDATE rider_dues SET status = 'paid', paid_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND status = 'pending'",
+          [user_id]
+        );
+        const activeRentalRes = await client.query(
+          "SELECT r.*, p.name as plan_name, p.type as plan_type FROM rentals r LEFT JOIN plans p ON p.id = r.plan_id WHERE r.user_id = $1 AND r.status = 'active' ORDER BY r.id DESC LIMIT 1",
+          [user_id]
+        );
+        if (activeRentalRes.rows.length > 0) {
+          const rental = activeRentalRes.rows[0];
+          const planType = (rental.plan_type || rental.plan_name || '').toLowerCase();
+          let daysToAdd = 7;
+          if (planType.includes('monthly') || planType.includes('30')) daysToAdd = 30;
+          else if (planType.includes('daily') || planType.includes('1')) daysToAdd = 1;
+          const baseDate = rental.next_payment_date && new Date(rental.next_payment_date) > new Date()
+            ? new Date(rental.next_payment_date)
+            : new Date();
+          const newDueDate = new Date(baseDate.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+          await client.query("UPDATE rentals SET next_payment_date = $1 WHERE id = $2", [newDueDate.toISOString(), rental.id]);
+        }
+      } else {
+        // Recharge wallet
+        let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+        let walletId = null;
+        if (walletRes.rows.length === 0) {
+          const newW = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, $2) RETURNING id', [user_id, numAmount]);
+          walletId = newW.rows[0].id;
+        } else {
+          walletId = walletRes.rows[0].id;
+          await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [numAmount, walletId]);
+        }
+        await client.query(`
+          INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp)
+          VALUES ($1, $2, 'credit', $3, $4, 'success', CURRENT_TIMESTAMP)
+        `, [`TXN-MAN-${Date.now()}`, walletId, numAmount, `Admin Manual Entry (${mode.toUpperCase()}): ${refUtr}`]);
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Payment record created successfully.', approvalId });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Manual payment record error:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -4690,13 +5158,15 @@ async function sendExpoPushNotifications({ tokens, title, body, data }) {
 }
 
 // 2. Broadcast or Send Targeted Notification
-app.post('/api/notifications/broadcast', authenticateToken, async (req, res) => {
+app.post(['/api/notifications/broadcast', '/api/notifications'], authenticateToken, async (req, res) => {
   try {
-    const { type, user_id, title, message, category, action_type } = req.body;
+    const { type, user_id, target_role, title, message, category, action_type } = req.body;
 
     let targetTitle = title;
     let targetMessage = message;
     let targetCategory = category || 'general';
+    let targetAction = action_type || 'none';
+    let recipientCount = 1;
     let targetUserId = null;
     if (user_id && user_id !== 'all') {
       if (typeof user_id === 'string' && user_id.startsWith('USR-')) {
@@ -4908,10 +5378,61 @@ app.post('/api/upload/issue-image', authenticateToken, uploadIssue.any(), async 
     if (!file) {
       return res.status(400).json({ error: 'No image file uploaded' });
     }
-    const imageUrl = `/uploads/issues/${file.filename}`;
-    res.json({ success: true, imageUrl, message: 'Image uploaded successfully' });
+    const imageUrl = await uploadToR2(file, file.filename, 'issues');
+    res.json({ success: true, imageUrl, message: 'Image uploaded successfully to Cloudflare R2' });
   } catch (err) {
     console.error('Issue image upload error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Upload Payment Proof Screenshot (Mobile & Admin)
+app.post('/api/upload/payment-proof', authenticateToken, uploadPayment.any(), async (req, res) => {
+  try {
+    const file = req.files && req.files.length > 0 ? req.files[0] : (req.file || null);
+    if (!file) {
+      return res.status(400).json({ error: 'No payment screenshot image uploaded' });
+    }
+    const imageUrl = await uploadToR2(file, file.filename, 'payments');
+    res.json({ success: true, imageUrl, message: 'Payment screenshot uploaded successfully to Cloudflare R2' });
+  } catch (err) {
+    console.error('Payment screenshot upload error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin Upload Static UPI QR Code Image
+app.post('/api/upload/upi-qr', authenticateToken, uploadQr.any(), async (req, res) => {
+  try {
+    const file = req.files && req.files.length > 0 ? req.files[0] : (req.file || null);
+    if (!file) {
+      return res.status(400).json({ error: 'No QR code image uploaded' });
+    }
+    const imageUrl = await uploadToR2(file, file.filename, 'qr');
+    await pool.query(`
+      INSERT INTO system_settings (key, value)
+      VALUES ('upi_qr_image', $1)
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+    `, [imageUrl]);
+    res.json({ success: true, imageUrl, message: 'UPI QR code image uploaded successfully to Cloudflare R2' });
+  } catch (err) {
+    console.error('UPI QR upload error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Generic Cloudflare R2 Upload API (Admin & Mobile)
+app.post('/api/upload', authenticateToken, upload.any(), async (req, res) => {
+  try {
+    const file = req.files && req.files.length > 0 ? req.files[0] : (req.file || null);
+    if (!file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
+    const folder = req.body.folder || 'uploads';
+    const publicUrl = await uploadToR2(file, file.filename, folder);
+    res.json({ success: true, url: publicUrl, imageUrl: publicUrl, filename: file.filename });
+  } catch (err) {
+    console.error('Generic upload error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -5413,6 +5934,440 @@ app.post('/api/kyc/webhook/cashfree', async (req, res) => {
 });
 
 // ==========================================
+// CASHFREE PAYMENT GATEWAY (ONLINE PG) APIs
+// ==========================================
+
+const CASHFREE_PG_APP_ID = process.env.cashfree_api_id || process.env.CASHFREE_PG_CLIENT_ID || process.env.CASHFREE_CLIENT_ID;
+const CASHFREE_PG_SECRET = process.env.cashfree_scret || process.env.CASHFREE_PG_CLIENT_SECRET || process.env.CASHFREE_CLIENT_SECRET;
+const CASHFREE_PG_ENV = (process.env.CASHFREE_PG_ENV || (CASHFREE_PG_SECRET?.startsWith('cfsk_ma_prod_') ? 'PRODUCTION' : 'SANDBOX')).toUpperCase();
+const CASHFREE_PG_BASE_URL = CASHFREE_PG_ENV === 'PRODUCTION'
+  ? 'https://api.cashfree.com/pg'
+  : 'https://sandbox.cashfree.com/pg';
+
+// Helper to fulfill a paid Cashfree order
+async function fulfillCashfreeOrder(orderRecord, cfData = {}) {
+  const client = await pool.connect();
+  try {
+    const { id, order_id, user_id, amount, payment_type, metadata } = orderRecord;
+    const numAmount = parseFloat(amount || 0);
+    const meta = typeof metadata === 'string' ? JSON.parse(metadata) : (metadata || {});
+
+    await client.query('BEGIN');
+
+    // Double check if already fulfilled
+    const checkRes = await client.query('SELECT is_fulfilled FROM cashfree_orders WHERE id = $1 FOR UPDATE', [id]);
+    if (checkRes.rows.length === 0 || checkRes.rows[0].is_fulfilled) {
+      await client.query('COMMIT');
+      return { success: true, alreadyFulfilled: true };
+    }
+
+    const approvalId = `WAP-CF-${Date.now()}`;
+
+    if (payment_type === 'recharge') {
+      // 1. Credit wallet
+      let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [user_id]);
+      let walletId = null;
+      if (walletRes.rows.length === 0) {
+        const newW = await client.query('INSERT INTO wallets (user_id, balance) VALUES ($1, $2) RETURNING id', [user_id, numAmount]);
+        walletId = newW.rows[0].id;
+      } else {
+        walletId = walletRes.rows[0].id;
+        await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [numAmount, walletId]);
+      }
+
+      await client.query(`
+        INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp) 
+        VALUES ($1, $2, 'credit', $3, $4, 'success', CURRENT_TIMESTAMP)
+      `, [`TXN-CF-${Date.now()}`, walletId, numAmount, `Cashfree Online Recharge (${order_id})`]);
+
+      await client.query(`
+        INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date)
+        VALUES ($1, $2, $3, $4, 'success', CURRENT_TIMESTAMP)
+      `, [approvalId, user_id, numAmount, `CASHFREE_RECHARGE: ₹${numAmount} | Order: ${order_id}`]);
+
+      // Auto-deduct any pending overdue rentals from newly credited balance
+      await autoDeductRentalDueFromWallet(user_id);
+
+    } else if (payment_type === 'due') {
+      // 2. Settle dues
+      const depAmt = parseFloat(meta.deposit_amount || 0);
+      const cycAmt = parseFloat(meta.cycle_amount || 0);
+
+      // Settle security deposit shortfall if any
+      if (depAmt > 0) {
+        const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+        const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+        const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+        const curBal = parseFloat(userRes.rows[0]?.security_deposit_balance || 0);
+        const newBal = curBal + depAmt;
+        const isPaid = newBal >= minDeposit;
+
+        await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newBal, isPaid, user_id]);
+        await client.query(`
+          INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+          VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+        `, [user_id, depAmt, `Deposit payment via Cashfree PG (${order_id})`]);
+      }
+
+      // Advance rental next_payment_date if cycle was paid
+      if (cycAmt > 0) {
+        const activeRentalRes = await client.query(
+          "SELECT r.*, p.name as plan_name, p.type as plan_type, p.price as plan_price FROM rentals r LEFT JOIN plans p ON p.id = r.plan_id WHERE r.user_id = $1 AND r.status = 'active' ORDER BY r.id DESC LIMIT 1",
+          [user_id]
+        );
+        if (activeRentalRes.rows.length > 0) {
+          const rental = activeRentalRes.rows[0];
+          const planType = (rental.plan_type || rental.plan_name || '').toLowerCase();
+          let daysToAdd = 7;
+          if (planType.includes('monthly') || planType.includes('30')) daysToAdd = 30;
+          else if (planType.includes('daily') || planType.includes('1')) daysToAdd = 1;
+
+          const baseDate = rental.next_payment_date && new Date(rental.next_payment_date) > new Date()
+            ? new Date(rental.next_payment_date)
+            : new Date();
+          const newDueDate = new Date(baseDate.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+
+          await client.query("UPDATE rentals SET next_payment_date = $1, total_cost = COALESCE(total_cost, 0) + $2 WHERE id = $3", [newDueDate.toISOString(), cycAmt, rental.id]);
+        }
+      }
+
+      // Mark extra dues as paid
+      await client.query(
+        "UPDATE rider_dues SET status = 'paid', paid_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND status = 'pending'",
+        [user_id]
+      );
+
+      // Record in wallet_approvals as success
+      await client.query(`
+        INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date)
+        VALUES ($1, $2, $3, $4, 'success', CURRENT_TIMESTAMP)
+      `, [approvalId, user_id, numAmount, `CASHFREE_DUE_PAYMENT: ₹${numAmount} | Order: ${order_id}`]);
+
+      // Send notification to rider
+      await client.query(`
+        INSERT INTO broadcast_notifications (user_id, title, message, category, action_type, status, recipient_count, created_at)
+        VALUES ($1, '✅ Dues Cleared via Cashfree', $2, 'due_cleared', 'none', 'sent', 1, CURRENT_TIMESTAMP)
+      `, [user_id, `Your online payment of ₹${numAmount.toLocaleString('en-IN')} has been verified. All pending rental dues and deposit shortfalls are cleared!`]);
+
+    } else if (payment_type === 'plan') {
+      // 3. Purchase Plan Booking
+      const planId = meta.plan_id;
+      const depositAmt = parseFloat(meta.deposit_to_pay || meta.deposit_paid || 0);
+      const rentalId = `RNT-${Date.now().toString().slice(-6)}`;
+
+      const planRes = await client.query('SELECT * FROM plans WHERE id = $1', [planId]);
+      const plan = planRes.rows[0];
+
+      // Insert pending rental
+      await client.query(
+        'INSERT INTO rentals (id, user_id, plan_id, total_cost, status) VALUES ($1, $2, $3, $4, $5)',
+        [rentalId, user_id, planId, plan ? plan.price : numAmount, 'pending_assignment']
+      );
+
+      // Update deposit if paid
+      if (depositAmt > 0) {
+        const configRes = await client.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+        const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+        const userRes = await client.query('SELECT security_deposit_balance FROM users WHERE id = $1', [user_id]);
+        const curBal = parseFloat(userRes.rows[0]?.security_deposit_balance || 0);
+        const newBal = curBal + depositAmt;
+        const isPaid = newBal >= minDeposit;
+
+        await client.query('UPDATE users SET security_deposit_balance = $1, security_deposit_paid = $2 WHERE id = $3', [newBal, isPaid, user_id]);
+        await client.query(`
+          INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+          VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+        `, [user_id, depositAmt, `Security Deposit via Cashfree for ${plan ? plan.name : 'Plan'} (${rentalId})`]);
+      }
+
+      await client.query(`
+        INSERT INTO wallet_approvals (id, user_id, amount, utr, status, date)
+        VALUES ($1, $2, $3, $4, 'success', CURRENT_TIMESTAMP)
+      `, [approvalId, user_id, numAmount, `CASHFREE_PLAN_BOOKING: ${plan ? plan.name : 'Plan'} (${rentalId}) | Order: ${order_id}`]);
+    }
+
+    // Mark order fulfilled
+    await client.query(`
+      UPDATE cashfree_orders 
+      SET is_fulfilled = true, order_status = 'PAID', fulfilled_at = CURRENT_TIMESTAMP, cf_response = $1, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $2
+    `, [JSON.stringify(cfData), id]);
+
+    await client.query('COMMIT');
+    return { success: true, fulfilled: true };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error fulfilling Cashfree order:', err);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// 1. Create Cashfree PG Order
+app.post('/api/payments/cashfree/create-order', authenticateToken, async (req, res) => {
+  try {
+    const { amount, payment_type = 'recharge', metadata = {} } = req.body;
+    const user_id = req.user.id;
+    const numAmount = parseFloat(amount || 0);
+
+    if (isNaN(numAmount) || numAmount <= 0) {
+      return res.status(400).json({ error: 'Valid payment amount is required.' });
+    }
+
+    // Fetch user details for Cashfree customer_details
+    const userRes = await pool.query('SELECT id, name, phone, email FROM users WHERE id = $1', [user_id]);
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const user = userRes.rows[0];
+    const rawPhone = (user.phone || '').replace(/\D/g, '');
+    const cleanPhone = rawPhone.length > 10 ? rawPhone.slice(-10) : (rawPhone || '9999999999');
+
+    // Generate unique order ID (Max 45 chars for Cashfree: letters, numbers, underscores, hyphens)
+    const order_id = `LT_${payment_type.toUpperCase()}_${user_id}_${Date.now()}`.slice(0, 45);
+
+    const payload = {
+      order_id,
+      order_amount: numAmount,
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: `USR_${user_id}`,
+        customer_phone: cleanPhone,
+        customer_name: (user.name || 'LT.ev Rider').slice(0, 50),
+        customer_email: (user.email || `rider_${user_id}@ltev.in`).slice(0, 100)
+      },
+      order_note: `LT.ev ${payment_type} (User ${user_id})`,
+      order_meta: {
+        return_url: `${process.env.PUBLIC_API_URL || 'https://ltev-backend-admin-production.up.railway.app'}/api/payments/cashfree/return?order_id={order_id}`
+      }
+    };
+
+    const cfRes = await axios.post(`${CASHFREE_PG_BASE_URL}/orders`, payload, {
+      headers: {
+        'x-client-id': CASHFREE_PG_APP_ID,
+        'x-client-secret': CASHFREE_PG_SECRET,
+        'x-api-version': '2023-08-01',
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const cfData = cfRes.data;
+    const paymentSessionId = cfData.payment_session_id;
+
+    // Save in cashfree_orders table
+    await pool.query(`
+      INSERT INTO cashfree_orders (order_id, cf_order_id, user_id, amount, payment_type, metadata, payment_session_id, order_status, cf_response)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `, [
+      order_id,
+      String(cfData.cf_order_id || ''),
+      user_id,
+      numAmount,
+      payment_type,
+      JSON.stringify(metadata),
+      paymentSessionId,
+      cfData.order_status || 'ACTIVE',
+      JSON.stringify(cfData)
+    ]);
+
+    // Construct direct checkout payment URL
+    const checkoutHost = CASHFREE_PG_ENV === 'PRODUCTION' ? 'payments.cashfree.com' : 'payments-test.cashfree.com';
+    const paymentUrl = `https://${checkoutHost}/order/#${paymentSessionId}`;
+
+    res.json({
+      success: true,
+      order_id,
+      payment_session_id: paymentSessionId,
+      payment_url: paymentUrl,
+      amount: numAmount,
+      currency: 'INR'
+    });
+  } catch (err) {
+    console.error('Cashfree Create Order Error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data?.message || err.message });
+  }
+});
+
+// 2. Verify Cashfree PG Order Status
+app.post('/api/payments/cashfree/verify-order', authenticateToken, async (req, res) => {
+  try {
+    const { order_id } = req.body;
+    if (!order_id) {
+      return res.status(400).json({ error: 'Order ID is required' });
+    }
+
+    // 1. Fetch from Cashfree PG
+    const cfRes = await axios.get(`${CASHFREE_PG_BASE_URL}/orders/${order_id}`, {
+      headers: {
+        'x-client-id': CASHFREE_PG_APP_ID,
+        'x-client-secret': CASHFREE_PG_SECRET,
+        'x-api-version': '2023-08-01'
+      }
+    });
+
+    const cfData = cfRes.data;
+    const orderStatus = cfData.order_status; // 'PAID', 'ACTIVE', 'FAILED', etc.
+
+    // 2. Fetch local order record
+    const localOrderRes = await pool.query('SELECT * FROM cashfree_orders WHERE order_id = $1', [order_id]);
+    if (localOrderRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Order record not found in database.' });
+    }
+    const orderRecord = localOrderRes.rows[0];
+
+    if (orderStatus === 'PAID') {
+      if (!orderRecord.is_fulfilled) {
+        await fulfillCashfreeOrder(orderRecord, cfData);
+      }
+      return res.json({
+        success: true,
+        order_status: 'PAID',
+        fulfilled: true,
+        amount: orderRecord.amount,
+        payment_type: orderRecord.payment_type,
+        message: 'Payment confirmed and account updated successfully!'
+      });
+    }
+
+    res.json({
+      success: false,
+      order_status: orderStatus,
+      fulfilled: false,
+      message: `Order status is currently ${orderStatus}.`
+    });
+  } catch (err) {
+    console.error('Cashfree Verify Order Error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data?.message || err.message });
+  }
+});
+
+// 3. Webhook endpoint for Cashfree PG
+app.post('/api/payments/cashfree/webhook', async (req, res) => {
+  try {
+    const event = req.body;
+    const orderId = event?.data?.order?.order_id || event?.order_id;
+    if (orderId) {
+      const orderRes = await pool.query('SELECT * FROM cashfree_orders WHERE order_id = $1', [orderId]);
+      if (orderRes.rows.length > 0 && !orderRes.rows[0].is_fulfilled) {
+        if (event?.type === 'PAYMENT_SUCCESS_WEBHOOK' || event?.event === 'order.paid' || event?.data?.payment?.payment_status === 'SUCCESS') {
+          await fulfillCashfreeOrder(orderRes.rows[0], event);
+        }
+      }
+    }
+    res.json({ status: 'OK' });
+  } catch (err) {
+    console.error('Cashfree Webhook Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Return URL callback page when customer completes payment on Cashfree Checkout
+app.get('/api/payments/cashfree/return', async (req, res) => {
+  const { order_id } = req.query;
+  if (order_id) {
+    try {
+      const cfRes = await axios.get(`${CASHFREE_PG_BASE_URL}/orders/${order_id}`, {
+        headers: {
+          'x-client-id': CASHFREE_PG_APP_ID,
+          'x-client-secret': CASHFREE_PG_SECRET,
+          'x-api-version': '2023-08-01'
+        }
+      });
+      if (cfRes.data?.order_status === 'PAID') {
+        const localOrder = await pool.query('SELECT * FROM cashfree_orders WHERE order_id = $1', [order_id]);
+        if (localOrder.rows.length > 0 && !localOrder.rows[0].is_fulfilled) {
+          await fulfillCashfreeOrder(localOrder.rows[0], cfRes.data);
+        }
+      }
+    } catch (e) {
+      console.error('Error auto-verifying order on return URL:', e.message);
+    }
+  }
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Completed - LT.ev</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0f172a;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px 16px;
+    }
+    .card {
+      background: #1e293b;
+      border-radius: 24px;
+      padding: 36px 24px;
+      text-align: center;
+      max-width: 420px;
+      width: 100%;
+      border: 1px solid #334155;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    .icon {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: rgba(0, 166, 108, 0.18);
+      color: #00a66c;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 20px;
+      font-size: 34px;
+      font-weight: 900;
+    }
+    h2 { margin: 0 0 10px; font-size: 22px; font-weight: 800; }
+    p { color: #94a3b8; font-size: 14px; line-height: 1.5; margin: 0 0 24px; }
+    .badge {
+      display: inline-block;
+      background: rgba(0, 166, 108, 0.15);
+      color: #00a66c;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 6px 14px;
+      border-radius: 999px;
+      margin-bottom: 20px;
+    }
+    .btn {
+      display: block;
+      background: #00a66c;
+      color: white;
+      padding: 14px 24px;
+      border-radius: 12px;
+      font-weight: 700;
+      text-decoration: none;
+      font-size: 15px;
+      border: none;
+      cursor: pointer;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✓</div>
+    <div class="badge">Cashfree Payment Gateway</div>
+    <h2>Payment Processed!</h2>
+    <p>Your payment session is complete. Please switch back to the <strong>LT.ev Mobile App</strong> now — your account or booking has been updated.</p>
+    <button onclick="window.close()" class="btn">Return to LT.ev App</button>
+  </div>
+</body>
+</html>`);
+});
+
+
+// ==========================================
 // PLANS APIs
 // ==========================================
 
@@ -5606,14 +6561,16 @@ app.put('/api/security-deposits/config', authenticateToken, async (req, res) => 
 // ==========================================
 app.get('/api/config/public', async (req, res) => {
   try {
-    const result = await pool.query("SELECT key, value FROM system_settings WHERE key IN ('upi_id', 'upi_name', 'min_security_deposit')");
+    const result = await pool.query("SELECT key, value FROM system_settings WHERE key IN ('upi_id', 'upi_name', 'min_security_deposit', 'upi_qr_image')");
     let dbUpiId = null;
     let dbUpiName = null;
+    let dbUpiQr = null;
     let minDeposit = 2000;
     
     result.rows.forEach(r => {
       if (r.key === 'upi_id' && r.value) dbUpiId = r.value.trim();
       if (r.key === 'upi_name' && r.value) dbUpiName = r.value.trim();
+      if (r.key === 'upi_qr_image' && r.value) dbUpiQr = r.value.trim();
       if (r.key === 'min_security_deposit' && !isNaN(r.value)) minDeposit = parseFloat(r.value);
     });
 
@@ -5627,6 +6584,7 @@ app.get('/api/config/public', async (req, res) => {
     res.json({
       upi_id: finalUpiId,
       upi_name: finalUpiName,
+      upi_qr_image: dbUpiQr || null,
       min_security_deposit: minDeposit
     });
   } catch (err) {
@@ -5634,6 +6592,7 @@ app.get('/api/config/public', async (req, res) => {
     res.json({
       upi_id: (process.env.UPI_ID || '9113750231@oksbi').trim(),
       upi_name: (process.env.UPI_NAME || 'LocalToto').trim(),
+      upi_qr_image: null,
       min_security_deposit: 2000
     });
   }
@@ -5642,14 +6601,16 @@ app.get('/api/config/public', async (req, res) => {
 // Admin Payment Settings
 app.get('/api/settings/payment', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query("SELECT key, value FROM system_settings WHERE key IN ('upi_id', 'upi_name')");
+    const result = await pool.query("SELECT key, value FROM system_settings WHERE key IN ('upi_id', 'upi_name', 'upi_qr_image')");
     let upi_id = process.env.UPI_ID || '9113750231@oksbi';
     let upi_name = process.env.UPI_NAME || 'LocalToto';
+    let upi_qr_image = null;
     result.rows.forEach(r => {
       if (r.key === 'upi_id' && r.value) upi_id = r.value.trim();
       if (r.key === 'upi_name' && r.value) upi_name = r.value.trim();
+      if (r.key === 'upi_qr_image' && r.value) upi_qr_image = r.value.trim();
     });
-    res.json({ upi_id, upi_name });
+    res.json({ upi_id, upi_name, upi_qr_image });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -5657,7 +6618,7 @@ app.get('/api/settings/payment', authenticateToken, async (req, res) => {
 
 app.put('/api/settings/payment', authenticateToken, async (req, res) => {
   try {
-    const { upi_id, upi_name } = req.body;
+    const { upi_id, upi_name, upi_qr_image } = req.body;
     if (!upi_id || !upi_id.trim()) {
       return res.status(400).json({ error: 'Valid UPI ID is required' });
     }
@@ -5676,7 +6637,15 @@ app.put('/api/settings/payment', authenticateToken, async (req, res) => {
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
     `, [cleanName]);
 
-    res.json({ success: true, upi_id: cleanUpi, upi_name: cleanName });
+    if (upi_qr_image !== undefined) {
+      await pool.query(`
+        INSERT INTO system_settings (key, value)
+        VALUES ('upi_qr_image', $1)
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+      `, [upi_qr_image ? upi_qr_image.trim() : '']);
+    }
+
+    res.json({ success: true, upi_id: cleanUpi, upi_name: cleanName, upi_qr_image: upi_qr_image || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -3,7 +3,7 @@ import {
   Wrench, Bike, User, DollarSign, Calendar, Clock, Plus, Search, 
   Filter, CheckCircle2, AlertTriangle, Share2, Printer, Edit3, 
   Trash2, X, ShieldAlert, Check, RefreshCw, Send, ArrowRight, FileText, Package,
-  Eye, ExternalLink, Phone, MessageSquare, AlertCircle
+  Eye, ExternalLink, Phone, MessageSquare, AlertCircle, Camera, UploadCloud
 } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
@@ -47,6 +47,7 @@ export default function VehicleServices() {
   const [modalMode, setModalMode] = useState('create'); // 'create' | 'edit'
   const [editingId, setEditingId] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -59,7 +60,8 @@ export default function VehicleServices() {
     date_reported: new Date().toISOString().split('T')[0],
     user_id: '',
     billed_to: 'company', // 'company' | 'rider'
-    payment_status: 'paid'
+    payment_status: 'paid',
+    image_url: ''
   });
 
   const fetchData = async () => {
@@ -117,7 +119,8 @@ export default function VehicleServices() {
       date_reported: new Date().toISOString().split('T')[0],
       user_id: linkedUserId,
       billed_to: linkedUserId ? 'rider' : 'company',
-      payment_status: linkedUserId ? 'pending' : 'paid'
+      payment_status: linkedUserId ? 'pending' : 'paid',
+      image_url: ''
     });
     setModalMode('create');
     setEditingId(null);
@@ -136,11 +139,35 @@ export default function VehicleServices() {
       date_reported: srv.date_reported ? new Date(srv.date_reported).toISOString().split('T')[0] : '',
       user_id: srv.user_id ? String(srv.user_id) : '',
       billed_to: srv.billed_to || 'company',
-      payment_status: srv.payment_status || 'paid'
+      payment_status: srv.payment_status || 'paid',
+      image_url: srv.image_url || ''
     });
     setModalMode('edit');
     setEditingId(srv.id);
     setModalOpen(true);
+  };
+
+  const handlePhotoUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setUploadingPhoto(true);
+    try {
+      const uploadData = new FormData();
+      uploadData.append('image', file);
+      const res = await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/upload/issue-image`, uploadData, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      if (res.data?.imageUrl) {
+        setFormData(prev => ({ ...prev, image_url: res.data.imageUrl }));
+      }
+    } catch (err) {
+      alert('Failed to upload image to Cloudflare R2: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setUploadingPhoto(false);
+    }
   };
 
   const handleVehicleChange = (vId) => {
@@ -923,6 +950,59 @@ _Support: +91 9113750231 | https://ltev.in_`;
                   onChange={(e) => setFormData({ ...formData, issue_description: e.target.value })}
                   style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', background: '#f8fafc', color: '#0f172a', outline: 'none', boxSizing: 'border-box' }}
                 />
+              </div>
+
+              {/* Attach Inspection / Damage Photo to Cloudflare R2 */}
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                  Inspection / Damage Photo (Cloudflare R2 Stored)
+                </label>
+                {formData.image_url ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: '#f8fafc', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1' }}>
+                    <img 
+                      src={formData.image_url.startsWith('http') ? formData.image_url : `${import.meta.env.VITE_API_URL || ''}${formData.image_url}`} 
+                      alt="Preview" 
+                      style={{ width: '50px', height: '50px', borderRadius: '8px', objectFit: 'cover', border: '1px solid #cbd5e1' }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: '12px', fontWeight: '700', color: '#16a34a' }}>✓ Photo uploaded to Cloudflare R2</div>
+                      <div style={{ fontSize: '11px', color: '#64748b', wordBreak: 'break-all', marginTop: '2px' }}>{formData.image_url}</div>
+                    </div>
+                    <button 
+                      type="button" 
+                      onClick={() => setFormData(prev => ({ ...prev, image_url: '' }))}
+                      style={{ background: '#fee2e2', color: '#dc2626', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: '700', cursor: 'pointer' }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <label style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      background: '#f0fdf4',
+                      border: '1px solid #bbf7d0',
+                      color: '#15803d',
+                      padding: '8px 14px',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '700',
+                      cursor: uploadingPhoto ? 'not-allowed' : 'pointer'
+                    }}>
+                      <Camera size={16} /> {uploadingPhoto ? 'Uploading to R2...' : 'Upload Photo'}
+                      <input 
+                        type="file" 
+                        accept="image/*" 
+                        disabled={uploadingPhoto}
+                        onChange={handlePhotoUpload} 
+                        style={{ display: 'none' }} 
+                      />
+                    </label>
+                    <span style={{ fontSize: '12px', color: '#94a3b8' }}>Optional: capture or select photo (JPEG, PNG)</span>
+                  </div>
+                )}
               </div>
 
               {/* Parts Replaced with Catalog Quick Picker */}

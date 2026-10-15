@@ -243,40 +243,21 @@ export default function Parts() {
   return (
     <div style={{ paddingBottom: '60px' }}>
       
-      {/* Page Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-            <span style={{ background: '#e0f2fe', color: '#0369a1', padding: '3px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: '700' }}>
-              Inventory & Catalog
-            </span>
-            <span style={{ background: '#dcfce7', color: '#15803d', padding: '3px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: '700' }}>
-              {parts.length} Spare Parts
-            </span>
-          </div>
-          <h1 style={{ fontSize: '26px', fontWeight: '800', color: '#0f172a', margin: 0 }}>
-            Spare Parts Management
-          </h1>
-          <p style={{ color: '#64748b', fontSize: '14px', margin: '4px 0 0 0' }}>
-            Manage replacement components, pricing, MRP, part images, and inventory stock levels.
-          </p>
-        </div>
+      {/* Action Header */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: '20px', gap: '10px' }}>
+        <button
+          onClick={fetchParts}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#ffffff', border: '1px solid #cbd5e1', padding: '9px 14px', borderRadius: '8px', fontSize: '13px', fontWeight: '600', color: '#334155', cursor: 'pointer' }}
+        >
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
+        </button>
 
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button
-            onClick={fetchParts}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#ffffff', border: '1px solid #cbd5e1', padding: '10px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: '600', color: '#334155', cursor: 'pointer' }}
-          >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
-          </button>
-
-          <button
-            onClick={handleOpenCreateModal}
-            style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#0284c7', color: '#ffffff', border: 'none', padding: '10px 20px', borderRadius: '8px', fontSize: '13px', fontWeight: '700', cursor: 'pointer', boxShadow: '0 4px 12px rgba(2, 132, 199, 0.25)' }}
-          >
-            <Plus size={16} /> Add New Spare Part
-          </button>
-        </div>
+        <button
+          onClick={handleOpenCreateModal}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#0284c7', color: '#ffffff', border: 'none', padding: '9px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: '700', cursor: 'pointer', boxShadow: '0 4px 12px rgba(2, 132, 199, 0.25)' }}
+        >
+          <Plus size={16} /> Add New Spare Part
+        </button>
       </div>
 
       {/* KPI Metric Cards */}

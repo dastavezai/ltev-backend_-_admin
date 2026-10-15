@@ -105,16 +105,13 @@ export default function Stands() {
 
   return (
     <div style={{ animation: 'fadeIn 0.4s ease' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-        <div>
-          <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#0f172a', marginBottom: '4px' }}>Fleet Stands & Hubs</h1>
-          <p style={{ color: '#64748b', fontSize: '15px' }}>Manage physical parking stands and generate QR codes for drop-offs.</p>
-        </div>
+      {/* Action Header */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: '20px' }}>
         <button 
           onClick={() => setShowAddModal(true)}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#3b82f6', color: 'white', padding: '10px 16px', borderRadius: '12px', border: 'none', fontWeight: '600', cursor: 'pointer', boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#0284c7', color: 'white', padding: '9px 16px', borderRadius: '10px', border: 'none', fontWeight: '600', fontSize: '13px', cursor: 'pointer', boxShadow: '0 4px 12px rgba(2, 132, 199, 0.25)' }}
         >
-          <Plus size={18} /> Add New Stand
+          <Plus size={16} /> Add New Stand
         </button>
       </div>
 

@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { 
   Calendar, Clock, CreditCard, Filter, Search, Bike, User, ShieldCheck, 
   CheckCircle2, RotateCcw, XCircle, RefreshCw, ChevronRight, Zap, 
-  Plus, Edit3, Trash2, X, AlertCircle, Settings, Check, FileText
+  Plus, Edit3, Trash2, X, AlertCircle, Settings, Check, FileText,
+  Layers, List, ChevronDown, ChevronUp, MapPin, Phone
 } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
@@ -269,37 +270,147 @@ export default function Rentals() {
     setReceiptModalOpen(true);
   };
 
-  // Fleet summary stats
-  const totalFleetCount = vehicles.length;
+  // State for View Mode: 'by-vehicle' (grouped) vs 'all' (chronological)
+  const [viewMode, setViewMode] = useState('by-vehicle');
+  const [expandedVehicles, setExpandedVehicles] = useState({});
+
+  const toggleVehicleExpand = (vehId) => {
+    setExpandedVehicles(prev => ({
+      ...prev,
+      [vehId]: prev[vehId] !== undefined ? !prev[vehId] : false
+    }));
+  };
+
+  // Fleet summary stats (Single Source of Truth)
+  const uniqueVehicles = useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    vehicles.forEach(v => {
+      if (v && v.id && !seen.has(v.id)) {
+        seen.add(v.id);
+        list.push(v);
+      }
+    });
+    return list;
+  }, [vehicles]);
+
+  const totalFleetCount = uniqueVehicles.length;
   const activeRentalsCount = rentals.filter(r => r.status === 'active' || r.status === 'in_use').length;
-  const availableBikesCount = vehicles.filter(v => v.status === 'available').length;
+  const availableBikesCount = uniqueVehicles.filter(v => v.status === 'available' && !v.renter).length;
   const totalRentCollectedSum = rentals
     .filter(r => r.status !== 'cancelled')
     .reduce((acc, r) => acc + (parseFloat(r.raw_total_cost) || 0), 0);
 
-  // Filtering
-  const filteredRentals = rentals.filter(r => {
-    const matchesSearch = 
-      (r.user_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (r.user_phone || '').includes(searchQuery) ||
-      (r.vehicle_id || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (r.vehicle_model || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (r.id || '').toLowerCase().includes(searchQuery.toLowerCase());
+  // Filtered rentals
+  const filteredRentals = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    const selectedVeh = uniqueVehicles.find(v => v.id === vehicleFilter || v.model === vehicleFilter);
 
-    const matchesStatus = 
-      statusFilter === 'all' || 
-      (statusFilter === 'active' && (r.status === 'active' || r.status === 'in_use')) ||
-      (statusFilter === 'completed' && r.status === 'completed') ||
-      (statusFilter === 'pending_return' && r.status === 'pending_return') ||
-      (statusFilter === 'pending_assignment' && r.status === 'pending_assignment') ||
-      (statusFilter === 'cancelled' && r.status === 'cancelled');
+    return rentals.filter(r => {
+      const matchesSearch = !q || (
+        (r.user_name || '').toLowerCase().includes(q) ||
+        (r.user_phone || '').includes(q) ||
+        (r.user_email || '').toLowerCase().includes(q) ||
+        (r.vehicle_id || '').toLowerCase().includes(q) ||
+        (r.vehicle_model || '').toLowerCase().includes(q) ||
+        (r.id || '').toLowerCase().includes(q)
+      );
 
-    const matchesVehicle = 
-      vehicleFilter === 'all' || 
-      r.vehicle_id === vehicleFilter;
+      const matchesStatus = 
+        statusFilter === 'all' || 
+        (statusFilter === 'active' && (r.status === 'active' || r.status === 'in_use')) ||
+        (statusFilter === 'completed' && r.status === 'completed') ||
+        (statusFilter === 'pending_return' && r.status === 'pending_return') ||
+        (statusFilter === 'pending_assignment' && r.status === 'pending_assignment') ||
+        (statusFilter === 'cancelled' && r.status === 'cancelled');
 
-    return matchesSearch && matchesStatus && matchesVehicle;
-  });
+      const matchesVehicle = 
+        vehicleFilter === 'all' || 
+        r.vehicle_id === vehicleFilter || 
+        r.vehicle_model === vehicleFilter ||
+        (selectedVeh && (r.vehicle_id === selectedVeh.id || r.vehicle_id === selectedVeh.model || r.vehicle_model === selectedVeh.model));
+
+      return matchesSearch && matchesStatus && matchesVehicle;
+    });
+  }, [rentals, searchQuery, statusFilter, vehicleFilter, uniqueVehicles]);
+
+  // Group rentals by vehicle
+  const rentalsByVehicle = useMemo(() => {
+    const map = new Map();
+
+    // 1. Initialize every vehicle from the fleet
+    uniqueVehicles.forEach(v => {
+      map.set(v.id, {
+        vehicle: v,
+        rentals: []
+      });
+    });
+
+    // 2. Put rentals into corresponding vehicle bucket
+    filteredRentals.forEach(rental => {
+      let matchedId = null;
+      for (const v of uniqueVehicles) {
+        if (rental.vehicle_id === v.id || rental.vehicle_id === v.model || rental.vehicle_model === v.model) {
+          matchedId = v.id;
+          break;
+        }
+      }
+
+      if (matchedId && map.has(matchedId)) {
+        map.get(matchedId).rentals.push(rental);
+      } else {
+        const key = rental.vehicle_id || 'unassigned';
+        if (!map.has(key)) {
+          map.set(key, {
+            vehicle: {
+              id: key,
+              model: rental.vehicle_model || (rental.vehicle_id ? `EV ${rental.vehicle_id}` : 'Unassigned EV'),
+              type: rental.vehicle_type || 'Electric Scooter',
+              status: 'pending_assignment',
+              location: rental.vehicle_location || 'Khajpura'
+            },
+            rentals: []
+          });
+        }
+        map.get(key).rentals.push(rental);
+      }
+    });
+
+    // 3. Sort rentals within each vehicle bucket by start_time descending
+    for (const item of map.values()) {
+      item.rentals.sort((a, b) => {
+        const tA = a.raw_start_time ? new Date(a.raw_start_time).getTime() : 0;
+        const tB = b.raw_start_time ? new Date(b.raw_start_time).getTime() : 0;
+        return tB - tA;
+      });
+    }
+
+    let result = Array.from(map.values());
+
+    // If a vehicle is selected in vehicleFilter, only show that vehicle
+    if (vehicleFilter !== 'all') {
+      const selectedVeh = uniqueVehicles.find(v => v.id === vehicleFilter || v.model === vehicleFilter);
+      result = result.filter(item => {
+        const v = item.vehicle;
+        return v.id === vehicleFilter || v.model === vehicleFilter ||
+          (selectedVeh && (v.id === selectedVeh.id || v.model === selectedVeh.model));
+      });
+    }
+
+    // If searching or filtering by status, hide vehicles with 0 matching rentals (unless searching vehicle name)
+    if (searchQuery || statusFilter !== 'all') {
+      result = result.filter(item => {
+        if (item.rentals.length > 0) return true;
+        if (statusFilter === 'all' && searchQuery) {
+          const q = searchQuery.toLowerCase().trim();
+          return (item.vehicle.model || '').toLowerCase().includes(q) || (item.vehicle.id || '').toLowerCase().includes(q);
+        }
+        return false;
+      });
+    }
+
+    return result;
+  }, [uniqueVehicles, filteredRentals, vehicleFilter, searchQuery, statusFilter]);
 
   return (
     <div style={{ animation: 'fadeIn 0.4s ease', paddingBottom: '40px' }}>
@@ -413,13 +524,55 @@ export default function Rentals() {
               cursor: 'pointer'
             }}
           >
-            <option value="all">All Vehicles (16 Bikes)</option>
-            {vehicles.map(v => (
+            <option value="all">All Vehicles ({uniqueVehicles.length} Fleet)</option>
+            {uniqueVehicles.map(v => (
               <option key={v.id} value={v.id}>
-                {v.model || 'EV'} - {v.status}
+                {v.model || v.id} {v.renter ? `• Rented (${v.renter})` : '• Available'}
               </option>
             ))}
           </select>
+        </div>
+
+        {/* View Mode Switcher */}
+        <div style={{ display: 'flex', background: '#f1f5f9', borderRadius: '10px', padding: '4px', gap: '4px' }}>
+          <button
+            onClick={() => setViewMode('by-vehicle')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 12px',
+              borderRadius: '8px',
+              border: 'none',
+              fontSize: '12px',
+              fontWeight: '700',
+              cursor: 'pointer',
+              background: viewMode === 'by-vehicle' ? '#0f172a' : 'transparent',
+              color: viewMode === 'by-vehicle' ? '#ffffff' : '#64748b',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <Layers size={14} /> By Vehicle Records
+          </button>
+          <button
+            onClick={() => setViewMode('all')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 12px',
+              borderRadius: '8px',
+              border: 'none',
+              fontSize: '12px',
+              fontWeight: '700',
+              cursor: 'pointer',
+              background: viewMode === 'all' ? '#0f172a' : 'transparent',
+              color: viewMode === 'all' ? '#ffffff' : '#64748b',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <List size={14} /> All Records ({filteredRentals.length})
+          </button>
         </div>
 
         {/* Status Filter Tabs */}
@@ -451,174 +604,435 @@ export default function Rentals() {
             </button>
           ))}
         </div>
-      </div>
+      </div>      {/* View Mode: Group by Vehicle Records */}
+      {viewMode === 'by-vehicle' ? (
+        <div style={{ display: 'grid', gap: '20px' }}>
+          {rentalsByVehicle.length === 0 && !loading ? (
+            <div style={{ padding: '48px', textAlign: 'center', background: 'white', borderRadius: '20px', color: '#64748b', border: '1px solid #f1f5f9' }}>
+              <Bike size={44} color="#94a3b8" style={{ marginBottom: '12px', opacity: 0.5 }} />
+              <h3 style={{ fontSize: '17px', fontWeight: '800', color: '#0f172a', margin: '0 0 4px 0' }}>No Vehicle Rental Records Found</h3>
+              <p style={{ margin: '0 0 16px 0', fontSize: '13px' }}>Try resetting your vehicle or search filter.</p>
+            </div>
+          ) : (
+            rentalsByVehicle.map(({ vehicle: v, rentals: vRentals }) => {
+              const isExpanded = expandedVehicles[v.id] !== false; // default open
+              const isRented = v.status === 'rented' || v.status === 'in_use' || Boolean(v.renter);
+              const totalCollected = vRentals
+                .filter(r => r.status !== 'cancelled')
+                .reduce((sum, r) => sum + (parseFloat(r.raw_total_cost) || 0), 0);
 
-      {/* Rentals List Cards */}
-      <div style={{ display: 'grid', gap: '16px' }}>
-        {filteredRentals.map(rental => {
-          const isActive = rental.status === 'active' || rental.status === 'in_use';
-          const isPendingReturn = rental.status === 'pending_return';
-          const isPendingAssignment = rental.status === 'pending_assignment';
-          const isCancelled = rental.status === 'cancelled';
-          const isCompleted = rental.status === 'completed';
+              return (
+                <div 
+                  key={v.id}
+                  style={{
+                    background: 'white',
+                    borderRadius: '20px',
+                    border: isRented ? '1px solid #bbf7d0' : '1px solid #e2e8f0',
+                    boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)',
+                    overflow: 'hidden'
+                  }}
+                >
+                  {/* Vehicle Header */}
+                  <div
+                    onClick={() => toggleVehicleExpand(v.id)}
+                    style={{
+                      padding: '18px 24px',
+                      background: isRented ? 'linear-gradient(to right, #f0fdf4, #ffffff)' : '#f8fafc',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      flexWrap: 'wrap',
+                      gap: '16px',
+                      borderBottom: isExpanded && vRentals.length > 0 ? '1px solid #f1f5f9' : 'none'
+                    }}
+                  >
+                    {/* Left: Vehicle Badge & Stand */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                      <div style={{ width: '44px', height: '44px', borderRadius: '12px', background: isRented ? '#16a34a' : '#0284c7', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
+                        <Bike size={22} />
+                      </div>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <h3 style={{ fontSize: '18px', fontWeight: '800', color: '#0f172a', margin: 0 }}>
+                            {v.model || v.id}
+                          </h3>
+                          {v.id !== v.model && (
+                            <span style={{ fontSize: '11px', color: '#64748b', background: '#e2e8f0', padding: '2px 6px', borderRadius: '4px', fontWeight: '600' }}>
+                              ID: {v.id}
+                            </span>
+                          )}
+                          {isRented ? (
+                            <span style={{ fontSize: '11px', fontWeight: '700', background: '#dcfce7', color: '#15803d', padding: '2px 8px', borderRadius: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                              ● Rented (In-Use)
+                            </span>
+                          ) : v.status === 'maintenance' ? (
+                            <span style={{ fontSize: '11px', fontWeight: '700', background: '#fef3c7', color: '#b45309', padding: '2px 8px', borderRadius: '12px' }}>
+                              Maintenance
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: '11px', fontWeight: '700', background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: '12px' }}>
+                              Available at Stand
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span>📍 {v.location || 'Khajpura'}</span>
+                          <span>•</span>
+                          <span>{v.type || 'Electric Scooter'}</span>
+                        </div>
+                      </div>
+                    </div>
 
-          return (
-            <div 
-              key={rental.id} 
-              style={{ 
-                background: 'white', 
-                borderRadius: '18px', 
-                padding: '22px 26px', 
-                boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)', 
-                border: '1px solid #f1f5f9',
-                display: 'grid',
-                gridTemplateColumns: '1.4fr 1.3fr 1.5fr 1fr auto',
-                gap: '20px',
-                alignItems: 'center'
-              }}
-            >
-              {/* Column 1: Rider / Person Details */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                  <div style={{ width: '34px', height: '34px', borderRadius: '17px', background: 'rgba(29, 122, 252, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <User size={16} color="#1d7afc" />
+                    {/* Center: Current Rider */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      {v.renter ? (
+                        <div style={{ background: 'white', padding: '6px 14px', borderRadius: '10px', border: '1px solid #bbf7d0', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
+                          <div style={{ fontSize: '10px', color: '#15803d', fontWeight: '800', textTransform: 'uppercase' }}>Current Active Rider</div>
+                          <div style={{ fontSize: '13px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                            <User size={13} color="#16a34a" /> {v.renter}
+                          </div>
+                          {v.renter_phone && (
+                            <div style={{ fontSize: '11px', color: '#64748b' }}>📞 {v.renter_phone}</div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ background: 'white', padding: '6px 12px', borderRadius: '10px', border: '1px solid #e2e8f0', color: '#64748b', fontSize: '12px', fontWeight: '600' }}>
+                          No Active Rider (Idle)
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right: Metrics & Toggle */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600', textTransform: 'uppercase' }}>Rental Records</div>
+                        <div style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>
+                          {vRentals.length} {vRentals.length === 1 ? 'Record' : 'Records'}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#059669', fontWeight: '700' }}>
+                          ₹{totalCollected.toLocaleString('en-IN')} Total Rent
+                        </div>
+                      </div>
+
+                      <div style={{ width: '32px', height: '32px', borderRadius: '16px', background: 'white', border: '1px solid #cbd5e1', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b' }}>
+                        {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <h3 style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a', margin: 0 }}>{rental.user_name}</h3>
-                    <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'monospace' }}>#{rental.id}</div>
-                  </div>
+
+                  {/* Expanded Rental Records for this Vehicle */}
+                  {isExpanded && (
+                    <div>
+                      {vRentals.length === 0 ? (
+                        <div style={{ padding: '24px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
+                          No rental bookings on record for this vehicle.
+                        </div>
+                      ) : (
+                        <div style={{ display: 'grid' }}>
+                          {vRentals.map(rental => {
+                            const isActive = rental.status === 'active' || rental.status === 'in_use';
+                            const isCompleted = rental.status === 'completed';
+                            const isPendingReturn = rental.status === 'pending_return';
+                            const isPendingAssignment = rental.status === 'pending_assignment';
+                            const isCancelled = rental.status === 'cancelled';
+
+                            return (
+                              <div 
+                                key={rental.id}
+                                style={{
+                                  padding: '16px 24px',
+                                  display: 'grid',
+                                  gridTemplateColumns: '1.3fr 1.6fr 1.1fr 1fr auto',
+                                  gap: '16px',
+                                  alignItems: 'center',
+                                  borderTop: '1px solid #f8fafc',
+                                  background: isActive ? '#fcfdfd' : 'white',
+                                  transition: 'background 0.2s'
+                                }}
+                                onMouseEnter={(e) => e.currentTarget.style.background = '#f8fafc'}
+                                onMouseLeave={(e) => e.currentTarget.style.background = isActive ? '#fcfdfd' : 'white'}
+                              >
+                                {/* Rider Details */}
+                                <div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <div style={{ fontWeight: '800', color: '#0f172a', fontSize: '14px' }}>{rental.user_name}</div>
+                                    <span style={{ fontSize: '11px', color: '#64748b', fontFamily: 'monospace' }}>#{rental.id}</span>
+                                  </div>
+                                  <div style={{ fontSize: '12px', color: '#475569', fontWeight: '500' }}>📞 {rental.user_phone}</div>
+                                  {rental.user_email && rental.user_email !== 'N/A' && (
+                                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>✉ {rental.user_email}</div>
+                                  )}
+                                </div>
+
+                                {/* Date, Time & Duration */}
+                                <div>
+                                  <div style={{ fontSize: '12px', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                                    <Calendar size={13} color="#64748b" />
+                                    <span style={{ color: '#64748b' }}>Start:</span>
+                                    <span style={{ fontWeight: '700' }}>{rental.startTime}</span>
+                                  </div>
+                                  <div style={{ fontSize: '12px', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                                    <Clock size={13} color="#64748b" />
+                                    <span style={{ color: '#64748b' }}>End:</span>
+                                    <span style={{ fontWeight: '700', color: isCompleted ? '#0f172a' : isActive ? '#15803d' : '#64748b' }}>
+                                      {rental.endTime}
+                                    </span>
+                                  </div>
+                                  <div style={{ fontSize: '11px', color: '#1d7afc', fontWeight: '700', marginLeft: '19px' }}>
+                                    ⏱ Duration: {rental.duration}
+                                    {rental.next_payment_date && (
+                                      <span style={{ marginLeft: '8px', color: '#d97706' }}>• Next Due: {rental.next_payment_date}</span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Plan & Pricing */}
+                                <div>
+                                  <div style={{ fontSize: '13px', fontWeight: '700', color: '#0f172a' }}>{rental.plan_name}</div>
+                                  <div style={{ fontSize: '11px', color: '#64748b' }}>{rental.plan_type}</div>
+                                </div>
+
+                                {/* Financials & Status */}
+                                <div>
+                                  <div style={{ fontSize: '14px', fontWeight: '800', color: '#059669' }}>
+                                    {rental.rentCollected}
+                                  </div>
+                                  <div style={{ fontSize: '11px', color: '#64748b' }}>
+                                    Deposit: {rental.deposit}
+                                  </div>
+                                  <div style={{ marginTop: '3px' }}>
+                                    <span style={{ 
+                                      background: isActive ? '#dcfce7' : isPendingReturn ? '#e0f2fe' : isPendingAssignment ? '#fef3c7' : isCancelled ? '#fee2e2' : '#f1f5f9', 
+                                      color: isActive ? '#15803d' : isPendingReturn ? '#0284c7' : isPendingAssignment ? '#d97706' : isCancelled ? '#dc2626' : '#475569',
+                                      padding: '2px 8px', borderRadius: '12px', fontWeight: '700', fontSize: '10px', textTransform: 'uppercase'
+                                    }}>
+                                      {isActive ? '● Active' : isPendingReturn ? 'Return Pending' : isPendingAssignment ? 'Pending Assign' : isCancelled ? 'Cancelled' : 'Completed'}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Actions */}
+                                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', justifyContent: 'flex-end' }}>
+                                  <button
+                                    onClick={() => handleOpenReceipt(rental)}
+                                    title="Official Printable Receipt"
+                                    style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '5px 8px', borderRadius: '6px', fontWeight: '700', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
+                                  >
+                                    <FileText size={12} /> Receipt
+                                  </button>
+                                  <button
+                                    onClick={() => handleOpenEditModal(rental)}
+                                    title="Edit Booking"
+                                    style={{ background: '#f1f5f9', color: '#0f172a', border: '1px solid #cbd5e1', padding: '5px 8px', borderRadius: '6px', fontWeight: '700', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
+                                  >
+                                    <Edit3 size={12} /> Edit
+                                  </button>
+                                  {isPendingReturn && (
+                                    <button
+                                      onClick={() => handleConfirmReturn(rental.id)}
+                                      style={{ background: '#00a66c', color: 'white', border: 'none', padding: '5px 8px', borderRadius: '6px', fontWeight: '700', fontSize: '11px', cursor: 'pointer' }}
+                                    >
+                                      ✓ Return
+                                    </button>
+                                  )}
+                                  {(isActive || isPendingAssignment || isPendingReturn) && (
+                                    <button
+                                      onClick={() => handleCancelRental(rental.id)}
+                                      style={{ background: '#fee2e2', color: '#dc2626', border: 'none', padding: '5px 8px', borderRadius: '6px', fontWeight: '700', fontSize: '11px', cursor: 'pointer' }}
+                                    >
+                                      Cancel
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => handleDeleteRental(rental.id)}
+                                    title="Delete"
+                                    style={{ background: '#fef2f2', color: '#ef4444', border: '1px solid #fecaca', padding: '5px 7px', borderRadius: '6px', cursor: 'pointer' }}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div style={{ fontSize: '13px', color: '#475569', fontWeight: '600' }}>📞 {rental.user_phone}</div>
-                {rental.user_email && rental.user_email !== 'N/A' && (
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>✉ {rental.user_email}</div>
-                )}
-              </div>
+              );
+            })
+          )}
+        </div>
+      ) : (
+        /* View Mode: Flat Chronological List */
+        <div style={{ display: 'grid', gap: '16px' }}>
+          {filteredRentals.map(rental => {
+            const isActive = rental.status === 'active' || rental.status === 'in_use';
+            const isPendingReturn = rental.status === 'pending_return';
+            const isPendingAssignment = rental.status === 'pending_assignment';
+            const isCancelled = rental.status === 'cancelled';
+            const isCompleted = rental.status === 'completed';
 
-              {/* Column 2: EV Information */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                  <div style={{ width: '34px', height: '34px', borderRadius: '17px', background: rental.vehicle_id ? 'rgba(0, 166, 108, 0.1)' : 'rgba(245, 158, 11, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Bike size={16} color={rental.vehicle_id ? '#00a66c' : '#d97706'} />
+            return (
+              <div 
+                key={rental.id} 
+                style={{ 
+                  background: 'white', 
+                  borderRadius: '18px', 
+                  padding: '22px 26px', 
+                  boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)', 
+                  border: '1px solid #f1f5f9',
+                  display: 'grid',
+                  gridTemplateColumns: '1.4fr 1.3fr 1.5fr 1fr auto',
+                  gap: '20px',
+                  alignItems: 'center'
+                }}
+              >
+                {/* Column 1: Rider / Person Details */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                    <div style={{ width: '34px', height: '34px', borderRadius: '17px', background: 'rgba(29, 122, 252, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <User size={16} color="#1d7afc" />
+                    </div>
+                    <div>
+                      <h3 style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a', margin: 0 }}>{rental.user_name}</h3>
+                      <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'monospace' }}>#{rental.id}</div>
+                    </div>
                   </div>
-                  <div>
-                    <div style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>
-                      {rental.vehicle_model || 'No EV Assigned'}
+                  <div style={{ fontSize: '13px', color: '#475569', fontWeight: '600' }}>📞 {rental.user_phone}</div>
+                  {rental.user_email && rental.user_email !== 'N/A' && (
+                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>✉ {rental.user_email}</div>
+                  )}
+                </div>
+
+                {/* Column 2: EV Information */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <div style={{ width: '34px', height: '34px', borderRadius: '17px', background: rental.vehicle_id ? 'rgba(0, 166, 108, 0.1)' : 'rgba(245, 158, 11, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Bike size={16} color={rental.vehicle_id ? '#00a66c' : '#d97706'} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>
+                        {rental.vehicle_model || 'No EV Assigned'}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#64748b' }}>
+                        📍 {rental.vehicle_location || 'Khajpura'} • {rental.vehicle_type || 'Electric Scooter'}
+                      </div>
                     </div>
                   </div>
                 </div>
-                {rental.vehicle_battery !== null && (
-                  <div style={{ fontSize: '12px', color: '#00a66c', fontWeight: '700', marginLeft: '42px' }}>
-                    ⚡ Battery: {rental.vehicle_battery}%
+
+                {/* Column 3: Plan & Time / Duration */}
+                <div>
+                  <div style={{ fontSize: '14px', fontWeight: '800', color: '#0f172a', marginBottom: '4px' }}>
+                    {rental.plan_name} <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 'normal' }}>({rental.plan_type})</span>
                   </div>
-                )}
-              </div>
-
-              {/* Column 3: Plan & Time / Duration */}
-              <div>
-                <div style={{ fontSize: '14px', fontWeight: '800', color: '#0f172a', marginBottom: '4px' }}>
-                  {rental.plan_name} <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 'normal' }}>({rental.plan_type})</span>
-                </div>
-                
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#475569', marginBottom: '3px' }}>
-                  <Calendar size={13} color="#64748b" /> Start: <span style={{ fontWeight: '700', color: '#0f172a' }}>{rental.startTime}</span>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#475569', marginBottom: '3px' }}>
-                  <Clock size={13} color="#64748b" /> Duration: <span style={{ fontWeight: '700', color: '#1d7afc' }}>{rental.duration}</span>
-                </div>
-
-                {rental.next_payment_date && (
-                  <div style={{ fontSize: '11px', color: '#d97706', fontWeight: '700' }}>
-                    🗓 Next Due: {rental.next_payment_date}
-                  </div>
-                )}
-              </div>
-
-              {/* Column 4: Financials */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#00a66c', fontSize: '15px', fontWeight: '800', marginBottom: '4px' }}>
-                  <CreditCard size={16} /> {rental.rentCollected}
-                </div>
-                <div style={{ fontSize: '12px', color: '#64748b' }}>
-                  Deposit: <span style={{ fontWeight: '700', color: '#0f172a' }}>{rental.deposit}</span>
-                </div>
-              </div>
-
-              {/* Column 5: Status & Action Controls */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end', minWidth: '150px' }}>
-                <span style={{ 
-                  background: isActive ? '#dcfce7' : isPendingReturn ? '#e0f2fe' : isPendingAssignment ? '#fef3c7' : isCancelled ? '#fee2e2' : '#f1f5f9', 
-                  color: isActive ? '#15803d' : isPendingReturn ? '#0284c7' : isPendingAssignment ? '#d97706' : isCancelled ? '#dc2626' : '#475569',
-                  padding: '6px 12px', borderRadius: '20px', fontWeight: '800', fontSize: '11px', textTransform: 'uppercase'
-                }}>
-                  {isActive ? '● Active Rental' : isPendingReturn ? 'Return Pending' : isPendingAssignment ? 'Pending Assign' : isCancelled ? 'Cancelled' : 'Completed'}
-                </span>
-
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  {/* Official Printable Receipt Button */}
-                  <button
-                    onClick={() => handleOpenReceipt(rental)}
-                    title="Generate, Print & WhatsApp Receipt"
-                    style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
-                  >
-                    <FileText size={13} /> Receipt
-                  </button>
-
-                  {/* Edit / Manage Button */}
-                  <button
-                    onClick={() => handleOpenEditModal(rental)}
-                    title="Edit or Update Booking Details"
-                    style={{ background: '#f1f5f9', color: '#0f172a', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
-                  >
-                    <Edit3 size={13} /> Edit
-                  </button>
-
-                  {isPendingReturn && (
-                    <button
-                      onClick={() => handleConfirmReturn(rental.id)}
-                      style={{ background: '#00a66c', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
-                    >
-                      ✓ Return
-                    </button>
-                  )}
                   
-                  {(isActive || isPendingAssignment || isPendingReturn) && (
-                    <button
-                      onClick={() => handleCancelRental(rental.id)}
-                      style={{ background: '#fee2e2', color: '#dc2626', border: 'none', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
-                    >
-                      Cancel
-                    </button>
-                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#475569', marginBottom: '2px' }}>
+                    <Calendar size={13} color="#64748b" /> Start: <span style={{ fontWeight: '700', color: '#0f172a' }}>{rental.startTime}</span>
+                  </div>
 
-                  <button
-                    onClick={() => handleDeleteRental(rental.id)}
-                    title="Delete Record"
-                    style={{ background: '#fef2f2', color: '#ef4444', border: '1px solid #fecaca', padding: '6px 8px', borderRadius: '8px', cursor: 'pointer' }}
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#475569', marginBottom: '2px' }}>
+                    <Clock size={13} color="#64748b" /> End: <span style={{ fontWeight: '700', color: isCompleted ? '#0f172a' : isActive ? '#15803d' : '#64748b' }}>
+                      {rental.endTime}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#1d7afc', fontWeight: '700' }}>
+                    ⏱ Duration: <span>{rental.duration}</span>
+                  </div>
+
+                  {rental.next_payment_date && (
+                    <div style={{ fontSize: '11px', color: '#d97706', fontWeight: '700', marginTop: '2px' }}>
+                      🗓 Next Due: {rental.next_payment_date}
+                    </div>
+                  )}
+                </div>
+
+                {/* Column 4: Financials */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#00a66c', fontSize: '15px', fontWeight: '800', marginBottom: '4px' }}>
+                    <CreditCard size={16} /> {rental.rentCollected}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#64748b' }}>
+                    Deposit: <span style={{ fontWeight: '700', color: '#0f172a' }}>{rental.deposit}</span>
+                  </div>
+                </div>
+
+                {/* Column 5: Status & Action Controls */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end', minWidth: '150px' }}>
+                  <span style={{ 
+                    background: isActive ? '#dcfce7' : isPendingReturn ? '#e0f2fe' : isPendingAssignment ? '#fef3c7' : isCancelled ? '#fee2e2' : '#f1f5f9', 
+                    color: isActive ? '#15803d' : isPendingReturn ? '#0284c7' : isPendingAssignment ? '#d97706' : isCancelled ? '#dc2626' : '#475569',
+                    padding: '6px 12px', borderRadius: '20px', fontWeight: '800', fontSize: '11px', textTransform: 'uppercase'
+                  }}>
+                    {isActive ? '● Active Rental' : isPendingReturn ? 'Return Pending' : isPendingAssignment ? 'Pending Assign' : isCancelled ? 'Cancelled' : 'Completed'}
+                  </span>
+
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => handleOpenReceipt(rental)}
+                      title="Generate, Print & WhatsApp Receipt"
+                      style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    >
+                      <FileText size={13} /> Receipt
+                    </button>
+
+                    <button
+                      onClick={() => handleOpenEditModal(rental)}
+                      title="Edit or Update Booking Details"
+                      style={{ background: '#f1f5f9', color: '#0f172a', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    >
+                      <Edit3 size={13} /> Edit
+                    </button>
+
+                    {isPendingReturn && (
+                      <button
+                        onClick={() => handleConfirmReturn(rental.id)}
+                        style={{ background: '#00a66c', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
+                      >
+                        ✓ Return
+                      </button>
+                    )}
+                    
+                    {(isActive || isPendingAssignment || isPendingReturn) && (
+                      <button
+                        onClick={() => handleCancelRental(rental.id)}
+                        style={{ background: '#fee2e2', color: '#dc2626', border: 'none', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
+                      >
+                        Cancel
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => handleDeleteRental(rental.id)}
+                      title="Delete Record"
+                      style={{ background: '#fef2f2', color: '#ef4444', border: '1px solid #fecaca', padding: '6px 8px', borderRadius: '8px', cursor: 'pointer' }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
                 </div>
               </div>
+            );
+          })}
 
+          {filteredRentals.length === 0 && !loading && (
+            <div style={{ padding: '48px', textAlign: 'center', background: 'white', borderRadius: '20px', color: '#64748b', border: '1px solid #f1f5f9' }}>
+              <Bike size={44} color="#94a3b8" style={{ marginBottom: '12px', opacity: 0.5 }} />
+              <h3 style={{ fontSize: '17px', fontWeight: '800', color: '#0f172a', margin: '0 0 4px 0' }}>No Rental Records Found</h3>
+              <p style={{ margin: '0 0 16px 0', fontSize: '13px' }}>No rentals match your current search or status filter.</p>
+              <button 
+                onClick={handleOpenCreateModal}
+                style={{ background: '#0f172a', color: 'white', border: 'none', padding: '10px 18px', borderRadius: '10px', fontWeight: '700', fontSize: '13px', cursor: 'pointer' }}
+              >
+                + Record a Rental Booking
+              </button>
             </div>
-          );
-        })}
-
-        {filteredRentals.length === 0 && !loading && (
-          <div style={{ padding: '48px', textAlign: 'center', background: 'white', borderRadius: '20px', color: '#64748b', border: '1px solid #f1f5f9' }}>
-            <Bike size={44} color="#94a3b8" style={{ marginBottom: '12px', opacity: 0.5 }} />
-            <h3 style={{ fontSize: '17px', fontWeight: '800', color: '#0f172a', margin: '0 0 4px 0' }}>No Rental Records Found</h3>
-            <p style={{ margin: '0 0 16px 0', fontSize: '13px' }}>No rentals match your current search or status filter.</p>
-            <button 
-              onClick={handleOpenCreateModal}
-              style={{ background: '#0f172a', color: 'white', border: 'none', padding: '10px 18px', borderRadius: '10px', fontWeight: '700', fontSize: '13px', cursor: 'pointer' }}
-            >
-              + Record a Rental Booking
-            </button>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       {/* Record / Edit Rental Modal */}
       {modalOpen && (
@@ -695,7 +1109,7 @@ export default function Rentals() {
               {/* Vehicle Selector */}
               <div>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                  Vehicle / Bike Assignment (16 Bikes Available)
+                  Vehicle / Bike Assignment ({uniqueVehicles.length} Bikes in Fleet)
                 </label>
                 <select
                   value={formData.vehicle_id}
@@ -703,14 +1117,13 @@ export default function Rentals() {
                   style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', background: '#f8fafc', color: '#0f172a', outline: 'none' }}
                 >
                   <option value="">-- No Vehicle Assigned (Pending) --</option>
-                  {vehicles.map(v => {
-                    const formattedId = v.id.toUpperCase().startsWith('LT') ? v.id : `EV ${v.id}`;
+                  {uniqueVehicles.map(v => {
                     const vStatus = (v.status || 'available').toLowerCase().trim();
                     const isAssigned = Boolean(v.renter) || vStatus === 'rented' || vStatus === 'in_use';
                     const statusLabel = isAssigned ? `RENTED (${v.renter})` : vStatus === 'maintenance' ? 'MAINTENANCE' : 'AVAILABLE';
                     return (
                       <option key={v.id} value={v.id}>
-                        {formattedId} — {v.model} [{statusLabel}]
+                        {v.model || v.id} {v.id !== v.model ? `(ID: ${v.id})` : ''} — [{statusLabel}]
                       </option>
                     );
                   })}

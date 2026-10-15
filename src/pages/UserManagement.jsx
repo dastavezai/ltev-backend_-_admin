@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react';
 import { 
   Search, UserPlus, Users, User, ShieldCheck, ShieldAlert, Shield, X, Edit2, Ban, 
   CheckCircle2, RefreshCw, CreditCard, AlertTriangle, Bike, Plus, Trash2, 
-  Clock, Send, Calendar, DollarSign, Check, ChevronRight, FileText, Bell, Zap, AlertCircle
+  Clock, Send, Calendar, DollarSign, Check, ChevronRight, FileText, Bell, Zap, AlertCircle,
+  Eye, ExternalLink, Camera
 } from 'lucide-react';
 import axios from 'axios';
+import RiderDetailsModal from '../components/RiderDetailsModal';
 
 export default function UserManagement() {
   const [users, setUsers] = useState([]);
@@ -28,7 +30,8 @@ export default function UserManagement() {
   const [selectedRider, setSelectedRider] = useState(null);
   const [riderDetails, setRiderDetails] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
-  const [activeTab, setActiveTab] = useState('dues'); // 'dues' | 'vehicle' | 'wallet' | 'notice'
+  const [activeTab, setActiveTab] = useState('dues'); // 'dues' | 'kyc' | 'vehicle' | 'wallet' | 'notice'
+  const [previewDocModal, setPreviewDocModal] = useState({ open: false, title: '', url: '', riderName: '' });
 
   // Add Extra Due Form State
   const [showAddDueForm, setShowAddDueForm] = useState(false);
@@ -90,6 +93,28 @@ export default function UserManagement() {
     setShowAddDueForm(false);
     setEditingDue(null);
     fetchRiderDetails(user.id);
+  };
+
+  const handleOpenRiderKyc = (user) => {
+    setSelectedRider(user);
+    setActiveTab('kyc');
+    setShowAddDueForm(false);
+    setEditingDue(null);
+    fetchRiderDetails(user.id);
+  };
+
+  const handleUpdateKycStatus = async (userId, newStatus) => {
+    try {
+      const endpoint = newStatus === 'verified' ? 'approve' : 'reject';
+      await axios.post(`/api/account_approvals/${userId}/${endpoint}`, {}, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+      });
+      alert(`KYC status successfully updated to ${newStatus.toUpperCase()}`);
+      fetchUsers();
+      fetchRiderDetails(userId);
+    } catch (err) {
+      alert('Error updating KYC status: ' + (err.response?.data?.error || err.message));
+    }
   };
 
   const handleAddUser = async (e) => {
@@ -540,7 +565,35 @@ export default function UserManagement() {
                       </td>
 
                       {/* KYC Status */}
-                      <td style={{ padding: '18px 24px' }}>{getKycBadge(user.kyc_status)}</td>
+                      <td style={{ padding: '18px 24px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', alignItems: 'flex-start' }}>
+                          {getKycBadge(user.kyc_status)}
+                          {(user.aadhar_front_image || user.pan_image || user.selfie_image) ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenRiderKyc(user);
+                              }}
+                              style={{
+                                background: '#f0fdf4',
+                                border: '1px solid #bbf7d0',
+                                color: '#15803d',
+                                borderRadius: '6px',
+                                padding: '3px 8px',
+                                fontSize: '11px',
+                                fontWeight: '700',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px'
+                              }}
+                            >
+                              <Eye size={12} /> View Photos
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
 
                       {/* Account Status */}
                       <td style={{ padding: '18px 24px' }}>
@@ -566,7 +619,7 @@ export default function UserManagement() {
                             style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#eff6ff', border: '1px solid #bfdbfe', padding: '8px 12px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer', color: '#1d4ed8' }}
                             title="Manage Profile & Dues"
                           >
-                            <CreditCard size={14} /> Manage & Dues
+                            <CreditCard size={14} /> View & Manage
                           </button>
 
                           <button 
@@ -617,660 +670,31 @@ export default function UserManagement() {
       {/* ======================================================== */}
       {/* COMPREHENSIVE RIDER DETAILS & DUE MANAGEMENT MODAL       */}
       {/* ======================================================== */}
-      {selectedRider && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(4px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 120, padding: '20px' }}>
-          <div style={{ background: 'white', borderRadius: '24px', width: '100%', maxWidth: '1050px', maxHeight: '92vh', display: 'flex', flexDirection: 'column', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)', overflow: 'hidden' }}>
-            
-            {/* Modal Header */}
-            <div style={{ padding: '24px 32px', background: '#0f172a', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                <div style={{ width: '48px', height: '48px', borderRadius: '14px', background: 'linear-gradient(135deg, #00a66c 0%, #059669 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px', fontWeight: '800' }}>
-                  {selectedRider.name ? selectedRider.name.charAt(0).toUpperCase() : 'R'}
-                </div>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <h2 style={{ fontSize: '22px', fontWeight: '800', margin: 0, color: 'white' }}>{selectedRider.name}</h2>
-                    <span style={{ background: 'rgba(255,255,255,0.15)', color: '#93c5fd', padding: '2px 8px', borderRadius: '6px', fontSize: '12px', fontWeight: '700' }}>
-                      {selectedRider.id}
-                    </span>
-                    <span style={{ 
-                      background: selectedRider.status === 'active' ? '#15803d' : '#b91c1c', 
-                      color: 'white', padding: '2px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '800', textTransform: 'uppercase' 
-                    }}>
-                      {selectedRider.status}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '13px', color: '#94a3b8', marginTop: '4px', display: 'flex', gap: '14px' }}>
-                    <span>📞 {selectedRider.phone}</span>
-                    {selectedRider.email && <span>✉️ {selectedRider.email}</span>}
-                    <span>📅 Joined: {selectedRider.joined || 'N/A'}</span>
-                  </div>
-                </div>
-              </div>
-
-              <button 
-                onClick={() => { setSelectedRider(null); setRiderDetails(null); }}
-                style={{ background: 'rgba(255,255,255,0.1)', border: 'none', color: 'white', width: '36px', height: '36px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'background 0.2s' }}
-                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.2)'}
-                onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Quick Metrics Bar */}
-            {riderDetails && (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px', padding: '18px 32px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-                {/* 1. Total Due */}
-                <div style={{ background: (riderDetails.dues_summary?.total_due || 0) > 0 ? '#fef2f2' : '#f0fdf4', padding: '14px 18px', borderRadius: '16px', border: `1px solid ${(riderDetails.dues_summary?.total_due || 0) > 0 ? '#fecaca' : '#bbf7d0'}` }}>
-                  <div style={{ fontSize: '12px', fontWeight: '700', color: (riderDetails.dues_summary?.total_due || 0) > 0 ? '#dc2626' : '#15803d', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <CreditCard size={15} /> Total Pending Due
-                  </div>
-                  <div style={{ fontSize: '24px', fontWeight: '900', color: (riderDetails.dues_summary?.total_due || 0) > 0 ? '#dc2626' : '#15803d', marginTop: '4px' }}>
-                    ₹{(riderDetails.dues_summary?.total_due || 0).toLocaleString('en-IN')}
-                  </div>
-                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
-                    {(riderDetails.dues_summary?.total_due || 0) > 0 ? 'Action required by rider' : 'All accounts settled'}
-                  </div>
-                </div>
-
-                {/* 2. Assigned Vehicle */}
-                <div style={{ background: 'white', padding: '14px 18px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
-                  <div style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Bike size={15} color="#00a66c" /> Assigned EV
-                  </div>
-                  <div style={{ fontSize: '16px', fontWeight: '800', color: '#0f172a', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {riderDetails.active_rental ? `${riderDetails.active_rental.vehicle_model || 'LT.ev'} (${riderDetails.active_rental.vehicle_reg || 'Assigned'})` : 'No Vehicle Assigned'}
-                  </div>
-                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
-                    {riderDetails.active_rental ? `Status: ${riderDetails.active_rental.status}` : 'Available for booking'}
-                  </div>
-                </div>
-
-                {/* 3. Subscription Cycle */}
-                <div style={{ background: 'white', padding: '14px 18px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
-                  <div style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Zap size={15} color="#eab308" /> Active Plan
-                  </div>
-                  <div style={{ fontSize: '16px', fontWeight: '800', color: '#0f172a', marginTop: '6px' }}>
-                    {riderDetails.active_rental?.plan_name ? `${riderDetails.active_rental.plan_name} (₹${riderDetails.active_rental.plan_price})` : 'No Active Plan'}
-                  </div>
-                  <div style={{ fontSize: '11px', color: riderDetails.dues_summary?.is_overdue ? '#dc2626' : '#64748b', marginTop: '2px', fontWeight: riderDetails.dues_summary?.is_overdue ? '700' : '500' }}>
-                    {riderDetails.active_rental?.next_payment_date ? `Next Due: ${new Date(riderDetails.active_rental.next_payment_date).toLocaleDateString('en-GB')}` : 'Pay-per-ride'}
-                  </div>
-                </div>
-
-                {/* 4. Wallet & Security Deposit */}
-                <div style={{ background: 'white', padding: '14px 18px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
-                  <div style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <DollarSign size={15} color="#1d4ed8" /> Wallet & Deposit
-                  </div>
-                  <div style={{ fontSize: '18px', fontWeight: '900', color: '#0f172a', marginTop: '4px' }}>
-                    ₹{parseFloat(riderDetails.user.wallet_balance || 0).toLocaleString('en-IN')}
-                  </div>
-                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
-                    Min Deposit: ₹{riderDetails.dues_summary?.min_deposit || 2000} (Deficit: ₹{riderDetails.dues_summary?.deposit_deficit || 0})
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Navigation Tabs */}
-            <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', background: 'white', padding: '0 32px' }}>
-              {[
-                { id: 'dues', label: '💳 Due Management & Extra Dues', icon: <CreditCard size={16} /> },
-                { id: 'vehicle', label: '🛵 EV & Rental Cycle Info', icon: <Bike size={16} /> },
-                { id: 'wallet', label: '💰 Wallet Transactions & Approvals', icon: <FileText size={16} /> },
-                { id: 'notice', label: '📢 Send Direct Notice / Reminder', icon: <Bell size={16} /> }
-              ].map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    padding: '16px 20px',
-                    border: 'none',
-                    background: 'transparent',
-                    borderBottom: activeTab === tab.id ? '3px solid #00a66c' : '3px solid transparent',
-                    color: activeTab === tab.id ? '#00a66c' : '#64748b',
-                    fontWeight: activeTab === tab.id ? '800' : '600',
-                    fontSize: '14px',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  {tab.icon} {tab.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Modal Body / Tab Content */}
-            <div style={{ padding: '24px 32px', flex: 1, overflowY: 'auto', background: '#fafafa' }}>
-              {loadingDetails ? (
-                <div style={{ textAlign: 'center', padding: '60px 0', color: '#64748b' }}>
-                  <RefreshCw size={32} style={{ animation: 'spin 1s linear infinite', marginBottom: '12px' }} />
-                  <div style={{ fontWeight: '700' }}>Loading rider profile & dues...</div>
-                </div>
-              ) : !riderDetails ? (
-                <div style={{ textAlign: 'center', padding: '40px 0', color: '#ef4444' }}>
-                  Failed to load details. Please close and try again.
-                </div>
-              ) : (
-                <>
-                  {/* TAB 1: DUE MANAGEMENT */}
-                  {activeTab === 'dues' && (
-                    <div>
-                      {/* Dues Breakdown Header Cards */}
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', marginBottom: '24px' }}>
-                        {/* 1. Cycle Overdue */}
-                        <div style={{ background: 'white', padding: '18px 20px', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
-                          <div style={{ fontSize: '13px', fontWeight: '700', color: '#64748b', marginBottom: '4px' }}>1. Rental Cycle Due</div>
-                          <div style={{ fontSize: '22px', fontWeight: '900', color: riderDetails.dues_summary?.cycle_due > 0 ? '#dc2626' : '#0f172a' }}>
-                            ₹{(riderDetails.dues_summary?.cycle_due || 0).toLocaleString('en-IN')}
-                          </div>
-                          <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
-                            {riderDetails.dues_summary?.cycle_due > 0 
-                              ? `Overdue by ${riderDetails.dues_summary.overdue_days} day(s)` 
-                              : 'Rental pass up to date'}
-                          </div>
-                        </div>
-
-                        {/* 2. Deposit Deficit */}
-                        <div style={{ background: 'white', padding: '18px 20px', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
-                          <div style={{ fontSize: '13px', fontWeight: '700', color: '#64748b', marginBottom: '4px' }}>2. Deposit Shortfall</div>
-                          <div style={{ fontSize: '22px', fontWeight: '900', color: riderDetails.dues_summary?.deposit_deficit > 0 ? '#ea580c' : '#0f172a' }}>
-                            ₹{(riderDetails.dues_summary?.deposit_deficit || 0).toLocaleString('en-IN')}
-                          </div>
-                          <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
-                            Min Required: ₹{riderDetails.dues_summary?.min_deposit || 2000} (Balance: ₹{riderDetails.user.wallet_balance || 0})
-                          </div>
-                        </div>
-
-                        {/* 3. Extra / Admin Dues */}
-                        <div style={{ background: 'white', padding: '18px 20px', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
-                          <div style={{ fontSize: '13px', fontWeight: '700', color: '#64748b', marginBottom: '4px' }}>3. Extra / Admin Added Dues</div>
-                          <div style={{ fontSize: '22px', fontWeight: '900', color: riderDetails.dues_summary?.pending_extra_dues_total > 0 ? '#7c3aed' : '#0f172a' }}>
-                            ₹{(riderDetails.dues_summary?.pending_extra_dues_total || 0).toLocaleString('en-IN')}
-                          </div>
-                          <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
-                            {riderDetails.extra_dues?.filter(d => d.status === 'pending').length || 0} pending custom charges
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Action Bar for Dues */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px', background: 'white', padding: '14px 20px', borderRadius: '14px', border: '1px solid #e2e8f0' }}>
-                        <div>
-                          <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '800', color: '#0f172a' }}>Custom Extra Dues & Charges</h3>
-                          <p style={{ margin: '2px 0 0 0', fontSize: '13px', color: '#64748b' }}>
-                            Add penalties, challans, damages, or custom fees. Rider sees these in their app homepage due section.
-                          </p>
-                        </div>
-                        <div style={{ display: 'flex', gap: '10px' }}>
-                          {(riderDetails.dues_summary?.pending_extra_dues_total > 0) && (
-                            <button
-                              onClick={handleClearAllDues}
-                              style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5', padding: '9px 16px', borderRadius: '10px', fontWeight: '700', fontSize: '13px', cursor: 'pointer' }}
-                            >
-                              <CheckCircle2 size={15} /> Clear All Dues
-                            </button>
-                          )}
-                          <button
-                            onClick={() => setShowAddDueForm(prev => !prev)}
-                            style={{ display: 'flex', alignItems: 'center', gap: '6px', background: showAddDueForm ? '#64748b' : '#00a66c', color: 'white', border: 'none', padding: '9px 18px', borderRadius: '10px', fontWeight: '700', fontSize: '13px', cursor: 'pointer', boxShadow: '0 2px 6px rgba(0, 166, 108, 0.25)' }}
-                          >
-                            {showAddDueForm ? <X size={15} /> : <Plus size={15} />}
-                            {showAddDueForm ? 'Cancel Form' : 'Add Extra Due'}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* ADD EXTRA DUE FORM */}
-                      {showAddDueForm && (
-                        <div style={{ background: 'white', borderRadius: '18px', padding: '24px', border: '2px solid #00a66c', marginBottom: '24px', boxShadow: '0 4px 12px rgba(0, 166, 108, 0.08)' }}>
-                          <h4 style={{ margin: '0 0 14px 0', fontSize: '16px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <Plus size={18} color="#00a66c" /> Add New Extra Due to Rider
-                          </h4>
-
-                          {/* Quick Title Presets */}
-                          <div style={{ marginBottom: '16px' }}>
-                            <div style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', marginBottom: '6px' }}>Quick Presets:</div>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                              {[
-                                { title: 'Traffic Challan Fine', amt: '1000' },
-                                { title: 'Helmet Lost / Replacement', amt: '800' },
-                                { title: 'Late Return Overdue Fee', amt: '500' },
-                                { title: 'Vehicle Scratch / Body Damage', amt: '1500' },
-                                { title: 'Fastag Toll Recovery', amt: '250' },
-                                { title: 'Battery Swap Penalty', amt: '300' }
-                              ].map((preset, idx) => (
-                                <button
-                                  key={idx}
-                                  type="button"
-                                  onClick={() => setDueForm(prev => ({ ...prev, title: preset.title, amount: preset.amt }))}
-                                  style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', padding: '5px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: '600', color: '#334155', cursor: 'pointer' }}
-                                >
-                                  + {preset.title} (₹{preset.amt})
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-
-                          <form onSubmit={handleAddDue} style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: '16px' }}>
-                            <div>
-                              <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                                Due Title / Reason <span style={{ color: '#ef4444' }}>*</span>
-                              </label>
-                              <input 
-                                required
-                                type="text" 
-                                placeholder="e.g. Helmet replacement, Traffic challan"
-                                value={dueForm.title}
-                                onChange={(e) => setDueForm({ ...dueForm, title: e.target.value })}
-                                style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none' }}
-                              />
-                            </div>
-
-                            <div>
-                              <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                                Due Amount (₹) <span style={{ color: '#ef4444' }}>*</span>
-                              </label>
-                              <input 
-                                required
-                                type="number" 
-                                min="1"
-                                placeholder="e.g. 500"
-                                value={dueForm.amount}
-                                onChange={(e) => setDueForm({ ...dueForm, amount: e.target.value })}
-                                style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none' }}
-                              />
-                            </div>
-
-                            <div>
-                              <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                                Due Date <span style={{ color: '#ef4444' }}>*</span>
-                              </label>
-                              <input 
-                                required
-                                type="date" 
-                                value={dueForm.due_date}
-                                onChange={(e) => setDueForm({ ...dueForm, due_date: e.target.value })}
-                                style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none' }}
-                              />
-                            </div>
-
-                            <div style={{ gridColumn: 'span 3' }}>
-                              <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                                Additional Internal Notes / Description (Optional)
-                              </label>
-                              <input 
-                                type="text"
-                                placeholder="e.g. Challan issued near Connaught Place for driving without helmet"
-                                value={dueForm.notes}
-                                onChange={(e) => setDueForm({ ...dueForm, notes: e.target.value })}
-                                style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none' }}
-                              />
-                            </div>
-
-                            <div style={{ gridColumn: 'span 3', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
-                              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: '600', color: '#334155' }}>
-                                <input 
-                                  type="checkbox" 
-                                  checked={dueForm.send_notification}
-                                  onChange={(e) => setDueForm({ ...dueForm, send_notification: e.target.checked })}
-                                  style={{ width: '16px', height: '16px' }}
-                                />
-                                📲 Send instant in-app update & push notification to rider
-                              </label>
-
-                              <button
-                                type="submit"
-                                disabled={submittingDue}
-                                style={{ background: '#00a66c', color: 'white', border: 'none', padding: '12px 24px', borderRadius: '10px', fontWeight: '800', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
-                              >
-                                {submittingDue ? 'Adding Due...' : '✓ Add Due & Charge Rider'}
-                              </button>
-                            </div>
-                          </form>
-                        </div>
-                      )}
-
-                      {/* EDIT EXISTING DUE FORM MODAL */}
-                      {editingDue && (
-                        <div style={{ background: '#fffbeb', borderRadius: '18px', padding: '24px', border: '2px solid #f59e0b', marginBottom: '24px' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                            <h4 style={{ margin: 0, fontSize: '16px', fontWeight: '800', color: '#92400e' }}>
-                              ✏️ Edit / Reduce Due Record #{editingDue.id}
-                            </h4>
-                            <button onClick={() => setEditingDue(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#92400e', fontWeight: '700' }}>Cancel ✕</button>
-                          </div>
-
-                          <form onSubmit={handleUpdateDue} style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: '16px' }}>
-                            <div>
-                              <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#78350f', marginBottom: '6px' }}>Title</label>
-                              <input required type="text" value={editingDue.title} onChange={(e) => setEditingDue({ ...editingDue, title: e.target.value })} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none' }} />
-                            </div>
-                            <div>
-                              <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#78350f', marginBottom: '6px' }}>Amount (₹)</label>
-                              <input required type="number" min="1" value={editingDue.amount} onChange={(e) => setEditingDue({ ...editingDue, amount: e.target.value })} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none' }} />
-                            </div>
-                            <div>
-                              <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#78350f', marginBottom: '6px' }}>Due Date</label>
-                              <input required type="date" value={editingDue.due_date ? new Date(editingDue.due_date).toISOString().split('T')[0] : ''} onChange={(e) => setEditingDue({ ...editingDue, due_date: e.target.value })} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none' }} />
-                            </div>
-                            <div style={{ gridColumn: 'span 3', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-                              <button type="button" onClick={() => setEditingDue(null)} style={{ padding: '10px 16px', background: 'white', border: '1px solid #cbd5e1', borderRadius: '10px', fontWeight: '600', cursor: 'pointer' }}>Cancel</button>
-                              <button type="submit" disabled={submittingEditDue} style={{ padding: '10px 20px', background: '#d97706', color: 'white', border: 'none', borderRadius: '10px', fontWeight: '700', cursor: 'pointer' }}>Save Changes</button>
-                            </div>
-                          </form>
-                        </div>
-                      )}
-
-                      {/* Extra Dues List */}
-                      <div style={{ background: 'white', borderRadius: '18px', border: '1px solid #e2e8f0', overflow: 'hidden' }}>
-                        <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
-                          <thead style={{ background: '#f8fafc', color: '#64748b', fontSize: '12px', textTransform: 'uppercase' }}>
-                            <tr>
-                              <th style={{ padding: '14px 20px', fontWeight: '700' }}>Due Title / Reason</th>
-                              <th style={{ padding: '14px 20px', fontWeight: '700' }}>Amount</th>
-                              <th style={{ padding: '14px 20px', fontWeight: '700' }}>Due Date</th>
-                              <th style={{ padding: '14px 20px', fontWeight: '700' }}>Added Date</th>
-                              <th style={{ padding: '14px 20px', fontWeight: '700' }}>Status</th>
-                              <th style={{ padding: '14px 20px', fontWeight: '700', textAlign: 'right' }}>Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(!riderDetails.extra_dues || riderDetails.extra_dues.length === 0) ? (
-                              <tr>
-                                <td colSpan={6} style={{ textAlign: 'center', padding: '36px', color: '#94a3b8' }}>
-                                  No extra dues added for this rider. Click <strong>[+ Add Extra Due]</strong> above to charge penalties or custom fees.
-                                </td>
-                              </tr>
-                            ) : (
-                              riderDetails.extra_dues.map(due => (
-                                <tr key={due.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                                  <td style={{ padding: '16px 20px' }}>
-                                    <div style={{ fontWeight: '800', color: '#0f172a', fontSize: '14px' }}>{due.title}</div>
-                                    {due.notes && <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>{due.notes}</div>}
-                                  </td>
-                                  <td style={{ padding: '16px 20px', fontWeight: '900', fontSize: '16px', color: due.status === 'pending' ? '#dc2626' : '#0f172a' }}>
-                                    ₹{parseFloat(due.amount || 0).toLocaleString('en-IN')}
-                                  </td>
-                                  <td style={{ padding: '16px 20px', fontSize: '13px', color: '#475569' }}>
-                                    📅 {new Date(due.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                                  </td>
-                                  <td style={{ padding: '16px 20px', fontSize: '12px', color: '#64748b' }}>
-                                    {new Date(due.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                                  </td>
-                                  <td style={{ padding: '16px 20px' }}>
-                                    <span style={{
-                                      display: 'inline-block',
-                                      padding: '4px 10px',
-                                      borderRadius: '8px',
-                                      fontSize: '11px',
-                                      fontWeight: '800',
-                                      textTransform: 'uppercase',
-                                      background: due.status === 'paid' ? '#dcfce7' : due.status === 'waived' ? '#f1f5f9' : '#fee2e2',
-                                      color: due.status === 'paid' ? '#15803d' : due.status === 'waived' ? '#64748b' : '#dc2626'
-                                    }}>
-                                      {due.status}
-                                    </span>
-                                  </td>
-                                  <td style={{ padding: '16px 20px', textAlign: 'right' }}>
-                                    <div style={{ display: 'inline-flex', gap: '6px' }}>
-                                      {due.status === 'pending' && (
-                                        <>
-                                          <button
-                                            onClick={() => setEditingDue(due)}
-                                            style={{ background: '#f8fafc', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: '600', cursor: 'pointer', color: '#334155' }}
-                                            title="Edit or Reduce Due"
-                                          >
-                                            Edit
-                                          </button>
-                                          <button
-                                            onClick={() => handleUpdateDueStatus(due.id, 'paid')}
-                                            style={{ background: '#dcfce7', border: '1px solid #86efac', padding: '6px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: '700', cursor: 'pointer', color: '#16a34a' }}
-                                            title="Mark as Paid"
-                                          >
-                                            Mark Paid
-                                          </button>
-                                          <button
-                                            onClick={() => handleUpdateDueStatus(due.id, 'waived')}
-                                            style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: '600', cursor: 'pointer', color: '#64748b' }}
-                                            title="Waive Due"
-                                          >
-                                            Waive
-                                          </button>
-                                        </>
-                                      )}
-                                      <button
-                                        onClick={() => handleDeleteDue(due.id)}
-                                        style={{ background: '#fee2e2', border: 'none', padding: '6px 8px', borderRadius: '6px', color: '#dc2626', cursor: 'pointer' }}
-                                        title="Delete Record"
-                                      >
-                                        <Trash2 size={13} />
-                                      </button>
-                                    </div>
-                                  </td>
-                                </tr>
-                              ))
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* TAB 2: EV & RENTAL CYCLE */}
-                  {activeTab === 'vehicle' && (
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-                      {/* Active Vehicle Details */}
-                      <div style={{ background: 'white', padding: '24px', borderRadius: '18px', border: '1px solid #e2e8f0' }}>
-                        <h4 style={{ margin: '0 0 16px 0', fontSize: '16px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <Bike size={20} color="#00a66c" /> Assigned EV Details
-                        </h4>
-                        {riderDetails.active_rental ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b', fontSize: '14px' }}>Model:</span>
-                              <span style={{ fontWeight: '700', color: '#0f172a' }}>{riderDetails.active_rental.vehicle_model || 'LT.ev Scooter'}</span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b', fontSize: '14px' }}>Registration No:</span>
-                              <span style={{ fontWeight: '800', color: '#00a66c' }}>{riderDetails.active_rental.vehicle_reg || 'N/A'}</span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b', fontSize: '14px' }}>Assigned Date:</span>
-                              <span style={{ fontWeight: '600', color: '#0f172a' }}>{new Date(riderDetails.active_rental.start_time).toLocaleString('en-GB')}</span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                              <span style={{ color: '#64748b', fontSize: '14px' }}>Rental ID:</span>
-                              <span style={{ fontWeight: '600', color: '#64748b' }}>#{riderDetails.active_rental.id}</span>
-                            </div>
-                          </div>
-                        ) : (
-                          <div style={{ padding: '30px 0', textAlign: 'center', color: '#94a3b8' }}>
-                            No vehicle currently assigned to this rider.
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Active Plan & Cycle Details */}
-                      <div style={{ background: 'white', padding: '24px', borderRadius: '18px', border: '1px solid #e2e8f0' }}>
-                        <h4 style={{ margin: '0 0 16px 0', fontSize: '16px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <Zap size={20} color="#eab308" /> Subscription Plan & Renewal
-                        </h4>
-                        {riderDetails.active_rental ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b', fontSize: '14px' }}>Plan Name:</span>
-                              <span style={{ fontWeight: '700', color: '#0f172a' }}>{riderDetails.active_rental.plan_name || 'Weekly Pass'}</span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b', fontSize: '14px' }}>Plan Price:</span>
-                              <span style={{ fontWeight: '800', color: '#0f172a' }}>₹{riderDetails.active_rental.plan_price}</span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b', fontSize: '14px' }}>Billing Cycle:</span>
-                              <span style={{ fontWeight: '700', textTransform: 'capitalize', color: '#0f172a' }}>{riderDetails.active_rental.plan_type || 'Weekly'}</span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b', fontSize: '14px' }}>Next Due / Renewal Date:</span>
-                              <span style={{ fontWeight: '800', color: riderDetails.dues_summary?.is_overdue ? '#dc2626' : '#00a66c' }}>
-                                {riderDetails.active_rental.next_payment_date ? new Date(riderDetails.active_rental.next_payment_date).toLocaleDateString('en-GB') : 'N/A'}
-                              </span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                              <span style={{ color: '#64748b', fontSize: '14px' }}>Overdue Status:</span>
-                              <span style={{ fontWeight: '800', color: riderDetails.dues_summary?.is_overdue ? '#dc2626' : '#15803d' }}>
-                                {riderDetails.dues_summary?.is_overdue ? `Overdue by ${riderDetails.dues_summary?.overdue_days} days` : 'Active / Paid'}
-                              </span>
-                            </div>
-                          </div>
-                        ) : (
-                          <div style={{ padding: '30px 0', textAlign: 'center', color: '#94a3b8' }}>
-                            No active subscription cycle found.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* TAB 3: WALLET & TRANSACTIONS */}
-                  {activeTab === 'wallet' && (
-                    <div>
-                      <div style={{ background: 'white', borderRadius: '18px', border: '1px solid #e2e8f0', overflow: 'hidden' }}>
-                        <div style={{ padding: '16px 20px', borderBottom: '1px solid #f1f5f9', background: '#fafafa', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <h4 style={{ margin: 0, fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>Recent Wallet Transactions & Due Payments</h4>
-                          <span style={{ fontSize: '13px', fontWeight: '700', color: '#00a66c' }}>Current Balance: ₹{parseFloat(riderDetails.user.wallet_balance || 0).toLocaleString('en-IN')}</span>
-                        </div>
-                        <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
-                          <thead style={{ background: '#f8fafc', color: '#64748b', fontSize: '12px', textTransform: 'uppercase' }}>
-                            <tr>
-                              <th style={{ padding: '14px 20px', fontWeight: '700' }}>Type</th>
-                              <th style={{ padding: '14px 20px', fontWeight: '700' }}>Amount</th>
-                              <th style={{ padding: '14px 20px', fontWeight: '700' }}>Description</th>
-                              <th style={{ padding: '14px 20px', fontWeight: '700' }}>Date & Time</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(!riderDetails.wallet_transactions || riderDetails.wallet_transactions.length === 0) ? (
-                              <tr>
-                                <td colSpan={4} style={{ textAlign: 'center', padding: '36px', color: '#94a3b8' }}>
-                                  No wallet transactions recorded yet.
-                                </td>
-                              </tr>
-                            ) : (
-                              riderDetails.wallet_transactions.map(txn => (
-                                <tr key={txn.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                                  <td style={{ padding: '14px 20px' }}>
-                                    <span style={{
-                                      display: 'inline-block',
-                                      padding: '3px 8px',
-                                      borderRadius: '6px',
-                                      fontSize: '11px',
-                                      fontWeight: '800',
-                                      textTransform: 'uppercase',
-                                      background: txn.type === 'credit' ? '#dcfce7' : '#fee2e2',
-                                      color: txn.type === 'credit' ? '#15803d' : '#dc2626'
-                                    }}>
-                                      {txn.type}
-                                    </span>
-                                  </td>
-                                  <td style={{ padding: '14px 20px', fontWeight: '800', color: txn.type === 'credit' ? '#15803d' : '#dc2626' }}>
-                                    {txn.type === 'credit' ? '+' : '-'}₹{parseFloat(txn.amount || 0).toLocaleString('en-IN')}
-                                  </td>
-                                  <td style={{ padding: '14px 20px', fontSize: '13px', color: '#0f172a' }}>
-                                    {txn.description}
-                                  </td>
-                                  <td style={{ padding: '14px 20px', fontSize: '12px', color: '#64748b' }}>
-                                    {new Date(txn.timestamp).toLocaleString('en-GB')}
-                                  </td>
-                                </tr>
-                              ))
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* TAB 4: DIRECT NOTICE */}
-                  {activeTab === 'notice' && (
-                    <div style={{ background: 'white', borderRadius: '18px', padding: '24px', border: '1px solid #e2e8f0', maxWidth: '680px', margin: '0 auto' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
-                        <div>
-                          <h4 style={{ margin: 0, fontSize: '17px', fontWeight: '800', color: '#0f172a' }}>Send In-App & Push Notice to {riderDetails.user.name}</h4>
-                          <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#64748b' }}>Direct notification will pop up in the rider's updates box and notify their smartphone.</p>
-                        </div>
-                        {(riderDetails.dues_summary?.total_due > 0) && (
-                          <button
-                            type="button"
-                            onClick={prefillDueReminder}
-                            style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', padding: '8px 14px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
-                          >
-                            ⚡ Pre-fill Due Notice
-                          </button>
-                        )}
-                      </div>
-
-                      <form onSubmit={handleSendDirectNotice} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                        <div>
-                          <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                            Notice Title <span style={{ color: '#ef4444' }}>*</span>
-                          </label>
-                          <input 
-                            required
-                            type="text" 
-                            placeholder="e.g. Action Required: Please clear your pending due"
-                            value={directNotice.title}
-                            onChange={(e) => setDirectNotice({ ...directNotice, title: e.target.value })}
-                            style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none' }}
-                          />
-                        </div>
-
-                        <div>
-                          <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                            Notice Message <span style={{ color: '#ef4444' }}>*</span>
-                          </label>
-                          <textarea 
-                            required
-                            rows="4"
-                            placeholder="Write message to rider..."
-                            value={directNotice.message}
-                            onChange={(e) => setDirectNotice({ ...directNotice, message: e.target.value })}
-                            style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none', resize: 'vertical' }}
-                          />
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={directNotice.sending}
-                          style={{ background: '#00a66c', color: 'white', border: 'none', padding: '12px', borderRadius: '10px', fontWeight: '800', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-                        >
-                          <Send size={16} /> {directNotice.sending ? 'Sending...' : 'Send Notice Now'}
-                        </button>
-                      </form>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* Modal Footer */}
-            <div style={{ padding: '16px 32px', background: 'white', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-              <button
-                onClick={() => { setSelectedRider(null); setRiderDetails(null); }}
-                style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', color: '#475569', padding: '10px 24px', borderRadius: '10px', fontWeight: '700', cursor: 'pointer' }}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <RiderDetailsModal
+        isOpen={Boolean(selectedRider)}
+        onClose={() => { setSelectedRider(null); setRiderDetails(null); }}
+        rider={selectedRider}
+        details={riderDetails}
+        loading={loadingDetails}
+        onRefresh={() => {
+          if (selectedRider) {
+            fetchRiderDetails(selectedRider.id);
+            fetchUsers();
+          }
+        }}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        onUpdateKycStatus={handleUpdateKycStatus}
+        onEditRider={(u) => {
+          setEditUser(u);
+          setShowEditModal(true);
+        }}
+        onToggleSuspend={(u) => {
+          setUserToToggle(u);
+          setShowSuspendModal(true);
+        }}
+        onPreviewDoc={(doc) => setPreviewDocModal(doc)}
+      />
 
       {/* Add Rider Modal */}
       {showAddModal && (
@@ -1410,6 +834,76 @@ export default function UserManagement() {
               >
                 {updatingStatus ? 'Updating...' : (userToToggle.status === 'suspended' ? 'Yes, Reactivate' : 'Yes, Suspend Account')}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* KYC Document Lightbox Preview Modal */}
+      {previewDocModal.open && (
+        <div 
+          onClick={() => setPreviewDocModal({ open: false, title: '', url: '', riderName: '' })}
+          style={{ 
+            position: 'fixed', 
+            top: 0, left: 0, right: 0, bottom: 0, 
+            background: 'rgba(15, 23, 42, 0.85)', 
+            backdropFilter: 'blur(6px)', 
+            display: 'flex', 
+            flexDirection: 'column',
+            justifyContent: 'center', 
+            alignItems: 'center', 
+            zIndex: 9999,
+            padding: '20px'
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{ 
+              background: '#0f172a', 
+              borderRadius: '20px', 
+              overflow: 'hidden', 
+              maxWidth: '90vw', 
+              maxHeight: '92vh', 
+              display: 'flex', 
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              border: '1px solid #334155'
+            }}
+          >
+            {/* Modal Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', background: '#1e293b', borderBottom: '1px solid #334155' }}>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: '800', color: 'white' }}>{previewDocModal.title}</div>
+                {previewDocModal.riderName && (
+                  <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>Rider: {previewDocModal.riderName}</div>
+                )}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <a
+                  href={previewDocModal.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(255,255,255,0.1)', color: 'white', padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: '600', textDecoration: 'none' }}
+                >
+                  <ExternalLink size={14} /> Open Original
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewDocModal({ open: false, title: '', url: '', riderName: '' })}
+                  style={{ background: 'rgba(255,255,255,0.1)', border: 'none', color: 'white', width: '32px', height: '32px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body / Image */}
+            <div style={{ padding: '20px', display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#020617', maxHeight: 'calc(92vh - 80px)' }}>
+              <img 
+                src={previewDocModal.url} 
+                alt={previewDocModal.title} 
+                style={{ maxWidth: '100%', maxHeight: 'calc(80vh)', objectFit: 'contain', borderRadius: '8px' }} 
+              />
             </div>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, ShieldCheck, Wallet, LogOut, Bike, FileText, Map, Tag, ClipboardList, ShieldAlert, Bell, Megaphone, Wrench, CalendarCheck, Briefcase, Package } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldCheck, Wallet, LogOut, Bike, FileText, Map, Tag, ClipboardList, ShieldAlert, Bell, Megaphone, Wrench, CalendarCheck, Briefcase, Package, QrCode, CalendarDays, Boxes } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Sidebar() {
@@ -9,13 +9,11 @@ export default function Sidebar() {
   const navItems = [
     { name: 'Dashboard', path: '/dashboard', icon: <LayoutDashboard size={20} /> },
     { name: 'Management Portal', path: '/management', icon: <Briefcase size={20} /> },
+    { name: 'Current Rent', path: '/current-rent', icon: <CalendarDays size={20} /> },
+    { name: 'Assets', path: '/assets', icon: <Boxes size={20} /> },
     { name: 'Bookings & Dues', path: '/bookings', icon: <CalendarCheck size={20} /> },
-    { name: 'Updates Inbox', path: '/updates', icon: <Bell size={20} /> },
     { name: 'Broadcast', path: '/broadcast', icon: <Megaphone size={20} /> },
-    { name: 'Vehicles', path: '/vehicles', icon: <Bike size={20} /> },
     { name: 'Vehicle Services', path: '/services', icon: <Wrench size={20} /> },
-    { name: 'Spare Parts', path: '/parts', icon: <Package size={20} /> },
-    { name: 'Stands', path: '/stands', icon: <Map size={20} /> },
     { name: 'Rentals', path: '/rentals', icon: <FileText size={20} /> },
     { name: 'Rental Requests', path: '/rental-requests', icon: <ClipboardList size={20} /> },
     { name: 'Riders', path: '/users', icon: <Users size={20} /> },
@@ -23,7 +21,7 @@ export default function Sidebar() {
     { name: 'Wallet Approvals', path: '/wallet-approvals', icon: <Wallet size={20} /> },
     { name: 'Security Deposits', path: '/security-deposits', icon: <ShieldAlert size={20} /> },
     { name: 'Transactions', path: '/transactions', icon: <Wallet size={20} /> },
-    { name: 'Subscription Plans', path: '/plans', icon: <Tag size={20} /> },
+    { name: 'Payment Settings', path: '/plans', icon: <QrCode size={20} /> },
   ];
 
   return (
@@ -40,7 +38,12 @@ export default function Sidebar() {
       <nav className="sidebar-nav" style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, overflowY: 'auto', paddingRight: '4px', margin: '0 -4px 0 0' }}>
         <div style={{ fontSize: '12px', fontWeight: '600', color: '#64748b', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px', paddingLeft: '12px', flexShrink: 0 }}>Menu</div>
         {navItems.map((item) => {
-          const isActive = location.pathname.includes(item.path);
+          const isActive = location.pathname.includes(item.path) || 
+            (item.path === '/assets' && (
+              location.pathname.startsWith('/vehicles') || 
+              location.pathname.startsWith('/parts') || 
+              location.pathname.startsWith('/stands')
+            ));
           return (
             <Link
               key={item.name}
