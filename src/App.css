@@ -1,1 +1,263 @@
-/* Cleaned App.css - All layout is handled by inline styles and index.css utilities */
+/* ==========================================================================
+   Management Portal Responsive Mobile Styles
+   ========================================================================== */
+
+.mgmt-layout-container {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #f8fafc;
+  color: #0f172a;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  box-sizing: border-box;
+}
+
+/* Header */
+.mgmt-header {
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 0 24px;
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  transition: all 0.2s ease;
+}
+
+.mgmt-header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.mgmt-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mgmt-header-divider {
+  height: 16px;
+  width: 1px;
+  background: #cbd5e1;
+}
+
+/* Main Content Area */
+.mgmt-main {
+  width: 100%;
+  padding: 24px 32px 60px;
+  box-sizing: border-box;
+  flex: 1;
+}
+
+/* Main Action Tabs Bar */
+.mgmt-tabs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  gap: 16px;
+}
+
+.mgmt-tabs-container {
+  display: flex;
+  flex: 1;
+  background: #ffffff;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+}
+
+.mgmt-tab-btn {
+  flex: 1;
+  padding: 14px 18px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 14px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+/* Sync Fleet Button */
+.mgmt-sync-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 16px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+/* Tab 1: Service Billing Grid */
+.mgmt-service-grid {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 20px;
+  align-items: start;
+}
+
+/* Tab 3: Advance Bookings Grid */
+.mgmt-bookings-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+/* Generic Form Two Column Grids */
+.mgmt-form-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+/* Generic Form Three Column Grids */
+.mgmt-form-grid-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+/* Table Horizontal Touch-Scroll Container */
+.mgmt-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Payment Row Entries Grid */
+.mgmt-payment-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1.4fr auto;
+  gap: 6px;
+  align-items: center;
+}
+
+/* ==========================================================================
+   Mobile & Tablet Media Queries
+   ========================================================================== */
+
+@media (max-width: 1024px) {
+  .mgmt-service-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .mgmt-bookings-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .mgmt-header {
+    padding: 10px 14px !important;
+    min-height: auto !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 10px !important;
+  }
+
+  .mgmt-header-left {
+    justify-content: space-between !important;
+    width: 100% !important;
+    gap: 8px !important;
+  }
+
+  .mgmt-header-right {
+    justify-content: space-between !important;
+    width: 100% !important;
+    gap: 8px !important;
+    border-top: 1px solid #f1f5f9;
+    padding-top: 8px;
+  }
+
+  .mgmt-header-divider {
+    display: none !important;
+  }
+
+  .mgmt-main {
+    padding: 14px 12px 60px !important;
+  }
+
+  .mgmt-tabs-bar {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 10px !important;
+  }
+
+  .mgmt-tabs-container {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    width: 100% !important;
+    justify-content: flex-start !important;
+    border-radius: 8px !important;
+  }
+
+  .mgmt-tab-btn {
+    padding: 11px 14px !important;
+    font-size: 13px !important;
+    flex: 0 0 auto !important;
+  }
+
+  .mgmt-sync-btn {
+    width: 100% !important;
+    padding: 10px 14px !important;
+  }
+
+  .mgmt-form-grid-2 {
+    grid-template-columns: 1fr !important;
+    gap: 10px !important;
+  }
+
+  .mgmt-form-grid-3 {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+
+  .mgmt-payment-row {
+    grid-template-columns: 1fr 1fr !important;
+    grid-template-rows: auto auto !important;
+    background: #ffffff;
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    gap: 8px !important;
+  }
+
+  .mgmt-payment-row > input[type="text"] {
+    grid-column: 1 / 2 !important;
+  }
+
+  .mgmt-payment-row > button {
+    grid-column: 2 / 3 !important;
+    justify-self: end !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .mgmt-tab-btn span:not(:first-child) {
+    font-size: 12px !important;
+  }
+}

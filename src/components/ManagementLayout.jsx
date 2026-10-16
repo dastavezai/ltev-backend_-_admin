@@ -15,34 +15,11 @@ export default function ManagementLayout({ children }) {
   const username = user?.username || localStorage.getItem('username') || 'Operator';
 
   return (
-    <div style={{
-      width: '100vw',
-      height: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      overflowY: 'auto',
-      overflowX: 'hidden',
-      background: '#f8fafc',
-      color: '#0f172a',
-      fontFamily: 'Inter, system-ui, -apple-system, sans-serif'
-    }}>
-      
+    <div className="mgmt-layout-container">
       {/* Top Navbar */}
-      <header style={{
-        background: '#ffffff',
-        borderBottom: '1px solid #e2e8f0',
-        padding: '0 24px',
-        height: '54px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        position: 'sticky',
-        top: 0,
-        zIndex: 40,
-        flexShrink: 0
-      }}>
+      <header className="mgmt-header">
         {/* Left: Brand & Portal Name & Station Operations Desk */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        <div className="mgmt-header-left">
           <div 
             onClick={() => navigate('/management')}
             style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
@@ -55,21 +32,21 @@ export default function ManagementLayout({ children }) {
             </div>
           </div>
 
-          <div style={{ height: '16px', width: '1px', background: '#cbd5e1' }} />
+          <div className="mgmt-header-divider" />
 
-          <div style={{ fontSize: '14px', fontWeight: '700', color: '#0369a1', background: '#e0f2fe', padding: '3px 10px', borderRadius: '6px' }}>
+          <div style={{ fontSize: '13px', fontWeight: '700', color: '#0369a1', background: '#e0f2fe', padding: '3px 8px', borderRadius: '6px', whiteSpace: 'nowrap' }}>
             Station Operations Desk
           </div>
 
-          <div style={{ height: '16px', width: '1px', background: '#cbd5e1' }} />
+          <div className="mgmt-header-divider" />
 
-          <div style={{ fontSize: '12px', color: '#64748b' }}>
+          <div style={{ fontSize: '12px', color: '#64748b', whiteSpace: 'nowrap' }}>
             Station: <strong style={{ color: '#0f172a' }}>Rukanpura Main Stand</strong>
           </div>
         </div>
 
         {/* Right: Actions, Role & User */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        <div className="mgmt-header-right">
           {role === 'admin' && (
             <button
               onClick={() => navigate('/dashboard')}
@@ -79,12 +56,13 @@ export default function ManagementLayout({ children }) {
                 gap: '4px',
                 background: 'transparent',
                 border: '1px solid #e2e8f0',
-                padding: '6px 12px',
+                padding: '6px 10px',
                 borderRadius: '6px',
                 fontSize: '12px',
                 fontWeight: '600',
                 color: '#475569',
-                cursor: 'pointer'
+                cursor: 'pointer',
+                whiteSpace: 'nowrap'
               }}
             >
               <span>Admin Panel</span>
@@ -92,7 +70,7 @@ export default function ManagementLayout({ children }) {
             </button>
           )}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
             <span style={{ fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', background: '#f1f5f9', color: '#475569', padding: '2px 8px', borderRadius: '4px' }}>
               {role}
             </span>
@@ -122,10 +100,9 @@ export default function ManagementLayout({ children }) {
       </header>
 
       {/* Main Container - Full Width */}
-      <main style={{ width: '100%', padding: '24px 32px 60px', boxSizing: 'border-box' }}>
+      <main className="mgmt-main">
         {children}
       </main>
-
     </div>
   );
 }

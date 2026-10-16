@@ -103,7 +103,7 @@ export default function Login() {
               </span>
             </div>
             <p style={{ margin: 0, fontSize: '11.5px', color: '#64748b' }}>
-              LocalToto Transport Solutions Private Limited
+              WheelyBuzz LocalToto Private Limited
             </p>
           </div>
         </div>
@@ -438,7 +438,7 @@ export default function Login() {
         flexShrink: 0
       }}>
         <div>
-          © 2026 <strong>LocalToto Transport Solutions Private Limited</strong>. All rights reserved.
+          © 2026 <strong>WheelyBuzz LocalToto Private Limited</strong>. All rights reserved.
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -564,7 +564,7 @@ export default function Login() {
                 <div>
                   <h4 style={{ color: '#0f172a', margin: '0 0 6px 0' }}>1. Vehicle Usage Agreement</h4>
                   <p>
-                    All vehicles provided by LocalToto Transport Solutions Pvt. Ltd. are designated for commercial delivery and personal transit by registered riders holding a valid KYC profile and valid motor vehicle license.
+                    All vehicles provided by WheelyBuzz LocalToto Private Limited are designated for commercial delivery and personal transit by registered riders holding a valid KYC profile and valid motor vehicle license.
                   </p>
                   <h4 style={{ color: '#0f172a', margin: '14px 0 6px 0' }}>2. Battery Swapping & Maintenance</h4>
                   <p>
@@ -600,7 +600,7 @@ export default function Login() {
                       <div>
                         <strong style={{ color: '#0f172a' }}>Corporate & Registered Office:</strong>
                         <p style={{ margin: '4px 0 0 0', color: '#475569' }}>
-                          LocalToto Transport Solutions Private Limited<br />
+                          WheelyBuzz LocalToto Private Limited<br />
                           Bengaluru & Delhi NCR Operations
                         </p>
                       </div>

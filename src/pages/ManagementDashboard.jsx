@@ -962,7 +962,7 @@ export default function ManagementDashboard() {
         {/* Dynamic Payment Rows */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '10px' }}>
           {rows.map((row, idx) => (
-            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1.4fr auto', gap: '6px', alignItems: 'center' }}>
+            <div key={idx} className="mgmt-payment-row">
               {/* Payment Mode */}
               <select
                 value={row.mode}
@@ -1060,26 +1060,18 @@ export default function ManagementDashboard() {
       {/* ============================================================ */}
       {/* 3 QUICK MAIN ACTION TABS */}
       {/* ============================================================ */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', gap: '16px' }}>
-        <div style={{ display: 'flex', flex: 1, background: '#ffffff', borderRadius: '10px', border: '1px solid #e2e8f0', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
+      <div className="mgmt-tabs-bar">
+        <div className="mgmt-tabs-container">
           
           {/* Tab 1: Service Billing */}
           <button
             onClick={() => handleTabSwitch('service')}
+            className="mgmt-tab-btn"
             style={{
-              flex: 1,
-              padding: '14px 20px',
-              border: 'none',
               borderBottom: activeTab === 'service' ? '3px solid #0284c7' : '3px solid transparent',
               background: activeTab === 'service' ? '#f0f9ff' : 'white',
               color: activeTab === 'service' ? '#0369a1' : '#475569',
-              fontWeight: activeTab === 'service' ? '700' : '500',
-              fontSize: '14px',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px'
+              fontWeight: activeTab === 'service' ? '700' : '500'
             }}
           >
             <Wrench size={16} color={activeTab === 'service' ? '#0284c7' : '#64748b'} />
@@ -1092,22 +1084,14 @@ export default function ManagementDashboard() {
           {/* Tab 2: Rent & Payments */}
           <button
             onClick={() => handleTabSwitch('rent')}
+            className="mgmt-tab-btn"
             style={{
-              flex: 1,
-              padding: '14px 20px',
-              border: 'none',
               borderLeft: '1px solid #e2e8f0',
               borderRight: '1px solid #e2e8f0',
               borderBottom: activeTab === 'rent' ? '3px solid #0284c7' : '3px solid transparent',
               background: activeTab === 'rent' ? '#f0f9ff' : 'white',
               color: activeTab === 'rent' ? '#0369a1' : '#475569',
-              fontWeight: activeTab === 'rent' ? '700' : '500',
-              fontSize: '14px',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px'
+              fontWeight: activeTab === 'rent' ? '700' : '500'
             }}
           >
             <DollarSign size={16} color={activeTab === 'rent' ? '#0284c7' : '#64748b'} />
@@ -1122,20 +1106,12 @@ export default function ManagementDashboard() {
           {/* Tab 3: Advance Bookings & Allocations */}
           <button
             onClick={() => handleTabSwitch('advance-bookings')}
+            className="mgmt-tab-btn"
             style={{
-              flex: 1,
-              padding: '14px 20px',
-              border: 'none',
               borderBottom: activeTab === 'advance-bookings' ? '3px solid #0284c7' : '3px solid transparent',
               background: activeTab === 'advance-bookings' ? '#f0f9ff' : 'white',
               color: activeTab === 'advance-bookings' ? '#0369a1' : '#475569',
-              fontWeight: activeTab === 'advance-bookings' ? '700' : '500',
-              fontSize: '14px',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px'
+              fontWeight: activeTab === 'advance-bookings' ? '700' : '500'
             }}
           >
             <Calendar size={16} color={activeTab === 'advance-bookings' ? '#0284c7' : '#64748b'} />
@@ -1150,20 +1126,7 @@ export default function ManagementDashboard() {
         <button
           onClick={fetchOperationsData}
           disabled={loading}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            padding: '14px 16px',
-            background: '#ffffff',
-            border: '1px solid #e2e8f0',
-            borderRadius: '10px',
-            fontSize: '13px',
-            fontWeight: '600',
-            color: '#475569',
-            cursor: 'pointer',
-            whiteSpace: 'nowrap'
-          }}
+          className="mgmt-sync-btn"
         >
           <RefreshCw size={14} />
           <span>{loading ? 'Refreshing...' : 'Sync Fleet'}</span>
@@ -1178,7 +1141,7 @@ export default function ManagementDashboard() {
 
           
           {/* Two-column layout: Form Left + Pricing Panel Right */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: '20px', alignItems: 'start' }}>
+          <div className="mgmt-service-grid">
 
           {/* LEFT: Service & Billing Entry Form */}
           <div style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '10px', padding: '24px' }}>
@@ -1440,7 +1403,7 @@ export default function ManagementDashboard() {
               </div>
 
               {/* Cost & Billed To in Grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '14px' }}>
+              <div className="mgmt-form-grid-2" style={{ marginBottom: '14px' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
                     Bill Amount (₹)
@@ -1729,7 +1692,8 @@ export default function ManagementDashboard() {
               </div>
             </div>
 
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+            <div className="mgmt-table-scroll">
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px', minWidth: '620px' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontSize: '12px', fontWeight: '600' }}>
                   <th style={{ padding: '12px 16px' }}>Vehicle</th>
@@ -1859,7 +1823,8 @@ export default function ManagementDashboard() {
                   });
                 })()}
               </tbody>
-            </table>
+              </table>
+            </div>
           </div>
 
         </div>
@@ -1925,7 +1890,8 @@ export default function ManagementDashboard() {
             </div>
           </div>
 
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+          <div className="mgmt-table-scroll">
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px', minWidth: '700px' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontSize: '12px', fontWeight: '600' }}>
                 <th style={{ padding: '12px 16px' }}>Rider / Phone</th>
@@ -1999,13 +1965,14 @@ export default function ManagementDashboard() {
             </tbody>
           </table>
         </div>
+        </div>
       )}
 
       {/* ============================================================ */}
       {/* TAB 3 CONTENT: ADVANCE BOOKINGS & SLOT ALLOCATION */}
       {/* ============================================================ */}
       {activeTab === 'advance-bookings' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
+        <div className="mgmt-bookings-grid">
           
           {/* Column 1: Waiting Pre-Bookings Queue */}
           <div style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '10px', overflow: 'hidden' }}>
@@ -2068,7 +2035,8 @@ export default function ManagementDashboard() {
               </div>
             </div>
 
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+            <div className="mgmt-table-scroll">
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px', minWidth: '600px' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontSize: '12px', fontWeight: '600' }}>
                   <th style={{ padding: '10px 14px' }}>Rider</th>
@@ -2199,7 +2167,8 @@ export default function ManagementDashboard() {
                   </tr>
                 )}
               </tbody>
-            </table>
+              </table>
+            </div>
           </div>
 
           {/* Column 2: Free EV Slots & Returns Dock */}
@@ -2477,7 +2446,7 @@ export default function ManagementDashboard() {
                   <div style={{ display: 'grid', gap: '16px' }}>
                     {/* Rider Info Strip */}
                     <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '13px', marginBottom: '12px' }}>
+                      <div className="mgmt-form-grid-2" style={{ fontSize: '13px', marginBottom: '12px' }}>
                         <div>
                           <span style={{ color: '#64748b', display: 'block', fontSize: '11px', fontWeight: '600', textTransform: 'uppercase' }}>Rider Name</span>
                           <strong style={{ color: '#0f172a' }}>{selectedBookingForSlot.user_name}</strong>
@@ -2489,7 +2458,7 @@ export default function ManagementDashboard() {
                       </div>
 
                       {/* Financial Math Overview */}
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', background: '#ffffff', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', textAlign: 'center' }}>
+                      <div className="mgmt-form-grid-3" style={{ background: '#ffffff', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', textAlign: 'center' }}>
                         <div>
                           <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600' }}>PACKAGE RATE</div>
                           <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>₹5,100</div>
@@ -2961,7 +2930,7 @@ export default function ManagementDashboard() {
                 <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   
                   {/* Financial Math Summary Banner */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.2fr', gap: '8px', background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
+                  <div className="mgmt-form-grid-3" style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
                     <div>
                       <div style={{ fontSize: '10px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>PACKAGE RATE</div>
                       <div style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a', marginTop: '2px' }}>₹5,100</div>
@@ -2983,7 +2952,7 @@ export default function ManagementDashboard() {
                     </div>
 
                     {/* Direct Inputs: Name & Phone as Primary */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                    <div className="mgmt-form-grid-2">
                       <div>
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '4px' }}>
                           Full Name <span style={{ color: '#ef4444' }}>*</span>
@@ -3013,7 +2982,7 @@ export default function ManagementDashboard() {
                       </div>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '10px' }}>
+                    <div className="mgmt-form-grid-2">
                       <div>
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '4px' }}>
                           Email Address <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'normal' }}>(Optional)</span>
@@ -3083,7 +3052,7 @@ export default function ManagementDashboard() {
                       <Calendar size={13} /> 2. Plan & Target Schedule
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                    <div className="mgmt-form-grid-2">
                       <div>
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '4px' }}>
                           Subscription Plan <span style={{ color: '#ef4444' }}>*</span>
@@ -3135,7 +3104,7 @@ export default function ManagementDashboard() {
                             </div>
                           </div>
 
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          <div className="mgmt-form-grid-2" style={{ gap: '8px' }}>
                             {/* Security Deposit Allocation */}
                             <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '10px' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
