@@ -4,9 +4,16 @@ import {
   Bike, Zap, DollarSign, Plus, Trash2, Clock, Send, Bell, CheckCircle2, 
   RefreshCw, Eye, ExternalLink, Edit2, Ban, Copy, Check, AlertTriangle, 
   FileText, Maximize2, Minimize2, MessageCircle, AlertCircle, History,
-  ArrowUpRight, ArrowDownLeft
+  ArrowUpRight, ArrowDownLeft, Download
 } from 'lucide-react';
 import axios from 'axios';
+import { openRentPaymentInvoice } from '../utils/invoice';
+
+// Helper to format local Date for datetime-local input
+const getLocalDatetimeString = (dateObj = new Date()) => {
+  const d = new Date(dateObj.getTime() - dateObj.getTimezoneOffset() * 60000);
+  return d.toISOString().slice(0, 16);
+};
 
 export default function RiderDetailsModal({
   isOpen,
@@ -48,6 +55,16 @@ export default function RiderDetailsModal({
   // Payment Confirmation / Cancellation State
   const [processingApprovalId, setProcessingApprovalId] = useState(null);
 
+  // Rental Record Management State (for active rental & historical records)
+  const [editingRentalRecord, setEditingRentalRecord] = useState(null);
+  const [recordRentDate, setRecordRentDate] = useState(getLocalDatetimeString());
+  const [recordRentCycleCount, setRecordRentCycleCount] = useState('1');
+  const [recordRentRows, setRecordRentRows] = useState([
+    { mode: 'cash', amount: '1600', remarks: '' }
+  ]);
+  const [recordRentRemarks, setRecordRentRemarks] = useState('');
+  const [submittingRentalPayment, setSubmittingRentalPayment] = useState(false);
+
   const rawId = rider.raw_id || rider.user_id || rider.id;
   const token = localStorage.getItem('token');
 
@@ -83,6 +100,238 @@ export default function RiderDetailsModal({
     } finally {
       setProcessingApprovalId(null);
     }
+  };
+
+  // -------------------------------------------------------------
+  // RENTAL RECORD MANAGEMENT HANDLERS (Active & Past Contracts)
+  // -------------------------------------------------------------
+  const handleOpenRecordRent = (rental) => {
+    if (!rental) return;
+    setEditingRentalRecord(rental);
+    const standardRate = String(rental.plan_price || rental.planPrice || 1600);
+    let defaultDate = new Date();
+    if (rental.next_payment_date) {
+      const parsed = new Date(rental.next_payment_date);
+      if (!isNaN(parsed.getTime())) defaultDate = parsed;
+    }
+    setRecordRentDate(getLocalDatetimeString(defaultDate));
+    setRecordRentCycleCount('1');
+    setRecordRentRows([
+      { mode: 'cash', amount: standardRate, remarks: '' }
+    ]);
+    setRecordRentRemarks('');
+  };
+
+  const handleSaveRentPayment = async (downloadReceipt = false) => {
+    if (!editingRentalRecord) return;
+    const totalPaidAmt = recordRentRows.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+    if (totalPaidAmt <= 0) {
+      alert('Please enter a valid rental payment amount.');
+      return;
+    }
+
+    setSubmittingRentalPayment(true);
+    try {
+      const breakdownStr = recordRentRows.map(r => {
+        const modeLabel = r.mode === 'cash' ? 'Cash' : r.mode === 'upi' ? 'UPI' : r.mode === 'credit' ? 'Credit' : 'Deposit';
+        const rem = r.remarks ? ` (${r.remarks})` : '';
+        return `${modeLabel}: ₹${r.amount || 0}${rem}`;
+      }).join(' + ');
+
+      const combinedRemarks = [recordRentRemarks, breakdownStr].filter(Boolean).join(' | ');
+      const primaryMode = recordRentRows.length === 1 ? recordRentRows[0].mode : 'mixed';
+      const isOnlyDeposit = recordRentRows.length === 1 && recordRentRows[0].mode === 'deposit';
+
+      let res;
+      if (isOnlyDeposit) {
+        const depositBal = parseFloat(details?.user?.security_deposit_balance || rider.security_deposit_balance || 0);
+        if (depositBal < totalPaidAmt) {
+          alert(`Insufficient security deposit (Available: ₹${depositBal}, Required: ₹${totalPaidAmt}).`);
+          setSubmittingRentalPayment(false);
+          return;
+        }
+
+        res = await axios.post(`/api/bookings/${editingRentalRecord.id}/deduct-deposit`, {
+          amount: totalPaidAmt,
+          remarks: combinedRemarks,
+          payment_date: recordRentDate
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      } else {
+        res = await axios.post(`/api/bookings/${editingRentalRecord.id}/collect-payment`, {
+          amount: totalPaidAmt,
+          payment_mode: primaryMode,
+          weeks_count: recordRentCycleCount,
+          remarks: combinedRemarks,
+          payment_date: recordRentDate
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      }
+
+      alert(`Rental record for ₹${totalPaidAmt.toLocaleString('en-IN')} saved successfully!`);
+
+      if (downloadReceipt) {
+        const planPrice = parseFloat(editingRentalRecord.plan_price || 1600);
+        const planType = (editingRentalRecord.plan_type || '').toLowerCase();
+        let cycleMs = 7 * 24 * 60 * 60 * 1000;
+        if (planType.includes('monthly')) cycleMs = 30 * 24 * 60 * 60 * 1000;
+        else if (planType.includes('daily')) cycleMs = 24 * 60 * 60 * 1000;
+        const cycles = parseInt(recordRentCycleCount, 10) || 1;
+        const calcNextDue = new Date(new Date(recordRentDate).getTime() + (cycleMs * cycles)).toISOString();
+
+        openRentPaymentInvoice({
+          id: editingRentalRecord.id,
+          user_name: rider.name || details?.user?.name,
+          user_phone: rider.phone || details?.user?.phone,
+          vehicle_id: editingRentalRecord.vehicle_reg || editingRentalRecord.vehicle_id || rider.assigned_vehicle || 'EV',
+          amount: totalPaidAmt,
+          payment_mode: breakdownStr,
+          plan_name: editingRentalRecord.plan_name || 'Weekly Pass',
+          cycle_count: recordRentCycleCount,
+          payment_date: recordRentDate,
+          next_payment_date: res.data?.newNextDue || calcNextDue,
+          deposit_balance: details?.user?.security_deposit_balance || rider.security_deposit_balance || 0,
+          remarks: combinedRemarks
+        });
+      }
+
+      setEditingRentalRecord(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error('Failed to record rental payment:', err);
+      alert('Failed to record rental: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSubmittingRentalPayment(false);
+    }
+  };
+
+  const handleCancelRental = async (rentalId, vehicleReg) => {
+    if (!window.confirm(`Are you sure you want to cancel / terminate rental #${rentalId}${vehicleReg ? ` for vehicle ${vehicleReg}` : ''}? Any assigned EV will be set back to available.`)) return;
+    try {
+      await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/rentals/${rentalId}/cancel`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert('Rental contract cancelled successfully.');
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error('Error cancelling rental:', err);
+      alert('Failed to cancel rental: ' + (err.response?.data?.error || err.message));
+    }
+  };
+
+  const renderRecordRentRowsBuilder = () => {
+    const totalEntered = recordRentRows.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+
+    const handleRowChange = (index, field, value) => {
+      const updated = [...recordRentRows];
+      updated[index] = { ...updated[index], [field]: value };
+      setRecordRentRows(updated);
+    };
+
+    const handleAddSpecificMode = (mode) => {
+      setRecordRentRows([...recordRentRows, { mode, amount: '', remarks: '' }]);
+    };
+
+    const handleRemoveRow = (index) => {
+      if (recordRentRows.length <= 1) return;
+      setRecordRentRows(recordRentRows.filter((_, i) => i !== index));
+    };
+
+    return (
+      <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '10px', border: '1px solid #cbd5e1', marginBottom: '14px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+          <label style={{ fontSize: '11px', fontWeight: '800', color: '#0f172a', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            Payment Modes & Amounts *
+          </label>
+          <span style={{ fontSize: '12px', fontWeight: '700', color: '#00a66c' }}>
+            Total: ₹{totalEntered.toLocaleString('en-IN')}
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '10px' }}>
+          {recordRentRows.map((row, idx) => (
+            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '120px 110px 1fr 32px', gap: '8px', alignItems: 'center' }}>
+              <select
+                value={row.mode}
+                onChange={(e) => handleRowChange(idx, 'mode', e.target.value)}
+                style={{ padding: '7px 8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', fontWeight: '700', background: 'white' }}
+              >
+                <option value="cash">Cash</option>
+                <option value="upi">UPI / QR</option>
+                <option value="credit">Credit / Udhar</option>
+                <option value="deposit">Deposit</option>
+              </select>
+
+              <input
+                type="number"
+                placeholder="Amount ₹"
+                value={row.amount}
+                onChange={(e) => handleRowChange(idx, 'amount', e.target.value)}
+                style={{ padding: '7px 8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', fontWeight: '700', background: 'white' }}
+                required
+              />
+
+              <input
+                type="text"
+                placeholder={row.mode === 'upi' ? 'UTR Ref No.' : row.mode === 'credit' ? 'Promise Date / Note' : row.mode === 'deposit' ? 'Security Deposit Deduction' : 'Remarks / Note'}
+                value={row.remarks}
+                onChange={(e) => handleRowChange(idx, 'remarks', e.target.value)}
+                style={{ padding: '7px 8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', background: 'white' }}
+              />
+
+              {recordRentRows.length > 1 ? (
+                <button
+                  type="button"
+                  onClick={() => handleRemoveRow(idx)}
+                  style={{ background: '#fee2e2', color: '#ef4444', border: '1px solid #fca5a5', borderRadius: '6px', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                  title="Remove Mode"
+                >
+                  <Trash2 size={13} />
+                </button>
+              ) : (
+                <div style={{ width: '32px' }} />
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ borderTop: '1px dashed #cbd5e1', paddingTop: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
+          <span style={{ fontSize: '11px', color: '#64748b', fontWeight: '600' }}>+ Add Payment Mode:</span>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button
+              type="button"
+              onClick={() => handleAddSpecificMode('cash')}
+              style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', fontWeight: '700', cursor: 'pointer' }}
+            >
+              + Cash
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAddSpecificMode('upi')}
+              style={{ background: '#e0f2fe', color: '#0369a1', border: '1px solid #bae6fd', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', fontWeight: '700', cursor: 'pointer' }}
+            >
+              + UPI
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAddSpecificMode('credit')}
+              style={{ background: '#fce7f3', color: '#be185d', border: '1px solid #fbcfe8', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', fontWeight: '700', cursor: 'pointer' }}
+            >
+              + Credit
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAddSpecificMode('deposit')}
+              style={{ background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', fontWeight: '700', cursor: 'pointer' }}
+            >
+              + Deposit
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   // Format clean 10-digit phone for WhatsApp
@@ -1055,74 +1304,123 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 {activeTab === 'vehicle' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                     {details.active_rental ? (
-                      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '16px' }}>
-                        {/* Vehicle Card */}
-                        <div style={{ background: 'white', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
-                          <h4 style={{ margin: '0 0 14px 0', fontSize: '15px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <Bike size={18} color="#00a66c" /> Assigned Vehicle Contract
-                          </h4>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b' }}>Model:</span>
-                              <strong style={{ color: '#0f172a' }}>{details.active_rental.vehicle_model || 'LT.ev Scooter'}</strong>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b' }}>Registration Number:</span>
-                              <strong style={{ color: '#00a66c', fontSize: '14px' }}>{details.active_rental.vehicle_reg || 'Assigned'}</strong>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                              <span style={{ color: '#64748b' }}>Rental Start Date:</span>
-                              <span style={{ fontWeight: '600', color: '#0f172a' }}>{new Date(details.active_rental.start_time).toLocaleString('en-GB')}</span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                              <span style={{ color: '#64748b' }}>Rental Contract ID:</span>
-                              <span style={{ fontWeight: '700', color: '#64748b' }}>#{details.active_rental.id}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Subscription Card */}
-                        <div style={{ background: 'white', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                          <div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                        {/* 2-Column Info Grid */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '16px' }}>
+                          {/* Vehicle Card */}
+                          <div style={{ background: 'white', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
                             <h4 style={{ margin: '0 0 14px 0', fontSize: '15px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <Zap size={18} color="#eab308" /> Subscription Plan & Renewal
+                              <Bike size={18} color="#00a66c" /> Assigned Vehicle Contract
                             </h4>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                                <span style={{ color: '#64748b' }}>Current Plan:</span>
-                                <strong style={{ color: '#0f172a' }}>{details.active_rental.plan_name || 'Weekly Pass'}</strong>
+                                <span style={{ color: '#64748b' }}>Model:</span>
+                                <strong style={{ color: '#0f172a' }}>{details.active_rental.vehicle_model || 'LT.ev Scooter'}</strong>
                               </div>
                               <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                                <span style={{ color: '#64748b' }}>Plan Price:</span>
-                                <strong style={{ color: '#0f172a' }}>₹{details.active_rental.plan_price}</strong>
+                                <span style={{ color: '#64748b' }}>Registration Number:</span>
+                                <strong style={{ color: '#00a66c', fontSize: '14px' }}>{details.active_rental.vehicle_reg || 'Assigned'}</strong>
                               </div>
                               <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
-                                <span style={{ color: '#64748b' }}>Billing Cycle:</span>
-                                <span style={{ fontWeight: '700', textTransform: 'capitalize', color: '#0f172a' }}>{details.active_rental.plan_type || 'Weekly'}</span>
+                                <span style={{ color: '#64748b' }}>Rental Start Date:</span>
+                                <span style={{ fontWeight: '600', color: '#0f172a' }}>{new Date(details.active_rental.start_time).toLocaleString('en-GB')}</span>
                               </div>
                               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                <span style={{ color: '#64748b' }}>Next Renewal Date:</span>
-                                <strong style={{ color: details.dues_summary?.is_overdue ? '#dc2626' : '#059669' }}>
-                                  {details.active_rental.next_payment_date ? new Date(details.active_rental.next_payment_date).toLocaleDateString('en-GB') : 'N/A'}
-                                  {details.dues_summary?.is_overdue && ` (${details.dues_summary.overdue_days}d overdue)`}
-                                </strong>
+                                <span style={{ color: '#64748b' }}>Rental Contract ID:</span>
+                                <span style={{ fontWeight: '700', color: '#64748b' }}>#{details.active_rental.id}</span>
                               </div>
                             </div>
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={handleSendWhatsAppReminder}
-                            style={{
-                              marginTop: '16px',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                              background: '#25d366', color: 'white', border: 'none',
-                              padding: '10px', borderRadius: '8px', fontWeight: '800', fontSize: '12px', cursor: 'pointer',
-                              boxShadow: '0 2px 6px rgba(37, 211, 102, 0.25)'
-                            }}
-                          >
-                            <MessageCircle size={15} /> Send Renewal Reminder via WhatsApp
-                          </button>
+                          {/* Subscription Card */}
+                          <div style={{ background: 'white', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                            <div>
+                              <h4 style={{ margin: '0 0 14px 0', fontSize: '15px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <Zap size={18} color="#eab308" /> Subscription Plan & Renewal
+                              </h4>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
+                                  <span style={{ color: '#64748b' }}>Current Plan:</span>
+                                  <strong style={{ color: '#0f172a' }}>{details.active_rental.plan_name || 'Weekly Pass'}</strong>
+                                </div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
+                                  <span style={{ color: '#64748b' }}>Plan Price:</span>
+                                  <strong style={{ color: '#0f172a' }}>₹{details.active_rental.plan_price}</strong>
+                                </div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
+                                  <span style={{ color: '#64748b' }}>Billing Cycle:</span>
+                                  <span style={{ fontWeight: '700', textTransform: 'capitalize', color: '#0f172a' }}>{details.active_rental.plan_type || 'Weekly'}</span>
+                                </div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                  <span style={{ color: '#64748b' }}>Next Renewal Date:</span>
+                                  <strong style={{ color: details.dues_summary?.is_overdue ? '#dc2626' : '#059669' }}>
+                                    {details.active_rental.next_payment_date ? new Date(details.active_rental.next_payment_date).toLocaleDateString('en-GB') : 'N/A'}
+                                    {details.dues_summary?.is_overdue && ` (${details.dues_summary.overdue_days}d overdue)`}
+                                  </strong>
+                                </div>
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={handleSendWhatsAppReminder}
+                              style={{
+                                marginTop: '16px',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                                background: '#25d366', color: 'white', border: 'none',
+                                padding: '10px', borderRadius: '8px', fontWeight: '800', fontSize: '12px', cursor: 'pointer',
+                                boxShadow: '0 2px 6px rgba(37, 211, 102, 0.25)'
+                              }}
+                            >
+                              <MessageCircle size={15} /> Send Renewal Reminder via WhatsApp
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* ONE-LINE ACTION OPTION BAR (Cancel & Edit Buttons) */}
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          background: 'white',
+                          padding: '12px 18px',
+                          borderRadius: '14px',
+                          border: '1px solid #e2e8f0',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '12px', fontWeight: '800', color: '#0f172a' }}>
+                              Rental Record Options:
+                            </span>
+                            <span style={{ fontSize: '11px', color: '#64748b' }}>
+                              Vehicle #{details.active_rental.vehicle_reg || details.active_rental.vehicle_id} • Due {details.active_rental.next_payment_date ? new Date(details.active_rental.next_payment_date).toLocaleDateString('en-GB') : 'N/A'}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleCancelRental(details.active_rental.id, details.active_rental.vehicle_reg)}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '5px',
+                                background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5',
+                                padding: '7px 14px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer'
+                              }}
+                            >
+                              <Ban size={13} /> Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenRecordRent(details.active_rental)}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '5px',
+                                background: '#0284c7', color: 'white', border: 'none',
+                                padding: '7px 16px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer',
+                                boxShadow: '0 2px 6px rgba(2, 132, 199, 0.25)'
+                              }}
+                            >
+                              <Edit2 size={13} /> Edit
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ) : (
@@ -1150,12 +1448,13 @@ _Support: +91 9113750231 | https://ltev.in_`;
                             <th style={{ padding: '12px 18px', fontWeight: '700' }}>Start Date</th>
                             <th style={{ padding: '12px 18px', fontWeight: '700' }}>End Date</th>
                             <th style={{ padding: '12px 18px', fontWeight: '700' }}>Status</th>
+                            <th style={{ padding: '12px 18px', fontWeight: '700', textAlign: 'right' }}>Actions</th>
                           </tr>
                         </thead>
                         <tbody>
                           {(!details.rental_history || details.rental_history.length === 0) ? (
                             <tr>
-                              <td colSpan={6} style={{ textAlign: 'center', padding: '30px', color: '#94a3b8', fontSize: '12px' }}>
+                              <td colSpan={7} style={{ textAlign: 'center', padding: '30px', color: '#94a3b8', fontSize: '12px' }}>
                                 No historical rentals recorded for this user.
                               </td>
                             </tr>
@@ -1183,6 +1482,35 @@ _Support: +91 9113750231 | https://ltev.in_`;
                                   }}>
                                     {rh.status}
                                   </span>
+                                </td>
+                                <td style={{ padding: '12px 18px', textAlign: 'right' }}>
+                                  <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                                    {(rh.status === 'active' || rh.status === 'in_use' || rh.status === 'pending_assignment' || rh.status === 'pending_return') && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleCancelRental(rh.id, rh.vehicle_reg || rh.vehicle_id)}
+                                        style={{
+                                          background: '#fee2e2', border: '1px solid #fca5a5', color: '#dc2626',
+                                          padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '700', cursor: 'pointer'
+                                        }}
+                                        title="Cancel Rental"
+                                      >
+                                        Cancel
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenRecordRent(rh)}
+                                      style={{
+                                        background: '#f0f9ff', border: '1px solid #bae6fd', color: '#0284c7',
+                                        padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '700',
+                                        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px'
+                                      }}
+                                      title="Manage & Record Rental"
+                                    >
+                                      <Edit2 size={11} /> Edit
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             ))
@@ -1539,6 +1867,262 @@ _Support: +91 9113750231 | https://ltev.in_`;
           </div>
         </div>
       </div>
+
+      {/* ============================================================ */}
+      {/* MODAL / CARD: RENTAL RECORD IN MANAGEMENT PORTAL STYLE       */}
+      {/* ============================================================ */}
+      {editingRentalRecord && (
+        <div 
+          onClick={() => setEditingRentalRecord(null)}
+          style={{
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(15, 23, 42, 0.7)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 200,
+            padding: '16px'
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'white',
+              width: '100%',
+              maxWidth: '560px',
+              borderRadius: '18px',
+              overflow: 'hidden',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+              border: '1px solid #cbd5e1',
+              display: 'flex',
+              flexDirection: 'column',
+              maxHeight: '92vh'
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid #e2e8f0',
+              background: '#f8fafc',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Calendar size={18} color="#00a66c" /> Record / Manage Rental
+                </h3>
+                <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
+                  Rider: <strong>{rider.name}</strong> • 📞 {rider.phone || 'N/A'} • Contract #{editingRentalRecord.id}
+                </div>
+              </div>
+              <button 
+                onClick={() => setEditingRentalRecord(null)}
+                style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#64748b' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <form 
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSaveRentPayment(false);
+              }}
+              style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '14px' }}
+            >
+              {/* 1. Vehicle Number Auto-Fitted */}
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Vehicle Number (Auto-Fitted)
+                </label>
+                <div style={{
+                  background: '#f1f5f9',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '10px',
+                  padding: '10px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div style={{ width: '34px', height: '34px', borderRadius: '8px', background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Bike size={18} color="#059669" />
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: '800', color: '#0f172a', fontSize: '14px' }}>
+                        {editingRentalRecord.vehicle_reg || editingRentalRecord.vehicle_id || rider.assigned_vehicle || 'Assigned EV'}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748b' }}>
+                        {editingRentalRecord.vehicle_model || 'LT.ev Electric Scooter'} • {editingRentalRecord.plan_name || 'Standard Pass'}
+                      </div>
+                    </div>
+                  </div>
+                  <span style={{ fontSize: '11px', fontWeight: '800', background: '#dcfce7', color: '#15803d', padding: '3px 8px', borderRadius: '6px' }}>
+                    AUTO-FITTED
+                  </span>
+                </div>
+              </div>
+
+              {/* 2. Date & Time Management */}
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Rental Record Date & Time *
+                </label>
+                <input
+                  type="datetime-local"
+                  required
+                  value={recordRentDate}
+                  onChange={(e) => setRecordRentDate(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid #cbd5e1',
+                    fontSize: '13px',
+                    fontWeight: '700',
+                    color: '#0f172a',
+                    outline: 'none',
+                    background: 'white'
+                  }}
+                />
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                  Manage the exact date & time for this rental record (e.g., if vehicle was taken on 1 Oct, set 8 Oct for the next cycle).
+                </div>
+              </div>
+
+              {/* 3. Cycle Preset Selector */}
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Rental Cycle Quick Presets
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {(editingRentalRecord.plan_type || '').toLowerCase().includes('monthly') ? (
+                    ['6500', '13000'].map(amt => {
+                      const count = String(parseInt(amt, 10) / 6500);
+                      const isSelected = recordRentCycleCount === count;
+                      return (
+                        <button
+                          key={amt}
+                          type="button"
+                          onClick={() => {
+                            setRecordRentCycleCount(count);
+                            setRecordRentRows([{ mode: 'cash', amount: amt, remarks: '' }]);
+                          }}
+                          style={{
+                            flex: 1, padding: '8px', borderRadius: '8px',
+                            border: isSelected ? '2px solid #00a66c' : '1px solid #cbd5e1',
+                            background: isSelected ? '#f0fdf4' : 'white',
+                            color: isSelected ? '#00a66c' : '#334155',
+                            fontWeight: '700', fontSize: '12px', cursor: 'pointer'
+                          }}
+                        >
+                          ₹{amt} ({count} Month)
+                        </button>
+                      );
+                    })
+                  ) : (
+                    ['1600', '3200', '4800'].map(amt => {
+                      const count = String(parseInt(amt, 10) / 1600);
+                      const isSelected = recordRentCycleCount === count;
+                      return (
+                        <button
+                          key={amt}
+                          type="button"
+                          onClick={() => {
+                            setRecordRentCycleCount(count);
+                            setRecordRentRows([{ mode: 'cash', amount: amt, remarks: '' }]);
+                          }}
+                          style={{
+                            flex: 1, padding: '8px', borderRadius: '8px',
+                            border: isSelected ? '2px solid #00a66c' : '1px solid #cbd5e1',
+                            background: isSelected ? '#f0fdf4' : 'white',
+                            color: isSelected ? '#00a66c' : '#334155',
+                            fontWeight: '700', fontSize: '12px', cursor: 'pointer'
+                          }}
+                        >
+                          ₹{amt} ({count} Week)
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Available Security Deposit Note */}
+              {parseFloat(details?.user?.security_deposit_balance || rider.security_deposit_balance || 0) > 0 && (
+                <div style={{ background: '#f0fdf4', padding: '8px 12px', borderRadius: '8px', border: '1px solid #bbf7d0', fontSize: '12px', color: '#166534' }}>
+                  🛡️ Available Security Deposit: <strong>₹{parseFloat(details?.user?.security_deposit_balance || rider.security_deposit_balance || 0).toLocaleString('en-IN')}</strong> (Select 'Deposit' mode below to deduct from balance)
+                </div>
+              )}
+
+              {/* 4. Payment Modes Rows */}
+              {renderRecordRentRowsBuilder()}
+
+              {/* 5. Remarks */}
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Notes / Remarks (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Paid at Bailey Road Stand, collected by admin"
+                  value={recordRentRemarks}
+                  onChange={(e) => setRecordRentRemarks(e.target.value)}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                />
+              </div>
+
+              {/* Action Buttons: Cancel, Save & Download Receipt, Save & Close */}
+              <div style={{ display: 'flex', gap: '8px', marginTop: '10px', paddingTop: '12px', borderTop: '1px solid #e2e8f0' }}>
+                <button
+                  type="button"
+                  onClick={() => setEditingRentalRecord(null)}
+                  style={{
+                    flex: 1, padding: '10px', borderRadius: '8px',
+                    border: '1px solid #cbd5e1', background: 'white', color: '#475569',
+                    fontWeight: '700', fontSize: '12px', cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+                
+                <button
+                  type="button"
+                  disabled={submittingRentalPayment}
+                  onClick={() => handleSaveRentPayment(true)}
+                  style={{
+                    flex: 1.5, padding: '10px', borderRadius: '8px',
+                    border: '1px solid #00a66c', background: '#ecfdf5', color: '#00a66c',
+                    fontWeight: '800', fontSize: '12px', cursor: submittingRentalPayment ? 'not-allowed' : 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px'
+                  }}
+                >
+                  <Download size={14} /> Save & Download Receipt
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={submittingRentalPayment}
+                  style={{
+                    flex: 1.5, padding: '10px', borderRadius: '8px',
+                    border: 'none', background: '#00a66c', color: 'white',
+                    fontWeight: '800', fontSize: '12px', cursor: submittingRentalPayment ? 'not-allowed' : 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                    boxShadow: '0 2px 6px rgba(0, 166, 108, 0.25)'
+                  }}
+                >
+                  <CheckCircle2 size={14} /> {submittingRentalPayment ? 'Saving...' : 'Save & Close'}
+                </button>
+              </div>
+
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

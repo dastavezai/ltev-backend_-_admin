@@ -1790,7 +1790,7 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
     // 2b. Rental History for this user
     const rentalHistoryRes = await pool.query(`
       SELECT 
-        r.id, r.vehicle_id, r.start_time, r.end_time, r.status, r.next_payment_date,
+        r.id, r.vehicle_id, r.start_time, r.end_time, r.status, r.next_payment_date, r.total_cost,
         v.model as vehicle_model, COALESCE(v.registration_number, v.id) as vehicle_reg,
         p.name as plan_name, p.price as plan_price, p.type as plan_type
       FROM rentals r
@@ -1798,7 +1798,7 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
       LEFT JOIN plans p ON p.id = r.plan_id
       WHERE r.user_id = $1
       ORDER BY r.id DESC
-      LIMIT 10
+      LIMIT 15
     `, [id]);
 
     res.json({
@@ -3245,7 +3245,7 @@ app.post(['/api/bookings/:id/collect-cash', '/api/bookings/:id/collect-payment']
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    const { amount, remarks, payment_mode, weeks_count } = req.body;
+    const { amount, remarks, payment_mode, weeks_count, payment_date, next_payment_date } = req.body;
     const paidAmount = parseFloat(amount || 0);
     const mode = (payment_mode || 'cash').toLowerCase();
 
@@ -3273,8 +3273,17 @@ app.post(['/api/bookings/:id/collect-cash', '/api/bookings/:id/collect-payment']
     const numWeeks = weeks_count ? parseInt(weeks_count, 10) : Math.max(1, Math.round(paidAmount / (planPrice || 1600)));
     const currentNextDue = booking.next_payment_date ? new Date(booking.next_payment_date) : new Date();
     const now = new Date();
-    const baseDate = currentNextDue > now ? currentNextDue : now;
-    const newNextDue = new Date(baseDate.getTime() + (cycleMs * numWeeks));
+    const recordDate = payment_date ? new Date(payment_date) : now;
+
+    let newNextDue;
+    if (next_payment_date) {
+      newNextDue = new Date(next_payment_date);
+    } else if (payment_date) {
+      newNextDue = new Date(recordDate.getTime() + (cycleMs * numWeeks));
+    } else {
+      const baseDate = currentNextDue > now ? currentNextDue : now;
+      newNextDue = new Date(baseDate.getTime() + (cycleMs * numWeeks));
+    }
 
     // Update rental total_cost, payment_status, payment_mode and next_payment_date
     await client.query(`
@@ -3286,7 +3295,7 @@ app.post(['/api/bookings/:id/collect-cash', '/api/bookings/:id/collect-payment']
           next_payment_date = $3,
           remarks = COALESCE(remarks, '') || $4
       WHERE id = $5
-    `, [paidAmount, mode, newNextDue.toISOString(), ` | ${mode.toUpperCase()} Received ₹${paidAmount} (${numWeeks} wk) on ${new Date().toLocaleDateString('en-IN')}`, id]);
+    `, [paidAmount, mode, newNextDue.toISOString(), ` | ${mode.toUpperCase()} Received ₹${paidAmount} (${numWeeks} wk) on ${recordDate.toLocaleDateString('en-IN')}`, id]);
 
     // Record wallet transaction for audit trail
     let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [booking.user_id]);
@@ -3300,8 +3309,8 @@ app.post(['/api/bookings/:id/collect-cash', '/api/bookings/:id/collect-payment']
 
     await client.query(`
       INSERT INTO wallet_transactions (id, wallet_id, type, amount, description, status, timestamp)
-      VALUES ($1, $2, 'credit', $3, $4, 'success', CURRENT_TIMESTAMP)
-    `, [`TXN-${mode.toUpperCase()}-${Date.now()}`, walletId, paidAmount, `${mode.toUpperCase()} Collection for Booking #${id} (${remarks || `Weekly Subscription Payment (${numWeeks} wk)`})`]);
+      VALUES ($1, $2, 'credit', $3, $4, 'success', $5)
+    `, [`TXN-${mode.toUpperCase()}-${Date.now()}`, walletId, paidAmount, `${mode.toUpperCase()} Collection for Booking #${id} (${remarks || `Weekly Subscription Payment (${numWeeks} wk)`})`, recordDate.toISOString()]);
 
     await client.query('COMMIT');
     res.json({ 
@@ -3322,7 +3331,7 @@ app.post('/api/bookings/:id/deduct-deposit', authenticateToken, async (req, res)
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    const { amount, remarks } = req.body;
+    const { amount, remarks, payment_date, next_payment_date } = req.body;
     const deductAmount = parseFloat(amount || 0);
 
     await client.query('BEGIN');
@@ -3357,8 +3366,17 @@ app.post('/api/bookings/:id/deduct-deposit', authenticateToken, async (req, res)
     const numWeeks = Math.max(1, Math.round(deductAmount / (planPrice || 1600)));
     const currentNextDue = booking.next_payment_date ? new Date(booking.next_payment_date) : new Date();
     const now = new Date();
-    const baseDate = currentNextDue > now ? currentNextDue : now;
-    const newNextDue = new Date(baseDate.getTime() + (cycleMs * numWeeks));
+    const recordDate = payment_date ? new Date(payment_date) : now;
+
+    let newNextDue;
+    if (next_payment_date) {
+      newNextDue = new Date(next_payment_date);
+    } else if (payment_date) {
+      newNextDue = new Date(recordDate.getTime() + (cycleMs * numWeeks));
+    } else {
+      const baseDate = currentNextDue > now ? currentNextDue : now;
+      newNextDue = new Date(baseDate.getTime() + (cycleMs * numWeeks));
+    }
 
     // Deduct from user deposit balance
     await client.query(`
@@ -3367,9 +3385,9 @@ app.post('/api/bookings/:id/deduct-deposit', authenticateToken, async (req, res)
 
     // Record security deposit transaction
     await client.query(`
-      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks)
-      VALUES ($1, $2, 'deduction', $3)
-    `, [booking.user_id, deductAmount, remarks || `Deducted ₹${deductAmount} for weekly subscription due on Booking #${id}`]);
+      INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+      VALUES ($1, $2, 'deduction', $3, $4)
+    `, [booking.user_id, deductAmount, remarks || `Deducted ₹${deductAmount} for weekly subscription due on Booking #${id}`, recordDate.toISOString()]);
 
     // Update rental status and advance next payment date
     await client.query(`
@@ -3380,7 +3398,7 @@ app.post('/api/bookings/:id/deduct-deposit', authenticateToken, async (req, res)
           next_payment_date = $2,
           remarks = COALESCE(remarks, '') || $3
       WHERE id = $4
-    `, [deductAmount, newNextDue.toISOString(), ` | Security Deposit Deducted ₹${deductAmount} on ${new Date().toLocaleDateString('en-IN')}`, id]);
+    `, [deductAmount, newNextDue.toISOString(), ` | Security Deposit Deducted ₹${deductAmount} on ${recordDate.toLocaleDateString('en-IN')}`, id]);
 
     await client.query('COMMIT');
     res.json({ 
