@@ -23,6 +23,11 @@ const SERVICE_PRESETS = [
   'Custom Repair / Electrical Fix'
 ];
 
+const getLocalDatetimeString = (dateObj = new Date()) => {
+  const d = new Date(dateObj.getTime() - dateObj.getTimezoneOffset() * 60000);
+  return d.toISOString().slice(0, 16);
+};
+
 export default function VehicleServices() {
   const { token } = useAuth();
   const [services, setServices] = useState([]);
@@ -57,7 +62,7 @@ export default function VehicleServices() {
     parts_replaced: '',
     cost: '',
     status: 'completed',
-    date_reported: new Date().toISOString().split('T')[0],
+    date_reported: getLocalDatetimeString(new Date()),
     user_id: '',
     billed_to: 'company', // 'company' | 'rider'
     payment_status: 'paid',
@@ -116,7 +121,7 @@ export default function VehicleServices() {
       parts_replaced: '',
       cost: '',
       status: 'completed',
-      date_reported: new Date().toISOString().split('T')[0],
+      date_reported: getLocalDatetimeString(new Date()),
       user_id: linkedUserId,
       billed_to: linkedUserId ? 'rider' : 'company',
       payment_status: linkedUserId ? 'pending' : 'paid',
@@ -136,7 +141,7 @@ export default function VehicleServices() {
       parts_replaced: srv.parts_replaced || '',
       cost: srv.cost !== null && srv.cost !== undefined ? String(srv.cost) : '',
       status: srv.status || 'completed',
-      date_reported: srv.date_reported ? new Date(srv.date_reported).toISOString().split('T')[0] : '',
+      date_reported: srv.date_reported ? getLocalDatetimeString(new Date(srv.date_reported)) : getLocalDatetimeString(new Date()),
       user_id: srv.user_id ? String(srv.user_id) : '',
       billed_to: srv.billed_to || 'company',
       payment_status: srv.payment_status || 'paid',
@@ -317,8 +322,10 @@ _Support: +91 9113750231 | https://ltev.in_`;
       payment_status: srv.payment_status || 'paid',
       cost: srv.cost || 0,
       date_reported: srv.date_reported || new Date().toISOString(),
+      invoice_time: new Date().toISOString(),
       issue_description: srv.issue_description || '',
-      parts_replaced: srv.parts_replaced || ''
+      parts_replaced: srv.parts_replaced || '',
+      items_breakdown: srv.items_breakdown || null
     }, 'service_parts');
   };
 
@@ -543,6 +550,11 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 </div>
                 <div style={{ fontSize: '12px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <Calendar size={13} /> {new Date(srv.date_reported).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  {new Date(srv.date_reported).getHours() !== 0 && (
+                    <span style={{ fontSize: '11px', color: '#0284c7', fontWeight: '600' }}>
+                      • {new Date(srv.date_reported).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })}
+                    </span>
+                  )}
                 </div>
                 {srv.user_name && (
                   <div style={{ marginTop: '8px', fontSize: '12px', color: '#334155', fontWeight: '600' }}>
@@ -1104,15 +1116,28 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 </div>
 
                 <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                    Service Date
-                  </label>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <label style={{ fontSize: '13px', fontWeight: '700', color: '#334155' }}>
+                      Service Date & Time *
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, date_reported: getLocalDatetimeString(new Date()) })}
+                      style={{ background: 'transparent', border: 'none', color: '#00a66c', fontSize: '11px', fontWeight: '800', cursor: 'pointer', padding: 0 }}
+                      title="Set to current moment"
+                    >
+                      ⚡ Set Live Time
+                    </button>
+                  </div>
                   <input
-                    type="date"
+                    type="datetime-local"
                     value={formData.date_reported}
                     onChange={(e) => setFormData({ ...formData, date_reported: e.target.value })}
                     style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', background: '#f8fafc', color: '#0f172a', outline: 'none', boxSizing: 'border-box' }}
                   />
+                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                    Accurate live date & time recorded on service invoice and Job Card.
+                  </div>
                 </div>
               </div>
 

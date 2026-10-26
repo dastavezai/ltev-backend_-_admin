@@ -366,6 +366,7 @@ export default function ManagementDashboard() {
       payment_status: log.payment_status || 'paid',
       cost: log.cost || 0,
       date_reported: log.date_reported || log.created_at || new Date().toISOString(),
+      invoice_time: new Date().toISOString(),
       issue_description: log.issue_description || '',
       parts_replaced: log.parts_replaced || '',
       items_breakdown: log.items_breakdown || null
@@ -421,6 +422,7 @@ export default function ManagementDashboard() {
         ...serviceForm,
         vehicle_id: targetVehicleId,
         user_id: linkedUserId,
+        date_reported: new Date().toISOString(),
         items_breakdown: itemsBreakdown
       }, authHeaders);
 

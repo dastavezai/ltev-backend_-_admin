@@ -513,6 +513,22 @@ export default function UserManagement() {
                                 Plan: <span style={{ fontWeight: '600', color: '#0f172a' }}>{user.plan_name} (₹{user.plan_price})</span>
                               </div>
                             )}
+                            <div style={{ display: 'flex', gap: '8px', marginTop: '4px', flexWrap: 'wrap', fontSize: '11px' }}>
+                              {user.last_payment_date && (
+                                <span style={{ background: '#ecfdf5', color: '#047857', padding: '2px 6px', borderRadius: '4px', fontWeight: '700' }}>
+                                  Paid: {new Date(user.last_payment_date).toLocaleDateString('en-GB')}
+                                </span>
+                              )}
+                              {user.next_payment_date && (
+                                <span style={{ 
+                                  background: user.is_overdue || user.cycle_due > 0 ? '#fee2e2' : '#f0f9ff', 
+                                  color: user.is_overdue || user.cycle_due > 0 ? '#b91c1c' : '#0369a1', 
+                                  padding: '2px 6px', borderRadius: '4px', fontWeight: '700' 
+                                }}>
+                                  Due: {new Date(user.next_payment_date).toLocaleDateString('en-GB')}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         ) : (
                           <span style={{ fontSize: '13px', color: '#94a3b8', fontStyle: 'italic' }}>No EV Assigned</span>

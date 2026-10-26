@@ -34,25 +34,41 @@ export const formatIndianDate = (dateVal) => {
   });
 };
 
-export const formatIndianTime = (dateVal) => {
-  if (!dateVal) return '12:00';
+export const formatIndianTime = (dateVal, useLiveFallback = true) => {
+  const getLiveTime = () => new Date().toLocaleTimeString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  });
+
+  if (!dateVal) return useLiveFallback ? getLiveTime() : '12:00 PM';
   const d = new Date(dateVal);
-  if (isNaN(d.getTime())) return '12:00';
+  if (isNaN(d.getTime())) return useLiveFallback ? getLiveTime() : '12:00 PM';
+
   const timeParts = new Intl.DateTimeFormat('en-IN', {
     timeZone: 'Asia/Kolkata',
     hour: 'numeric',
     minute: 'numeric',
+    second: 'numeric',
     hour12: false
   }).formatToParts(d);
   const hourPart = parseInt(timeParts.find(p => p.type === 'hour')?.value || '0', 10);
   const minPart = parseInt(timeParts.find(p => p.type === 'minute')?.value || '0', 10);
-  const isMidnight = (hourPart === 0 && minPart === 0) || (hourPart === 24 && minPart === 0);
-  if (isMidnight) return '12:00';
+  const secPart = parseInt(timeParts.find(p => p.type === 'second')?.value || '0', 10);
+
+  const isMidnightIST = (hourPart === 0 || hourPart === 24) && minPart === 0 && secPart === 0;
+  const isMidnightUTC = d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0;
+
+  if ((isMidnightIST || isMidnightUTC) && useLiveFallback) {
+    return getLiveTime();
+  }
+
   return d.toLocaleTimeString('en-IN', {
     timeZone: 'Asia/Kolkata',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false
+    hour12: true
   });
 };
 
@@ -506,9 +522,15 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
   // 4. WORKSHOP SERVICE & PARTS REPLACEMENT INVOICE TEMPLATE (SER)
   // ============================================================
   if (type === 'service_parts') {
+    const now = new Date();
     const serviceCost = parseFloat(data.cost || data.total_cost || 0);
-    const serviceDate = data.date_reported || data.service_date || data.date || Date.now();
-    const formattedDate = formatIndianDate(serviceDate);
+    const serviceDate = data.date_reported || data.service_date || data.date || now;
+    const formattedServiceDate = formatIndianDate(serviceDate);
+    
+    // Live Invoice Generation Date & Time
+    const invoiceDate = formatIndianDate(data.invoice_time || now);
+    const invoiceTime = formatIndianTime(data.invoice_time || now, true);
+
     const serviceId = getShortBookingId(data.id || data.service_id, 'SER');
     const vehicleCode = data.vehicle_id || data.vehicleId || 'LT014';
     const riderName = data.user_name || data.rider_name || data.name || 'Company Fleet Maintenance';
@@ -620,7 +642,7 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
 <body>
   ${getActionBarHTML(serviceId, 'Service & Repair Invoice')}
   <div class="invoice-wrapper" id="printable-invoice">
-    ${getBrandHeaderHTML(logoUrl, companyLegal, companyAddress, serviceId, formattedDate, '12:00')}
+    ${getBrandHeaderHTML(logoUrl, companyLegal, companyAddress, serviceId, invoiceDate, invoiceTime)}
     
     <div class="meta-grid">
       <div class="meta-col">
@@ -633,7 +655,8 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
       <div class="meta-col">
         <h4>Job Card & Payment Status</h4>
         <div class="meta-item">Job Card ID: <strong style="font-family: monospace;">${serviceId}</strong></div>
-        <div class="meta-item">Service Date: <strong>${formattedDate}</strong></div>
+        <div class="meta-item">Service Date: <strong>${formattedServiceDate}</strong></div>
+        <div class="meta-item">Invoice Generated: <strong style="color: #0284c7;">${invoiceDate}, ${invoiceTime}</strong></div>
         <div class="meta-item">Billed To: <strong>${isRiderBilled ? 'Rider Account' : 'Company Fleet Expense'}</strong></div>
         <div class="meta-item">Payment Status: <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#dc2626'};">${paymentStatus === 'PAID' ? 'PAID & SETTLED' : 'PENDING'}</strong></div>
       </div>

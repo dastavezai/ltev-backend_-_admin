@@ -151,6 +151,7 @@ async function initDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS security_deposit_paid BOOLEAN NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT`);
     await pool.query(`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS next_payment_date TIMESTAMP`);
+    await pool.query(`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS last_payment_date TIMESTAMP`);
     await pool.query(`ALTER TABLE wallet_approvals ADD COLUMN IF NOT EXISTS proof_image TEXT`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS security_deposit_transactions (
@@ -182,6 +183,8 @@ async function initDatabase() {
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS image_url TEXT`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS images TEXT`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS items_breakdown JSONB`);
+    await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`);
+    await pool.query(`ALTER TABLE maintenance_logs ALTER COLUMN date_reported TYPE TIMESTAMP WITH TIME ZONE USING date_reported::timestamp with time zone`);
 
     // Booking & Pre-Booking Dues Migrations
     await pool.query(`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(50) DEFAULT 'online'`);
@@ -1430,6 +1433,7 @@ app.get('/api/users', authenticateToken, async (req, res) => {
         p.price as plan_price,
         p.type as plan_type,
         r.next_payment_date,
+        r.last_payment_date,
         r.start_time as rental_start_time,
         COALESCE((
           SELECT SUM(amount) FROM rider_dues WHERE user_id = u.id AND status = 'pending'
@@ -1442,6 +1446,7 @@ app.get('/api/users', authenticateToken, async (req, res) => {
           r_sub.vehicle_id,
           r_sub.plan_id,
           r_sub.next_payment_date,
+          r_sub.last_payment_date,
           r_sub.start_time
         FROM rentals r_sub
         WHERE r_sub.user_id = u.id AND r_sub.status IN ('active', 'in_use')
@@ -1457,9 +1462,11 @@ app.get('/api/users', authenticateToken, async (req, res) => {
     const formatted = result.rows.map(r => {
       let cycleDue = 0;
       let overdueDays = 0;
+      let isOverdue = false;
       if (r.next_payment_date) {
         const due = new Date(r.next_payment_date);
         if (now > due) {
+          isOverdue = true;
           const diffMs = now.getTime() - due.getTime();
           const price = parseFloat(r.plan_price || 0);
           const planType = (r.plan_type || '').toLowerCase();
@@ -1487,10 +1494,12 @@ app.get('/api/users', authenticateToken, async (req, res) => {
         user_id: r.id,
         cycle_due: cycleDue,
         overdue_days: overdueDays,
+        is_overdue: isOverdue,
         deposit_deficit: depositDeficit,
         extra_dues_total: extraDuesTotal,
         total_due: totalDue,
         has_due: totalDue > 0,
+        last_payment_date: r.last_payment_date,
         assigned_vehicle: r.vehicle_id ? `${r.vehicle_model || 'LT.ev'} (${r.vehicle_reg || r.vehicle_id})` : null,
         joined: new Date(r.joined_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })
       };
@@ -1805,7 +1814,8 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
     // 2b. Rental History for this user
     const rentalHistoryRes = await pool.query(`
       SELECT 
-        r.id, r.vehicle_id, r.start_time, r.end_time, r.status, r.next_payment_date, r.total_cost,
+        r.id, r.vehicle_id, r.start_time, r.end_time, r.status, r.next_payment_date, r.last_payment_date, r.total_cost,
+        r.payment_mode, r.remarks, r.due_amount,
         v.model as vehicle_model, COALESCE(v.registration_number, v.id) as vehicle_reg,
         p.name as plan_name, p.price as plan_price, p.type as plan_type
       FROM rentals r
@@ -2312,6 +2322,95 @@ app.post('/api/transactions/cash', authenticateToken, async (req, res) => {
     res.json({ success: true, message: 'Cash payment processed successfully.' });
   } catch (err) {
     await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Edit / Update Wallet Transaction (Admin Action to fix previous patches / transactions)
+app.put(['/api/wallet_transactions/:id', '/api/transactions/:id'], authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const { amount, type, description, timestamp, reference_id, status } = req.body;
+
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT * FROM wallet_transactions WHERE id = $1', [id]);
+    if (existing.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Transaction not found.' });
+    }
+    const prevTx = existing.rows[0];
+    const newAmt = amount !== undefined ? parseFloat(amount) : parseFloat(prevTx.amount);
+    const newType = type || prevTx.type;
+    const newDesc = description !== undefined ? description : prevTx.description;
+    const newTime = timestamp ? new Date(timestamp) : prevTx.timestamp;
+    const newRef = reference_id !== undefined ? reference_id : prevTx.reference_id;
+    const newStatus = status || prevTx.status;
+
+    const result = await client.query(`
+      UPDATE wallet_transactions
+      SET amount = $1, type = $2, description = $3, timestamp = $4, reference_id = $5, status = $6
+      WHERE id = $7
+      RETURNING *
+    `, [newAmt, newType, newDesc, newTime, newRef, newStatus, id]);
+
+    // If description mentions a Booking #RNT-... and amount changed, adjust rental total_cost
+    const bookingMatch = (newDesc || prevTx.description || '').match(/Booking\s*#?([A-Za-z0-9_-]+)/i);
+    if (bookingMatch && prevTx.type === 'credit' && newType === 'credit') {
+      const rentalId = bookingMatch[1];
+      const delta = newAmt - parseFloat(prevTx.amount);
+      if (delta !== 0) {
+        await client.query(`
+          UPDATE rentals
+          SET total_cost = GREATEST(0, COALESCE(total_cost, 0) + $1)
+          WHERE id = $2
+        `, [delta, rentalId]);
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Transaction updated successfully.', transaction: result.rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error updating transaction:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Delete Wallet Transaction (Admin Action)
+app.delete(['/api/wallet_transactions/:id', '/api/transactions/:id'], authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT * FROM wallet_transactions WHERE id = $1', [id]);
+    if (existing.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Transaction not found.' });
+    }
+    const prevTx = existing.rows[0];
+
+    // If description mentions a booking, deduct from rental total_cost
+    const bookingMatch = (prevTx.description || '').match(/Booking\s*#?([A-Za-z0-9_-]+)/i);
+    if (bookingMatch && prevTx.type === 'credit') {
+      const rentalId = bookingMatch[1];
+      await client.query(`
+        UPDATE rentals
+        SET total_cost = GREATEST(0, COALESCE(total_cost, 0) - $1)
+        WHERE id = $2
+      `, [parseFloat(prevTx.amount), rentalId]);
+    }
+
+    await client.query('DELETE FROM wallet_transactions WHERE id = $1', [id]);
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Transaction deleted successfully.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error deleting transaction:', err);
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
@@ -3293,14 +3392,12 @@ app.post(['/api/bookings/:id/collect-cash', '/api/bookings/:id/collect-payment']
     let newNextDue;
     if (next_payment_date) {
       newNextDue = new Date(next_payment_date);
-    } else if (payment_date) {
-      newNextDue = new Date(recordDate.getTime() + (cycleMs * numWeeks));
     } else {
-      const baseDate = currentNextDue > now ? currentNextDue : now;
+      const baseDate = booking.next_payment_date ? new Date(booking.next_payment_date) : (payment_date ? new Date(payment_date) : now);
       newNextDue = new Date(baseDate.getTime() + (cycleMs * numWeeks));
     }
 
-    // Update rental total_cost, payment_status, payment_mode and next_payment_date
+    // Update rental total_cost, payment_status, payment_mode, last_payment_date and next_payment_date
     await client.query(`
       UPDATE rentals 
       SET total_cost = COALESCE(total_cost, 0) + $1,
@@ -3308,9 +3405,10 @@ app.post(['/api/bookings/:id/collect-cash', '/api/bookings/:id/collect-payment']
           payment_status = 'paid',
           payment_mode = $2,
           next_payment_date = $3,
-          remarks = COALESCE(remarks, '') || $4
-      WHERE id = $5
-    `, [paidAmount, mode, newNextDue.toISOString(), ` | ${mode.toUpperCase()} Received ₹${paidAmount} (${numWeeks} wk) on ${recordDate.toLocaleDateString('en-IN')}`, id]);
+          last_payment_date = $4,
+          remarks = COALESCE(remarks, '') || $5
+      WHERE id = $6
+    `, [paidAmount, mode, newNextDue.toISOString(), recordDate.toISOString(), ` | ${mode.toUpperCase()} Received ₹${paidAmount} (${numWeeks} wk) on ${recordDate.toLocaleDateString('en-IN')}`, id]);
 
     // Record wallet transaction for audit trail
     let walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1', [booking.user_id]);
@@ -3386,10 +3484,8 @@ app.post('/api/bookings/:id/deduct-deposit', authenticateToken, async (req, res)
     let newNextDue;
     if (next_payment_date) {
       newNextDue = new Date(next_payment_date);
-    } else if (payment_date) {
-      newNextDue = new Date(recordDate.getTime() + (cycleMs * numWeeks));
     } else {
-      const baseDate = currentNextDue > now ? currentNextDue : now;
+      const baseDate = booking.next_payment_date ? new Date(booking.next_payment_date) : (payment_date ? new Date(payment_date) : now);
       newNextDue = new Date(baseDate.getTime() + (cycleMs * numWeeks));
     }
 
@@ -3404,16 +3500,17 @@ app.post('/api/bookings/:id/deduct-deposit', authenticateToken, async (req, res)
       VALUES ($1, $2, 'deduction', $3, $4)
     `, [booking.user_id, deductAmount, remarks || `Deducted ₹${deductAmount} for weekly subscription due on Booking #${id}`, recordDate.toISOString()]);
 
-    // Update rental status and advance next payment date
+    // Update rental status and advance next payment date & last payment date
     await client.query(`
       UPDATE rentals 
       SET due_amount = 0.00, 
           payment_status = 'paid',
           total_cost = COALESCE(total_cost, 0) + $1,
           next_payment_date = $2,
-          remarks = COALESCE(remarks, '') || $3
-      WHERE id = $4
-    `, [deductAmount, newNextDue.toISOString(), ` | Security Deposit Deducted ₹${deductAmount} on ${recordDate.toLocaleDateString('en-IN')}`, id]);
+          last_payment_date = $3,
+          remarks = COALESCE(remarks, '') || $4
+      WHERE id = $5
+    `, [deductAmount, newNextDue.toISOString(), recordDate.toISOString(), ` | Security Deposit Deducted ₹${deductAmount} on ${recordDate.toLocaleDateString('en-IN')}`, id]);
 
     await client.query('COMMIT');
     res.json({ 
@@ -4142,8 +4239,8 @@ app.post('/api/rentals/record', authenticateToken, async (req, res) => {
   }
 });
 
-// Update / Edit an existing rental (Admin)
-app.put('/api/rentals/:id', authenticateToken, async (req, res) => {
+// Update / Edit an existing rental (Admin - Fix previous patch & contract record)
+app.put(['/api/rentals/:id', '/api/bookings/:id'], authenticateToken, async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
@@ -4155,6 +4252,10 @@ app.put('/api/rentals/:id', authenticateToken, async (req, res) => {
       end_time,
       total_cost,
       next_payment_date,
+      last_payment_date,
+      payment_mode,
+      remarks,
+      due_amount,
       status
     } = req.body;
 
@@ -4177,14 +4278,19 @@ app.put('/api/rentals/:id', authenticateToken, async (req, res) => {
     const finalStartTime = start_time !== undefined ? (start_time ? new Date(start_time) : null) : prevRental.start_time;
     const finalEndTime = end_time !== undefined ? (end_time ? new Date(end_time) : null) : prevRental.end_time;
     const finalNextPay = next_payment_date !== undefined ? (next_payment_date ? new Date(next_payment_date) : null) : prevRental.next_payment_date;
+    const finalLastPay = last_payment_date !== undefined ? (last_payment_date ? new Date(last_payment_date) : null) : prevRental.last_payment_date;
+    const finalPaymentMode = payment_mode !== undefined ? payment_mode : prevRental.payment_mode;
+    const finalRemarks = remarks !== undefined ? remarks : prevRental.remarks;
+    const finalDueAmount = due_amount !== undefined ? due_amount : prevRental.due_amount;
     const newStatus = status || prevRental.status;
     const newTotalCost = total_cost !== undefined ? total_cost : prevRental.total_cost;
 
     const updateRes = await client.query(`
       UPDATE rentals
       SET user_id = $1, vehicle_id = $2, plan_id = $3, start_time = $4, end_time = $5,
-          total_cost = $6, status = $7, next_payment_date = $8
-      WHERE id = $9
+          total_cost = $6, status = $7, next_payment_date = $8, last_payment_date = $9,
+          payment_mode = $10, remarks = $11, due_amount = $12
+      WHERE id = $13
       RETURNING *
     `, [
       cleanUserId,
@@ -4195,6 +4301,10 @@ app.put('/api/rentals/:id', authenticateToken, async (req, res) => {
       newTotalCost,
       newStatus,
       finalNextPay,
+      finalLastPay,
+      finalPaymentMode,
+      finalRemarks,
+      finalDueAmount,
       id
     ]);
 
@@ -5664,12 +5774,25 @@ app.post('/api/maintenance/report-issue', authenticateToken, async (req, res) =>
 
 // Helper to generate self-contained, itemized Service & Parts Invoice HTML
 function generateServiceInvoiceHTML(srv, baseUrl = '') {
+  const now = new Date();
   const serviceCost = parseFloat(srv.cost || 0);
-  const serviceDate = srv.date_reported ? new Date(srv.date_reported) : new Date();
+  const serviceDate = srv.date_reported ? new Date(srv.date_reported) : now;
   const formattedDate = serviceDate.toLocaleDateString('en-IN', {
     day: 'numeric',
     month: 'short',
     year: 'numeric',
+    timeZone: 'Asia/Kolkata'
+  });
+  const liveDate = now.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata'
+  });
+  const liveTime = now.toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
     timeZone: 'Asia/Kolkata'
   });
   const serviceId = `SER-${String(srv.id || '').replace(/\\D/g, '').slice(-5) || '10001'}`;
@@ -5851,7 +5974,8 @@ function generateServiceInvoiceHTML(srv, baseUrl = '') {
       </div>
       <div class="invoice-badge-box">
         <div class="invoice-number">${serviceId}</div>
-        <div class="invoice-date">Service Date: ${formattedDate}</div>
+        <div class="invoice-date">Date: <strong>${liveDate}, ${liveTime}</strong></div>
+        <div class="invoice-date" style="font-size: 11px; color: #64748b;">Service Date: ${formattedDate}</div>
       </div>
     </div>
 
@@ -5867,6 +5991,8 @@ function generateServiceInvoiceHTML(srv, baseUrl = '') {
         <h4>Service & Payment Record</h4>
         <div class="meta-item">Job Card ID: <strong style="font-family: monospace;">${serviceId}</strong></div>
         <div class="meta-item">Service Type: <strong>${serviceType}</strong></div>
+        <div class="meta-item">Service Date: <strong>${formattedDate}</strong></div>
+        <div class="meta-item">Invoice Generated: <strong style="color: #00a66c;">${liveDate}, ${liveTime}</strong></div>
         <div class="meta-item">Billed To: <strong>${isRiderBilled ? 'Rider Account' : 'Company Fleet'}</strong></div>
         <div class="meta-item">Payment Status: <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'};">${paymentStatus === 'PAID' ? 'PAID & SETTLED' : 'PENDING'}</strong></div>
       </div>

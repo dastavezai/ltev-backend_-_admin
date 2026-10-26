@@ -65,7 +65,7 @@ const SAMPLE_PRESETS = {
     billed_to: 'rider',
     payment_status: 'paid',
     cost: '650',
-    date_reported: new Date().toISOString().slice(0, 10),
+    date_reported: new Date().toISOString(),
     issue_description: 'Front disc brake squeaking, lever loose, chain dry and slack.',
     parts_replaced: 'Front Disc Brake Pad Kit (₹350), Chain Lubricant (₹100), Workshop Tuning Labor (₹200)'
   }

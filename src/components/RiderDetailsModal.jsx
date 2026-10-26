@@ -62,8 +62,44 @@ export default function RiderDetailsModal({
   const [recordRentRows, setRecordRentRows] = useState([
     { mode: 'cash', amount: '1600', remarks: '' }
   ]);
-  const [recordRentRemarks, setRecordRentRemarks] = useState('');
   const [submittingRentalPayment, setSubmittingRentalPayment] = useState(false);
+
+  // Fix / Edit Rental Record (Previous Patch Correction)
+  const [fixingRentalRecord, setFixingRentalRecord] = useState(null);
+  const [fixRentalForm, setFixRentalForm] = useState({
+    vehicle_id: '',
+    start_time: '',
+    next_payment_date: '',
+    last_payment_date: '',
+    total_cost: '',
+    payment_mode: 'cash',
+    status: 'active',
+    remarks: '',
+    due_amount: '0.00'
+  });
+  const [submittingFixRental, setSubmittingFixRental] = useState(false);
+
+  // Simple Next Payment State
+  const [collectingNextPayment, setCollectingNextPayment] = useState(null);
+  const [nextPayCycleCount, setNextPayCycleCount] = useState('1');
+  const [nextPayAmount, setNextPayAmount] = useState('1600');
+  const [nextPayMode, setNextPayMode] = useState('cash');
+  const [nextPayDate, setNextPayDate] = useState(getLocalDatetimeString());
+  const [customNextDueDate, setCustomNextDueDate] = useState('');
+  const [nextPayRemarks, setNextPayRemarks] = useState('');
+  const [submittingNextPayment, setSubmittingNextPayment] = useState(false);
+
+  // Edit / Delete Wallet Transaction State
+  const [editingTransaction, setEditingTransaction] = useState(null);
+  const [editTxForm, setEditTxForm] = useState({
+    amount: '',
+    type: 'credit',
+    description: '',
+    timestamp: '',
+    reference_id: '',
+    status: 'success'
+  });
+  const [submittingEditTx, setSubmittingEditTx] = useState(false);
 
   const rawId = rider.raw_id || rider.user_id || rider.id;
   const token = localStorage.getItem('token');
@@ -218,6 +254,209 @@ export default function RiderDetailsModal({
     } catch (err) {
       console.error('Error cancelling rental:', err);
       alert('Failed to cancel rental: ' + (err.response?.data?.error || err.message));
+    }
+  };
+
+  // -------------------------------------------------------------
+  // FIX / EDIT PREVIOUS PATCH & RENTAL CONTRACT HANDLERS
+  // -------------------------------------------------------------
+  const handleOpenFixRental = (rental) => {
+    if (!rental) return;
+    setFixingRentalRecord(rental);
+    setFixRentalForm({
+      vehicle_id: rental.vehicle_id || rental.vehicle_reg || '',
+      start_time: rental.start_time ? getLocalDatetimeString(new Date(rental.start_time)) : '',
+      next_payment_date: rental.next_payment_date ? getLocalDatetimeString(new Date(rental.next_payment_date)) : '',
+      last_payment_date: rental.last_payment_date ? getLocalDatetimeString(new Date(rental.last_payment_date)) : '',
+      total_cost: String(rental.total_cost || 0),
+      payment_mode: rental.payment_mode || 'cash',
+      status: rental.status || 'active',
+      remarks: rental.remarks || '',
+      due_amount: String(rental.due_amount || 0)
+    });
+  };
+
+  const handleSaveFixRental = async (e) => {
+    if (e) e.preventDefault();
+    if (!fixingRentalRecord) return;
+    setSubmittingFixRental(true);
+    try {
+      await axios.put(`${import.meta.env.VITE_API_URL || ''}/api/rentals/${fixingRentalRecord.id}`, {
+        ...fixRentalForm,
+        total_cost: parseFloat(fixRentalForm.total_cost || 0),
+        due_amount: parseFloat(fixRentalForm.due_amount || 0),
+        start_time: fixRentalForm.start_time ? new Date(fixRentalForm.start_time).toISOString() : null,
+        next_payment_date: fixRentalForm.next_payment_date ? new Date(fixRentalForm.next_payment_date).toISOString() : null,
+        last_payment_date: fixRentalForm.last_payment_date ? new Date(fixRentalForm.last_payment_date).toISOString() : null
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert('Rental record and patch updated successfully!');
+      setFixingRentalRecord(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error('Error saving rental record:', err);
+      alert('Failed to update rental: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSubmittingFixRental(false);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // SIMPLE NEXT PAYMENT HANDLERS
+  // -------------------------------------------------------------
+  const handleOpenCollectNextPayment = (rental) => {
+    if (!rental) return;
+    setCollectingNextPayment(rental);
+    const planPrice = parseFloat(rental.plan_price || 1600);
+    const planType = (rental.plan_type || '').toLowerCase();
+    const cycleMs = planType.includes('monthly') ? 30 * 86400000 : planType.includes('daily') ? 86400000 : 7 * 86400000;
+    
+    // Base the next due date on existing next_payment_date
+    const currentDue = rental.next_payment_date ? new Date(rental.next_payment_date) : new Date();
+    const calculatedNextDue = new Date(currentDue.getTime() + cycleMs);
+    
+    setNextPayCycleCount('1');
+    setNextPayAmount(String(planPrice));
+    setNextPayMode('cash');
+    setNextPayDate(getLocalDatetimeString(new Date()));
+    setCustomNextDueDate(getLocalDatetimeString(calculatedNextDue));
+    setNextPayRemarks('');
+  };
+
+  const handleNextPayCycleChange = (cycles) => {
+    if (!collectingNextPayment) return;
+    const planPrice = parseFloat(collectingNextPayment.plan_price || 1600);
+    const planType = (collectingNextPayment.plan_type || '').toLowerCase();
+    const cycleMs = planType.includes('monthly') ? 30 * 86400000 : planType.includes('daily') ? 86400000 : 7 * 86400000;
+    const count = parseInt(cycles, 10) || 1;
+    
+    const currentDue = collectingNextPayment.next_payment_date ? new Date(collectingNextPayment.next_payment_date) : new Date();
+    const newDueDate = new Date(currentDue.getTime() + (cycleMs * count));
+    
+    setNextPayCycleCount(String(count));
+    setNextPayAmount(String(planPrice * count));
+    setCustomNextDueDate(getLocalDatetimeString(newDueDate));
+  };
+
+  const handleConfirmNextPayment = async (downloadReceipt = false) => {
+    if (!collectingNextPayment) return;
+    const amt = parseFloat(nextPayAmount || 0);
+    if (amt <= 0) {
+      alert('Please enter a valid payment amount.');
+      return;
+    }
+
+    setSubmittingNextPayment(true);
+    try {
+      let res;
+      if (nextPayMode === 'deposit') {
+        const depositBal = parseFloat(details?.user?.security_deposit_balance || rider.security_deposit_balance || 0);
+        if (depositBal < amt) {
+          alert(`Insufficient security deposit (Available: ₹${depositBal}, Required: ₹${amt}).`);
+          setSubmittingNextPayment(false);
+          return;
+        }
+        res = await axios.post(`/api/bookings/${collectingNextPayment.id}/deduct-deposit`, {
+          amount: amt,
+          remarks: nextPayRemarks || `Deposit payment for ${nextPayCycleCount} cycle(s)`,
+          payment_date: nextPayDate ? new Date(nextPayDate).toISOString() : new Date().toISOString(),
+          next_payment_date: customNextDueDate ? new Date(customNextDueDate).toISOString() : undefined
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      } else {
+        res = await axios.post(`/api/bookings/${collectingNextPayment.id}/collect-payment`, {
+          amount: amt,
+          payment_mode: nextPayMode,
+          weeks_count: nextPayCycleCount,
+          remarks: nextPayRemarks,
+          payment_date: nextPayDate ? new Date(nextPayDate).toISOString() : new Date().toISOString(),
+          next_payment_date: customNextDueDate ? new Date(customNextDueDate).toISOString() : undefined
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      }
+
+      alert(`Payment of ₹${amt.toLocaleString('en-IN')} recorded successfully!`);
+
+      if (downloadReceipt) {
+        openRentPaymentInvoice({
+          id: collectingNextPayment.id,
+          user_name: rider.name || details?.user?.name,
+          user_phone: rider.phone || details?.user?.phone,
+          vehicle_id: collectingNextPayment.vehicle_reg || collectingNextPayment.vehicle_id || rider.assigned_vehicle || 'EV',
+          amount: amt,
+          payment_mode: nextPayMode.toUpperCase(),
+          plan_name: collectingNextPayment.plan_name || 'Weekly Pass',
+          cycle_count: nextPayCycleCount,
+          payment_date: nextPayDate,
+          next_payment_date: customNextDueDate,
+          deposit_balance: details?.user?.security_deposit_balance || rider.security_deposit_balance || 0,
+          remarks: nextPayRemarks
+        });
+      }
+
+      setCollectingNextPayment(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error('Failed to collect payment:', err);
+      alert('Failed to record payment: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSubmittingNextPayment(false);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // EDIT / DELETE TRANSACTION HANDLERS
+  // -------------------------------------------------------------
+  const handleOpenEditTx = (txn) => {
+    if (!txn) return;
+    setEditingTransaction(txn);
+    setEditTxForm({
+      amount: String(txn.amount || 0),
+      type: txn.type || 'credit',
+      description: txn.description || '',
+      timestamp: txn.timestamp ? getLocalDatetimeString(new Date(txn.timestamp)) : getLocalDatetimeString(),
+      reference_id: txn.reference_id || '',
+      status: txn.status || 'success'
+    });
+  };
+
+  const handleSaveEditTx = async (e) => {
+    if (e) e.preventDefault();
+    if (!editingTransaction) return;
+    setSubmittingEditTx(true);
+    try {
+      await axios.put(`${import.meta.env.VITE_API_URL || ''}/api/wallet_transactions/${editingTransaction.id}`, {
+        ...editTxForm,
+        amount: parseFloat(editTxForm.amount || 0),
+        timestamp: editTxForm.timestamp ? new Date(editTxForm.timestamp).toISOString() : new Date().toISOString()
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert('Transaction updated successfully!');
+      setEditingTransaction(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error('Error updating transaction:', err);
+      alert('Failed to update transaction: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSubmittingEditTx(false);
+    }
+  };
+
+  const handleDeleteTx = async (txnId) => {
+    if (!window.confirm(`Are you sure you want to delete transaction #${txnId} permanently? This will adjust balances accordingly.`)) return;
+    try {
+      await axios.delete(`${import.meta.env.VITE_API_URL || ''}/api/wallet_transactions/${txnId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert('Transaction deleted.');
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error('Error deleting transaction:', err);
+      alert('Failed to delete transaction: ' + (err.response?.data?.error || err.message));
     }
   };
 
@@ -729,12 +968,72 @@ _Support: +91 9113750231 | https://ltev.in_`;
                   </span>
                 </div>
 
+                {details?.active_rental?.last_payment_date && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: '5px' }}><CheckCircle2 size={13} color="#059669" /> Last Cycle Paid</span>
+                    <span style={{ fontWeight: '700', color: '#059669' }}>
+                      {new Date(details.active_rental.last_payment_date).toLocaleDateString('en-GB')}
+                    </span>
+                  </div>
+                )}
+
                 {details?.active_rental?.next_payment_date && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: '5px' }}><Clock size={13} /> Next Renewal</span>
                     <span style={{ fontWeight: '700', color: details.dues_summary?.is_overdue ? '#dc2626' : '#059669' }}>
                       {new Date(details.active_rental.next_payment_date).toLocaleDateString('en-GB')}
+                      {details.dues_summary?.is_overdue && ` (${details.dues_summary.overdue_days}d overdue)`}
                     </span>
+                  </div>
+                )}
+
+                {details?.active_rental && (
+                  <div style={{ display: 'flex', gap: '6px', marginTop: '10px', paddingTop: '10px', borderTop: '1px dashed #e2e8f0' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenCollectNextPayment(details.active_rental)}
+                      style={{
+                        flex: 1.4,
+                        background: '#00a66c',
+                        color: 'white',
+                        border: 'none',
+                        padding: '6px 8px',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontWeight: '800',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '4px',
+                        boxShadow: '0 2px 5px rgba(0, 166, 108, 0.2)'
+                      }}
+                      title="Collect next cycle payment simply"
+                    >
+                      <Plus size={12} /> Next Pay
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenFixRental(details.active_rental)}
+                      style={{
+                        flex: 1,
+                        background: '#f0f9ff',
+                        color: '#0284c7',
+                        border: '1px solid #bae6fd',
+                        padding: '6px 8px',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '4px'
+                      }}
+                      title="Fix previous patch or contract record"
+                    >
+                      <Edit2 size={11} /> Fix
+                    </button>
                   </div>
                 )}
               </div>
@@ -1351,6 +1650,12 @@ _Support: +91 9113750231 | https://ltev.in_`;
                                   <span style={{ color: '#64748b' }}>Billing Cycle:</span>
                                   <span style={{ fontWeight: '700', textTransform: 'capitalize', color: '#0f172a' }}>{details.active_rental.plan_type || 'Weekly'}</span>
                                 </div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
+                                  <span style={{ color: '#64748b' }}>Last Cycle Paid Date:</span>
+                                  <strong style={{ color: '#059669' }}>
+                                    {details.active_rental.last_payment_date ? new Date(details.active_rental.last_payment_date).toLocaleDateString('en-GB') : (details.active_rental.start_time ? new Date(details.active_rental.start_time).toLocaleDateString('en-GB') : 'N/A')}
+                                  </strong>
+                                </div>
                                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                   <span style={{ color: '#64748b' }}>Next Renewal Date:</span>
                                   <strong style={{ color: details.dues_summary?.is_overdue ? '#dc2626' : '#059669' }}>
@@ -1377,7 +1682,7 @@ _Support: +91 9113750231 | https://ltev.in_`;
                           </div>
                         </div>
 
-                        {/* ONE-LINE ACTION OPTION BAR (Cancel & Edit Buttons) */}
+                        {/* ONE-LINE ACTION OPTION BAR (Cancel, Fix Patch, Collect Next Payment) */}
                         <div style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -1386,7 +1691,9 @@ _Support: +91 9113750231 | https://ltev.in_`;
                           padding: '12px 18px',
                           borderRadius: '14px',
                           border: '1px solid #e2e8f0',
-                          boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.02)',
+                          flexWrap: 'wrap',
+                          gap: '10px'
                         }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={{ fontSize: '12px', fontWeight: '800', color: '#0f172a' }}>
@@ -1396,29 +1703,42 @@ _Support: +91 9113750231 | https://ltev.in_`;
                               Vehicle #{details.active_rental.vehicle_reg || details.active_rental.vehicle_id} • Due {details.active_rental.next_payment_date ? new Date(details.active_rental.next_payment_date).toLocaleDateString('en-GB') : 'N/A'}
                             </span>
                           </div>
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                             <button
                               type="button"
                               onClick={() => handleCancelRental(details.active_rental.id, details.active_rental.vehicle_reg)}
                               style={{
                                 display: 'flex', alignItems: 'center', gap: '5px',
                                 background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5',
-                                padding: '7px 14px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer'
+                                padding: '7px 12px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer'
                               }}
                             >
                               <Ban size={13} /> Cancel
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleOpenRecordRent(details.active_rental)}
+                              onClick={() => handleOpenFixRental(details.active_rental)}
                               style={{
                                 display: 'flex', alignItems: 'center', gap: '5px',
-                                background: '#0284c7', color: 'white', border: 'none',
-                                padding: '7px 16px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer',
-                                boxShadow: '0 2px 6px rgba(2, 132, 199, 0.25)'
+                                background: '#f0f9ff', color: '#0284c7', border: '1px solid #bae6fd',
+                                padding: '7px 14px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer'
                               }}
+                              title="Fix previous patch, due date, start date, or payment total"
                             >
-                              <Edit2 size={13} /> Edit
+                              <Edit2 size={13} /> Fix / Edit Contract Record
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenCollectNextPayment(details.active_rental)}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '6px',
+                                background: '#00a66c', color: 'white', border: 'none',
+                                padding: '8px 16px', borderRadius: '8px', fontWeight: '800', fontSize: '12px', cursor: 'pointer',
+                                boxShadow: '0 2px 6px rgba(0, 166, 108, 0.25)'
+                              }}
+                              title="Simple 1-click next payment collection"
+                            >
+                              <Plus size={14} /> Collect Next Payment
                             </button>
                           </div>
                         </div>
@@ -1500,16 +1820,30 @@ _Support: +91 9113750231 | https://ltev.in_`;
                                     )}
                                     <button
                                       type="button"
-                                      onClick={() => handleOpenRecordRent(rh)}
+                                      onClick={() => handleOpenFixRental(rh)}
                                       style={{
                                         background: '#f0f9ff', border: '1px solid #bae6fd', color: '#0284c7',
                                         padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '700',
                                         cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px'
                                       }}
-                                      title="Manage & Record Rental"
+                                      title="Fix Contract Record / Previous Patch"
                                     >
-                                      <Edit2 size={11} /> Edit
+                                      <Edit2 size={11} /> Fix / Edit
                                     </button>
+                                    {(rh.status === 'active' || rh.status === 'in_use') && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenCollectNextPayment(rh)}
+                                        style={{
+                                          background: '#ecfdf5', border: '1px solid #a7f3d0', color: '#047857',
+                                          padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '700',
+                                          cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px'
+                                        }}
+                                        title="Collect Next Payment"
+                                      >
+                                        <Plus size={11} /> Next Pay
+                                      </button>
+                                    )}
                                   </div>
                                 </td>
                               </tr>
@@ -1744,12 +2078,13 @@ _Support: +91 9113750231 | https://ltev.in_`;
                             <th style={{ padding: '12px 18px', fontWeight: '700' }}>Amount</th>
                             <th style={{ padding: '12px 18px', fontWeight: '700' }}>Description</th>
                             <th style={{ padding: '12px 18px', fontWeight: '700' }}>Date & Time</th>
+                            <th style={{ padding: '12px 18px', fontWeight: '700', textAlign: 'right' }}>Actions</th>
                           </tr>
                         </thead>
                         <tbody>
                           {(!details.wallet_transactions || details.wallet_transactions.length === 0) ? (
                             <tr>
-                              <td colSpan={4} style={{ textAlign: 'center', padding: '36px', color: '#94a3b8' }}>
+                              <td colSpan={5} style={{ textAlign: 'center', padding: '36px', color: '#94a3b8' }}>
                                 No wallet transactions recorded yet.
                               </td>
                             </tr>
@@ -1773,6 +2108,34 @@ _Support: +91 9113750231 | https://ltev.in_`;
                                 <td style={{ padding: '12px 18px', color: '#0f172a' }}>{txn.description}</td>
                                 <td style={{ padding: '12px 18px', fontSize: '12px', color: '#64748b' }}>
                                   {new Date(txn.timestamp).toLocaleString('en-GB')}
+                                </td>
+                                <td style={{ padding: '12px 18px', textAlign: 'right' }}>
+                                  <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenEditTx(txn)}
+                                      style={{
+                                        background: '#f0f9ff', border: '1px solid #bae6fd', color: '#0284c7',
+                                        padding: '4px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '700',
+                                        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px'
+                                      }}
+                                      title="Edit Transaction"
+                                    >
+                                      <Edit2 size={11} /> Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteTx(txn.id)}
+                                      style={{
+                                        background: '#fee2e2', border: 'none', color: '#dc2626',
+                                        padding: '5px 7px', borderRadius: '6px', cursor: 'pointer',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center'
+                                      }}
+                                      title="Delete Transaction"
+                                    >
+                                      <Trash2 size={11} />
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             ))
@@ -2119,6 +2482,655 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 </button>
               </div>
 
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: FIX / EDIT CONTRACT RECORD & PREVIOUS PATCH           */}
+      {/* ============================================================ */}
+      {fixingRentalRecord && (
+        <div 
+          onClick={() => setFixingRentalRecord(null)}
+          style={{
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(5px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 220,
+            padding: '16px'
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'white',
+              width: '100%',
+              maxWidth: '620px',
+              borderRadius: '20px',
+              overflow: 'hidden',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+              border: '1px solid #cbd5e1',
+              display: 'flex',
+              flexDirection: 'column',
+              maxHeight: '92vh'
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              padding: '18px 22px',
+              borderBottom: '1px solid #e2e8f0',
+              background: '#f8fafc',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Edit2 size={18} color="#0284c7" /> Fix / Edit Contract Record (Patch Correction)
+                </h3>
+                <div style={{ fontSize: '12px', color: '#64748b', marginTop: '3px' }}>
+                  Contract #{fixingRentalRecord.id} • Rider: <strong>{rider.name}</strong> • 📞 {rider.phone || 'N/A'}
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setFixingRentalRecord(null)}
+                style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#64748b' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Notice / Guidance */}
+            <div style={{ padding: '12px 22px', background: '#f0f9ff', borderBottom: '1px solid #bae6fd', fontSize: '12px', color: '#0369a1', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <AlertCircle size={16} color="#0284c7" style={{ flexShrink: 0 }} />
+              <div>
+                Use this to fix incorrect due dates, past patches, start dates, or contract balances directly without generating duplicate billing records.
+              </div>
+            </div>
+
+            {/* Form */}
+            <form 
+              onSubmit={handleSaveFixRental}
+              style={{ padding: '22px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}
+            >
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Vehicle ID / Number
+                  </label>
+                  <input
+                    type="text"
+                    value={fixRentalForm.vehicle_id}
+                    onChange={(e) => setFixRentalForm(prev => ({ ...prev, vehicle_id: e.target.value }))}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: '700', outline: 'none' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Contract Status
+                  </label>
+                  <select
+                    value={fixRentalForm.status}
+                    onChange={(e) => setFixRentalForm(prev => ({ ...prev, status: e.target.value }))}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: '700', outline: 'none', background: 'white' }}
+                  >
+                    <option value="active">Active (Currently Assigned)</option>
+                    <option value="completed">Completed (Returned)</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Contract Start Date & Time
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={fixRentalForm.start_time}
+                    onChange={(e) => setFixRentalForm(prev => ({ ...prev, start_time: e.target.value }))}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', outline: 'none' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Last Cycle Payment Date
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={fixRentalForm.last_payment_date}
+                    onChange={(e) => setFixRentalForm(prev => ({ ...prev, last_payment_date: e.target.value }))}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', outline: 'none' }}
+                  />
+                  <div style={{ fontSize: '10px', color: '#64748b', marginTop: '3px' }}>
+                    Date when rider last paid their rental
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ background: '#fefce8', padding: '14px', borderRadius: '12px', border: '1px solid #fef08a' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                  <Clock size={16} color="#ca8a04" />
+                  <span style={{ fontSize: '12px', fontWeight: '800', color: '#854d0e' }}>
+                    Next Renewal / Due Date (Billing Anchor)
+                  </span>
+                </div>
+                <input
+                  type="datetime-local"
+                  required
+                  value={fixRentalForm.next_payment_date}
+                  onChange={(e) => setFixRentalForm(prev => ({ ...prev, next_payment_date: e.target.value }))}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '2px solid #eab308', fontSize: '14px', fontWeight: '800', color: '#0f172a', outline: 'none', background: 'white' }}
+                />
+                <div style={{ fontSize: '11px', color: '#713f12', marginTop: '5px' }}>
+                  ⚠️ This date dictates whether this rider is overdue. For Shoeb Khan (covered through Week 4), set to <strong>21 Oct 2026</strong>.
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Total Rent Paid to Date (₹)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={fixRentalForm.total_cost}
+                    onChange={(e) => setFixRentalForm(prev => ({ ...prev, total_cost: e.target.value }))}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: '700', outline: 'none' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Recorded Payment Mode
+                  </label>
+                  <select
+                    value={fixRentalForm.payment_mode}
+                    onChange={(e) => setFixRentalForm(prev => ({ ...prev, payment_mode: e.target.value }))}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: '700', outline: 'none', background: 'white' }}
+                  >
+                    <option value="cash">Cash Handover</option>
+                    <option value="upi">UPI / Online</option>
+                    <option value="credit">Bank / Credit</option>
+                    <option value="deposit">Security Deposit</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Correction Notes / Patch Reason
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Corrected due date anchor after previous patch"
+                  value={fixRentalForm.remarks}
+                  onChange={(e) => setFixRentalForm(prev => ({ ...prev, remarks: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', outline: 'none' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', marginTop: '10px', paddingTop: '14px', borderTop: '1px solid #e2e8f0' }}>
+                <button
+                  type="button"
+                  onClick={() => setFixingRentalRecord(null)}
+                  style={{ flex: 1, padding: '11px', borderRadius: '8px', border: '1px solid #cbd5e1', background: 'white', color: '#475569', fontWeight: '700', fontSize: '13px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingFixRental}
+                  style={{ flex: 2, padding: '11px', borderRadius: '8px', border: 'none', background: '#0284c7', color: 'white', fontWeight: '800', fontSize: '13px', cursor: submittingFixRental ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', boxShadow: '0 2px 6px rgba(2, 132, 199, 0.25)' }}
+                >
+                  <CheckCircle2 size={16} /> {submittingFixRental ? 'Saving Patch...' : 'Save Contract Patch'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: SIMPLE NEXT PAYMENT COLLECTION                         */}
+      {/* ============================================================ */}
+      {collectingNextPayment && (
+        <div 
+          onClick={() => setCollectingNextPayment(null)}
+          style={{
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(5px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 220,
+            padding: '16px'
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'white',
+              width: '100%',
+              maxWidth: '540px',
+              borderRadius: '20px',
+              overflow: 'hidden',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+              border: '1px solid #cbd5e1',
+              display: 'flex',
+              flexDirection: 'column',
+              maxHeight: '94vh'
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              padding: '18px 22px',
+              borderBottom: '1px solid #e2e8f0',
+              background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+              color: 'white',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '17px', fontWeight: '800', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Zap size={20} color="#fbbf24" /> Collect Next Payment
+                </h3>
+                <div style={{ fontSize: '12px', opacity: 0.9, marginTop: '3px' }}>
+                  Rider: <strong>{rider.name}</strong> • EV: <strong>{collectingNextPayment.vehicle_reg || collectingNextPayment.vehicle_id || rider.assigned_vehicle || 'Assigned EV'}</strong>
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setCollectingNextPayment(null)}
+                style={{ background: 'rgba(255,255,255,0.2)', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'white' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Current Due Date & Overdue Status Box */}
+            <div style={{ padding: '16px 22px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                <div>
+                  <div style={{ fontSize: '11px', fontWeight: '800', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Current Due Date
+                  </div>
+                  <div style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                    <Calendar size={16} color="#059669" />
+                    {collectingNextPayment.next_payment_date ? new Date(collectingNextPayment.next_payment_date).toLocaleDateString('en-GB') : 'Not Set'}
+                  </div>
+                </div>
+
+                {collectingNextPayment.last_payment_date && (
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: '11px', fontWeight: '800', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Last Cycle Paid
+                    </div>
+                    <div style={{ fontSize: '13px', fontWeight: '700', color: '#059669', marginTop: '2px' }}>
+                      {new Date(collectingNextPayment.last_payment_date).toLocaleDateString('en-GB')}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Overdue alert banner if applicable */}
+              {collectingNextPayment.next_payment_date && new Date() > new Date(collectingNextPayment.next_payment_date) && (
+                <div style={{ marginTop: '10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '6px 10px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#b91c1c', fontWeight: '700' }}>
+                  <AlertTriangle size={14} /> Overdue by {Math.max(1, Math.floor((new Date() - new Date(collectingNextPayment.next_payment_date)) / 86400000))} days • Payment extends from current due date
+                </div>
+              )}
+            </div>
+
+            {/* Body Form */}
+            <form 
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleConfirmNextPayment(false);
+              }}
+              style={{ padding: '22px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}
+            >
+              {/* 1. Cycle Quick Selection */}
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  How many cycles is rider paying for?
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                  {[1, 2, 3, 4].map(num => {
+                    const planPrice = parseFloat(collectingNextPayment.plan_price || 1600);
+                    const isSelected = nextPayCycleCount === String(num);
+                    return (
+                      <button
+                        key={num}
+                        type="button"
+                        onClick={() => handleNextPayCycleChange(num)}
+                        style={{
+                          padding: '10px 6px',
+                          borderRadius: '10px',
+                          border: isSelected ? '2px solid #00a66c' : '1px solid #cbd5e1',
+                          background: isSelected ? '#ecfdf5' : 'white',
+                          color: isSelected ? '#065f46' : '#334155',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '2px',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <span style={{ fontSize: '12px', fontWeight: '800' }}>{num} {num === 1 ? 'Week' : 'Weeks'}</span>
+                        <span style={{ fontSize: '13px', fontWeight: '900', color: isSelected ? '#00a66c' : '#0f172a' }}>₹{(planPrice * num).toLocaleString('en-IN')}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 2. Amount and Payment Date */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Payment Amount (₹) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    value={nextPayAmount}
+                    onChange={(e) => setNextPayAmount(e.target.value)}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '14px', fontWeight: '800', color: '#0f172a', outline: 'none' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Payment Date & Time *
+                  </label>
+                  <input
+                    type="datetime-local"
+                    required
+                    value={nextPayDate}
+                    onChange={(e) => setNextPayDate(e.target.value)}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '12px', fontWeight: '700', outline: 'none' }}
+                  />
+                </div>
+              </div>
+
+              {/* 3. New Next Due Date Live Preview & Override */}
+              <div style={{ background: '#ecfdf5', padding: '12px 14px', borderRadius: '12px', border: '1px solid #a7f3d0' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '11px', fontWeight: '800', color: '#065f46', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    New Next Due Date (Auto-calculated)
+                  </span>
+                  <span style={{ fontSize: '10px', fontWeight: '800', background: '#059669', color: 'white', padding: '2px 6px', borderRadius: '4px' }}>
+                    +{nextPayCycleCount} {parseInt(nextPayCycleCount) === 1 ? 'Week' : 'Weeks'}
+                  </span>
+                </div>
+                <input
+                  type="datetime-local"
+                  required
+                  value={customNextDueDate}
+                  onChange={(e) => setCustomNextDueDate(e.target.value)}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid #6ee7b7', fontSize: '13px', fontWeight: '800', color: '#065f46', outline: 'none', background: 'white' }}
+                />
+                <div style={{ fontSize: '11px', color: '#047857', marginTop: '4px' }}>
+                  ✅ Rider's contract will be valid up to this date. You can adjust it if needed.
+                </div>
+              </div>
+
+              {/* 4. Payment Mode Pills */}
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Payment Method
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                  {[
+                    { mode: 'cash', label: '💵 Cash' },
+                    { mode: 'upi', label: '📱 UPI' },
+                    { mode: 'deposit', label: '🛡️ Deposit' },
+                    { mode: 'credit', label: '💳 Bank' }
+                  ].map(m => {
+                    const isSelected = nextPayMode === m.mode;
+                    return (
+                      <button
+                        key={m.mode}
+                        type="button"
+                        onClick={() => setNextPayMode(m.mode)}
+                        style={{
+                          padding: '9px 4px',
+                          borderRadius: '8px',
+                          border: isSelected ? '2px solid #00a66c' : '1px solid #cbd5e1',
+                          background: isSelected ? '#00a66c' : 'white',
+                          color: isSelected ? 'white' : '#334155',
+                          fontWeight: '800',
+                          fontSize: '12px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {m.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {nextPayMode === 'deposit' && (
+                  <div style={{ marginTop: '8px', fontSize: '11px', color: '#166534', background: '#f0fdf4', padding: '6px 10px', borderRadius: '6px', border: '1px solid #bbf7d0' }}>
+                    🛡️ Available Deposit: <strong>₹{parseFloat(details?.user?.security_deposit_balance || rider.security_deposit_balance || 0).toLocaleString('en-IN')}</strong>. This will deduct rent directly from rider's security balance.
+                  </div>
+                )}
+              </div>
+
+              {/* 5. Notes / Remarks */}
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Notes / Receipt Reference (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Paid in cash at hub counter"
+                  value={nextPayRemarks}
+                  onChange={(e) => setNextPayRemarks(e.target.value)}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                />
+              </div>
+
+              {/* Bottom Buttons */}
+              <div style={{ display: 'flex', gap: '8px', marginTop: '8px', paddingTop: '12px', borderTop: '1px solid #e2e8f0' }}>
+                <button
+                  type="button"
+                  onClick={() => setCollectingNextPayment(null)}
+                  style={{ flex: 1, padding: '11px', borderRadius: '8px', border: '1px solid #cbd5e1', background: 'white', color: '#475569', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={submittingNextPayment}
+                  onClick={() => handleConfirmNextPayment(true)}
+                  style={{ flex: 1.5, padding: '11px', borderRadius: '8px', border: '1px solid #00a66c', background: '#ecfdf5', color: '#00a66c', fontWeight: '800', fontSize: '12px', cursor: submittingNextPayment ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
+                >
+                  <Download size={14} /> Pay & Receipt
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingNextPayment}
+                  style={{ flex: 1.5, padding: '11px', borderRadius: '8px', border: 'none', background: '#00a66c', color: 'white', fontWeight: '800', fontSize: '12px', cursor: submittingNextPayment ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px', boxShadow: '0 2px 6px rgba(0, 166, 108, 0.25)' }}
+                >
+                  <CheckCircle2 size={14} /> {submittingNextPayment ? 'Confirming...' : 'Confirm Payment'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: EDIT WALLET / LEDGER TRANSACTION                       */}
+      {/* ============================================================ */}
+      {editingTransaction && (
+        <div 
+          onClick={() => setEditingTransaction(null)}
+          style={{
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(5px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 220,
+            padding: '16px'
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'white',
+              width: '100%',
+              maxWidth: '480px',
+              borderRadius: '20px',
+              overflow: 'hidden',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+              border: '1px solid #cbd5e1',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid #e2e8f0',
+              background: '#f8fafc',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Edit2 size={16} color="#00a66c" /> Edit Transaction #{editingTransaction.id}
+                </h3>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                  Rider: <strong>{rider.name}</strong> • Wallet Balance Adjuster
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setEditingTransaction(null)}
+                style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#64748b' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Form */}
+            <form 
+              onSubmit={handleSaveEditTx}
+              style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}
+            >
+              <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '10px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Amount (₹) *
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={editTxForm.amount}
+                    onChange={(e) => setEditTxForm(prev => ({ ...prev, amount: e.target.value }))}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '14px', fontWeight: '800', outline: 'none' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Type
+                  </label>
+                  <select
+                    value={editTxForm.type}
+                    onChange={(e) => setEditTxForm(prev => ({ ...prev, type: e.target.value }))}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: '700', outline: 'none', background: 'white' }}
+                  >
+                    <option value="credit">Credit (+)</option>
+                    <option value="debit">Debit (-)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Description / Narration
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editTxForm.description}
+                  onChange={(e) => setEditTxForm(prev => ({ ...prev, description: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', outline: 'none' }}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '10px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Date & Time
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={editTxForm.timestamp}
+                    onChange={(e) => setEditTxForm(prev => ({ ...prev, timestamp: e.target.value }))}
+                    style={{ width: '100%', padding: '9px 10px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Status
+                  </label>
+                  <select
+                    value={editTxForm.status}
+                    onChange={(e) => setEditTxForm(prev => ({ ...prev, status: e.target.value }))}
+                    style={{ width: '100%', padding: '9px 10px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '12px', fontWeight: '700', outline: 'none', background: 'white' }}
+                  >
+                    <option value="success">Success</option>
+                    <option value="pending">Pending</option>
+                    <option value="failed">Failed</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Reference / UTR ID
+                </label>
+                <input
+                  type="text"
+                  value={editTxForm.reference_id}
+                  onChange={(e) => setEditTxForm(prev => ({ ...prev, reference_id: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', marginTop: '10px', paddingTop: '12px', borderTop: '1px solid #e2e8f0' }}>
+                <button
+                  type="button"
+                  onClick={() => setEditingTransaction(null)}
+                  style={{ flex: 1, padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', background: 'white', color: '#475569', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingEditTx}
+                  style={{ flex: 1.5, padding: '10px', borderRadius: '8px', border: 'none', background: '#00a66c', color: 'white', fontWeight: '800', fontSize: '12px', cursor: submittingEditTx ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
+                >
+                  <CheckCircle2 size={14} /> {submittingEditTx ? 'Saving...' : 'Save Transaction'}
+                </button>
+              </div>
             </form>
           </div>
         </div>

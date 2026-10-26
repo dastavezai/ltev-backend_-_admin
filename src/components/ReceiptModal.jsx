@@ -8,12 +8,15 @@ export default function ReceiptModal({ isOpen, onClose, data }) {
     window.print();
   };
 
+  const liveFormattedDate = data.date || new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+  const liveFormattedTime = data.time || new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+
   const handleWhatsAppShare = () => {
     const phone = (data.riderPhone || '').replace(/\D/g, '').slice(-10);
     const receiptText = `*🧾 LT EV MOBILITY - PAYMENT RECEIPT*
 ----------------------------------------
 *Receipt No:* ${data.receiptNumber || 'REC-' + Math.floor(100000 + Math.random() * 900000)}
-*Date:* ${data.date || new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+*Date & Time:* ${liveFormattedDate}, ${liveFormattedTime}
 
 *👤 RIDER DETAILS:*
 *Name:* ${data.riderName || 'Rider'}
@@ -164,7 +167,7 @@ _Support: +91 9113750231 | https://ltev.in_`;
                   {data.receiptNumber || 'REC-' + Math.floor(100000 + Math.random() * 900000)}
                 </div>
                 <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
-                  Date: <strong>{data.date || new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</strong>
+                  Date: <strong>{liveFormattedDate}</strong> • <strong>{liveFormattedTime}</strong>
                 </div>
               </div>
             </div>

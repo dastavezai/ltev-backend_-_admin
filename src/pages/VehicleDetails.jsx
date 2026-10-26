@@ -70,6 +70,7 @@ _Support: +91 9113750231 | https://ltev.in_`;
     setSelectedReceiptData({
       receiptNumber: `SRV-${String(log.id).padStart(5, '0')}`,
       date: log.date_reported ? new Date(log.date_reported).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : new Date().toLocaleDateString('en-IN'),
+      time: log.date_reported && new Date(log.date_reported).getHours() !== 0 ? new Date(log.date_reported).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }),
       riderName: vehicle.current_renter || 'LT EV Fleet Maintenance',
       riderPhone: vehicle.current_renter_phone || 'N/A',
       riderEmail: 'N/A',
