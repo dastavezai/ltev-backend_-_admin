@@ -975,7 +975,7 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Resolve vehicle_id: frontend sends display code (e.g. "LT001" or "0001") — resolve to actual DB vehicle id
+    // Resolve vehicle_id: frontend sends display code (e.g. "LT001" or "0001") or vehicle.id — resolve to actual DB vehicle id
     let resolvedVehicleId = String(vehicle_id).trim();
     // First, check if vehicle exists directly by id or registration_number or model
     const directMatch = await client.query(
@@ -995,6 +995,21 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
           [rawNum, String(numericId)]
         );
         if (vById.rows.length > 0) resolvedVehicleId = vById.rows[0].id;
+      }
+    }
+
+    // Ensure resolvedVehicleId actually exists in vehicles table
+    const existsCheck = await client.query('SELECT id FROM vehicles WHERE id = $1 LIMIT 1', [resolvedVehicleId]);
+    if (existsCheck.rows.length === 0) {
+      const looseMatch = await client.query(
+        'SELECT id FROM vehicles WHERE UPPER(TRIM(registration_number)) = $1 OR UPPER(TRIM(model)) = $1 OR UPPER(TRIM(id)) = $1 LIMIT 1',
+        [resolvedVehicleId.toUpperCase()]
+      );
+      if (looseMatch.rows.length > 0) {
+        resolvedVehicleId = looseMatch.rows[0].id;
+      } else {
+        try { await client.query('ROLLBACK'); } catch (_) {}
+        return res.status(400).json({ error: `Vehicle "${vehicle_id}" not found in system. Please select a valid vehicle from the list.` });
       }
     }
 
@@ -1052,11 +1067,11 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       message: 'Service record logged successfully! Inventory updated.' 
     });
   } catch (err) {
-    await client.query('ROLLBACK');
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('Error creating maintenance log:', err);
     res.status(500).json({ error: err.message });
   } finally {
-    client.release();
+    try { client.release(); } catch (_) {}
   }
 });
 

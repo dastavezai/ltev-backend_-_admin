@@ -27,6 +27,8 @@ const getLocalDatetimeString = (dateObj = new Date()) => {
   return d.toISOString().slice(0, 16);
 };
 
+const API_BASE = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : '';
+
 export default function ManagementDashboard() {
   const navigate = useNavigate();
   const { token } = useAuth();
@@ -74,6 +76,7 @@ export default function ManagementDashboard() {
     billed_to: 'company', // 'company' | 'rider'
     payment_status: 'paid'
   });
+  const [waiveServiceCharge, setWaiveServiceCharge] = useState(false);
   const [submittingService, setSubmittingService] = useState(false);
   const [serviceRecordsFilter, setServiceRecordsFilter] = useState('all'); // 'all' | 'reported' | 'in_progress' | 'completed'
 
@@ -146,14 +149,14 @@ export default function ManagementDashboard() {
     setLoading(true);
     try {
       const [vehRes, standsRes, bkgRes, usrRes, plnRes, mntRes, catSvcRes, catPrtRes] = await Promise.all([
-        axios.get('/api/vehicles', authHeaders).catch(() => ({ data: [] })),
-        axios.get('/api/stands', authHeaders).catch(() => ({ data: [] })),
-        axios.get('/api/bookings/all', authHeaders).catch(() => ({ data: [] })),
-        axios.get('/api/users', authHeaders).catch(() => ({ data: [] })),
-        axios.get('/api/plans', authHeaders).catch(() => ({ data: [] })),
-        axios.get('/api/maintenance', authHeaders).catch(() => ({ data: [] })),
-        axios.get('/api/catalog/services', authHeaders).catch(() => ({ data: [] })),
-        axios.get('/api/catalog/parts', authHeaders).catch(() => ({ data: [] }))
+        axios.get(`${API_BASE}/api/vehicles`, authHeaders).catch(() => ({ data: [] })),
+        axios.get(`${API_BASE}/api/stands`, authHeaders).catch(() => ({ data: [] })),
+        axios.get(`${API_BASE}/api/bookings/all`, authHeaders).catch(() => ({ data: [] })),
+        axios.get(`${API_BASE}/api/users`, authHeaders).catch(() => ({ data: [] })),
+        axios.get(`${API_BASE}/api/plans`, authHeaders).catch(() => ({ data: [] })),
+        axios.get(`${API_BASE}/api/maintenance`, authHeaders).catch(() => ({ data: [] })),
+        axios.get(`${API_BASE}/api/catalog/services`, authHeaders).catch(() => ({ data: [] })),
+        axios.get(`${API_BASE}/api/catalog/parts`, authHeaders).catch(() => ({ data: [] }))
       ]);
 
       setVehicles(vehRes.data || []);
@@ -312,9 +315,9 @@ export default function ManagementDashboard() {
   };
 
   // Recalculate bill cost based on catalog pricing & selected parts
-  const recalculateServiceCost = (serviceName, currentSelectedParts) => {
+  const recalculateServiceCost = (serviceName, currentSelectedParts, isWaived = waiveServiceCharge) => {
     const sObj = catalogServices.find(s => s.name === serviceName);
-    const servicePrice = sObj ? parseFloat(sObj.price || 0) : 0;
+    const servicePrice = isWaived ? 0 : (sObj ? parseFloat(sObj.price || 0) : (serviceName ? 350 : 0));
     const partsPrice = currentSelectedParts.reduce((sum, p) => sum + parseFloat(p.mrp || p.price || 0), 0);
     const totalCost = servicePrice + partsPrice;
 
@@ -322,12 +325,17 @@ export default function ManagementDashboard() {
       ...prev,
       service_type: serviceName,
       parts_replaced: currentSelectedParts.map(p => `${p.name} (₹${parseFloat(p.mrp || p.price || 0)})`).join(', '),
-      cost: totalCost > 0 ? String(totalCost) : prev.cost
+      cost: String(totalCost)
     }));
   };
 
   const handleServiceTypeChange = (val) => {
-    recalculateServiceCost(val, selectedParts);
+    recalculateServiceCost(val, selectedParts, waiveServiceCharge);
+  };
+
+  const handleToggleWaiveServiceCharge = (waived) => {
+    setWaiveServiceCharge(waived);
+    recalculateServiceCost(serviceForm.service_type, selectedParts, waived);
   };
 
   const togglePartSelection = (part) => {
@@ -338,7 +346,7 @@ export default function ManagementDashboard() {
       updated = [...selectedParts, part];
     }
     setSelectedParts(updated);
-    recalculateServiceCost(serviceForm.service_type, updated);
+    recalculateServiceCost(serviceForm.service_type, updated, waiveServiceCharge);
   };
 
   // Open Official Service & Parts Invoice
@@ -359,7 +367,8 @@ export default function ManagementDashboard() {
       cost: log.cost || 0,
       date_reported: log.date_reported || log.created_at || new Date().toISOString(),
       issue_description: log.issue_description || '',
-      parts_replaced: log.parts_replaced || ''
+      parts_replaced: log.parts_replaced || '',
+      items_breakdown: log.items_breakdown || null
     }, 'service_parts');
   };
 
@@ -379,22 +388,58 @@ export default function ManagementDashboard() {
         if (foundUser) linkedUserId = foundUser.id;
       }
 
-      const res = await axios.post('/api/maintenance', {
+      // Prepare itemized breakdown for backend and invoice
+      const itemsBreakdown = [];
+      const sObj = catalogServices.find(s => s.name === serviceForm.service_type);
+      const originalServiceCharge = sObj ? parseFloat(sObj.price || 0) : 350;
+
+      if (serviceForm.service_type) {
+        itemsBreakdown.push({
+          name: serviceForm.service_type + (waiveServiceCharge ? ' (Service Charge Waived Off)' : ''),
+          type: 'Labor & Service',
+          qty: 1,
+          rate: waiveServiceCharge ? 0 : originalServiceCharge,
+          amount: waiveServiceCharge ? 0 : originalServiceCharge,
+          is_labor: true
+        });
+      }
+
+      selectedParts.forEach(p => {
+        const mrp = parseFloat(p.mrp || p.price || 0);
+        itemsBreakdown.push({
+          name: p.name,
+          type: 'Spare Part',
+          qty: 1,
+          rate: mrp,
+          amount: mrp,
+          is_labor: false
+        });
+      });
+
+      const targetVehicleId = selectedServiceVehicle?.id || serviceForm.vehicle_id;
+      const res = await axios.post(`${API_BASE}/api/maintenance`, {
         ...serviceForm,
-        user_id: linkedUserId
+        vehicle_id: targetVehicleId,
+        user_id: linkedUserId,
+        items_breakdown: itemsBreakdown
       }, authHeaders);
 
       const createdLog = res.data?.log || {
         id: Date.now(),
         vehicle_id: serviceForm.vehicle_id,
-        service_type: serviceForm.service_type,
+        service_type: serviceForm.service_type + (waiveServiceCharge ? ' (Charge Waived)' : ''),
         issue_description: serviceForm.issue_description,
         parts_replaced: serviceForm.parts_replaced,
         cost: serviceForm.cost,
         billed_to: serviceForm.billed_to,
         payment_status: serviceForm.payment_status,
-        date_reported: new Date().toISOString()
+        date_reported: new Date().toISOString(),
+        items_breakdown: itemsBreakdown
       };
+
+      if (!createdLog.items_breakdown) {
+        createdLog.items_breakdown = itemsBreakdown;
+      }
 
       // Automatically open downloadable & printable service invoice
       handleOpenServiceInvoice(createdLog);
@@ -407,11 +452,12 @@ export default function ManagementDashboard() {
         service_type: 'General Periodic Service & Tuning',
         issue_description: '',
         parts_replaced: '',
-        cost: '',
+        cost: '350',
         status: 'in_progress',
         billed_to: 'company',
         payment_status: 'paid'
       });
+      setWaiveServiceCharge(false);
       setSelectedParts([]);
       setSelectedServiceVehicle(null);
       setServiceSearchPlate('');
@@ -427,13 +473,13 @@ export default function ManagementDashboard() {
   const handleMarkServiceCompleted = async (logId, vehicleId) => {
     if (!window.confirm(`Mark service on EV ${vehicleId} as completed? This will set the vehicle back to Available.`)) return;
     try {
-      await axios.put(`/api/maintenance/${logId}`, {
+      await axios.put(`${API_BASE}/api/maintenance/${logId}`, {
         status: 'completed',
         vehicle_id: vehicleId
       }, authHeaders);
       
       // Update vehicle to available if not currently rented
-      await axios.put(`/api/vehicles/${vehicleId}`, {
+      await axios.put(`${API_BASE}/api/vehicles/${vehicleId}`, {
         status: 'available'
       }, authHeaders);
 
@@ -563,7 +609,7 @@ export default function ManagementDashboard() {
         }
 
         const res = await axios.post(
-          `/api/bookings/${selectedRentalForPayment.id}/deduct-deposit`,
+          `${API_BASE}/api/bookings/${selectedRentalForPayment.id}/deduct-deposit`,
           {
             amount: totalPaidAmt,
             remarks: combinedRemarks
@@ -583,7 +629,7 @@ export default function ManagementDashboard() {
         setRentPaymentModalOpen(false);
       } else {
         const res = await axios.post(
-          `/api/bookings/${selectedRentalForPayment.id}/collect-payment`,
+          `${API_BASE}/api/bookings/${selectedRentalForPayment.id}/collect-payment`,
           {
             amount: totalPaidAmt,
             payment_mode: primaryMode,
@@ -715,7 +761,7 @@ export default function ManagementDashboard() {
 
     // Refresh live vehicles list immediately
     if (token) {
-      axios.get('/api/vehicles', authHeaders)
+      axios.get(`${API_BASE}/api/vehicles`, authHeaders)
         .then(res => { if (res.data) setVehicles(res.data); })
         .catch(err => console.error('Error refreshing vehicles on slot modal open:', err));
     }
@@ -744,7 +790,7 @@ export default function ManagementDashboard() {
       const primaryMode = assignSlotPaymentRows.length === 1 ? assignSlotPaymentRows[0].mode : 'mixed';
 
       await axios.put(
-        `/api/bookings/${selectedBookingForSlot.id}`,
+        `${API_BASE}/api/bookings/${selectedBookingForSlot.id}`,
         {
           vehicle_id: assignSlotForm.vehicle_id,
           status: 'active',
@@ -821,10 +867,10 @@ export default function ManagementDashboard() {
     setSubmittingReturn(true);
     try {
       // Unassign rider and complete rental
-      await axios.post(`/api/vehicles/${selectedVehicleToReturn.id}/unassign-rider`, {}, authHeaders);
+      await axios.post(`${API_BASE}/api/vehicles/${selectedVehicleToReturn.id}/unassign-rider`, {}, authHeaders);
       
       if (returnVehicleForm.stand_location) {
-        await axios.put(`/api/vehicles/${selectedVehicleToReturn.id}`, {
+        await axios.put(`${API_BASE}/api/vehicles/${selectedVehicleToReturn.id}`, {
           location: returnVehicleForm.stand_location,
           status: 'available'
         }, authHeaders);
@@ -879,7 +925,7 @@ export default function ManagementDashboard() {
       const primaryMode = createBookingPaymentRows.length === 1 ? createBookingPaymentRows[0].mode : 'mixed';
       const combinedRemarks = [createBookingForm.remarks, breakdownStr].filter(Boolean).join(' | ');
 
-      const res = await axios.post('/api/bookings/create', {
+      const res = await axios.post(`${API_BASE}/api/bookings/create`, {
         ...createBookingForm,
         user_name: createBookingForm.name,
         user_phone: createBookingForm.phone,
@@ -1302,9 +1348,16 @@ export default function ManagementDashboard() {
 
               {/* Service Type Dropdown from Catalog */}
               <div style={{ marginBottom: '14px' }}>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
-                  Service Type (From Catalog & Pricing)
-                </label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', margin: 0 }}>
+                    Service Type (From Catalog & Pricing)
+                  </label>
+                  {serviceForm.service_type && (
+                    <span style={{ fontSize: '11px', color: waiveServiceCharge ? '#16a34a' : '#64748b', fontWeight: '600' }}>
+                      {waiveServiceCharge ? 'Charge Waived Off (₹0)' : 'Standard Labor Charge'}
+                    </span>
+                  )}
+                </div>
                 <select
                   value={serviceForm.service_type}
                   onChange={(e) => handleServiceTypeChange(e.target.value)}
@@ -1323,6 +1376,72 @@ export default function ManagementDashboard() {
                     ))
                   )}
                 </select>
+
+                {/* Option to Waive Off Service Charge */}
+                <div
+                  onClick={() => handleToggleWaiveServiceCharge(!waiveServiceCharge)}
+                  style={{
+                    marginTop: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    border: waiveServiceCharge ? '1.5px solid #16a34a' : '1px dashed #cbd5e1',
+                    background: waiveServiceCharge ? '#f0fdf4' : '#f8fafc',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      margin: 0,
+                      fontSize: '12px',
+                      fontWeight: waiveServiceCharge ? '700' : '600',
+                      color: waiveServiceCharge ? '#15803d' : '#475569'
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      id="waive-service-charge-toggle"
+                      checked={waiveServiceCharge}
+                      onChange={(e) => handleToggleWaiveServiceCharge(e.target.checked)}
+                      style={{
+                        width: '16px',
+                        height: '16px',
+                        cursor: 'pointer',
+                        accentColor: '#16a34a'
+                      }}
+                    />
+                    <span>Waive Off Service Charge (₹0 Labor / Inspection Fee)</span>
+                  </label>
+
+                  {waiveServiceCharge ? (
+                    <span style={{
+                      fontSize: '10.5px',
+                      fontWeight: '700',
+                      background: '#bbf7d0',
+                      color: '#166534',
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}>
+                      ✓ 100% WAIVED
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                      Click to waive
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* Spare Parts Replaced Multi-Select from Catalog */}
@@ -1406,14 +1525,23 @@ export default function ManagementDashboard() {
               <div className="mgmt-form-grid-2" style={{ marginBottom: '14px' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
-                    Bill Amount (₹)
+                    Bill Amount (₹) {waiveServiceCharge && <span style={{ color: '#16a34a', fontWeight: '700' }}>(Service Waived)</span>}
                   </label>
                   <input
                     type="number"
                     placeholder="0"
                     value={serviceForm.cost}
                     onChange={(e) => setServiceForm(prev => ({ ...prev, cost: e.target.value }))}
-                    style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: '600', boxSizing: 'border-box' }}
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: '6px',
+                      border: waiveServiceCharge ? '1.5px solid #86efac' : '1px solid #cbd5e1',
+                      background: waiveServiceCharge ? '#f0fdf4' : 'white',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      boxSizing: 'border-box'
+                    }}
                   />
                 </div>
 
@@ -1538,15 +1666,25 @@ export default function ManagementDashboard() {
                 {/* Service charge line */}
                 {serviceForm.service_type && (() => {
                   const sObj = catalogServices.find(s => s.name === serviceForm.service_type);
-                  const sPrice = sObj ? parseFloat(sObj.price || 0) : 0;
-                  if (!sObj) return null;
+                  const sPrice = sObj ? parseFloat(sObj.price || 0) : 350;
                   return (
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
                       <div style={{ flex: 1, paddingRight: '8px' }}>
                         <div style={{ fontSize: '12px', color: '#cbd5e1', fontWeight: '500' }}>🔧 {serviceForm.service_type}</div>
-                        <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px' }}>Service charge</div>
+                        <div style={{ fontSize: '10px', color: waiveServiceCharge ? '#4ade80' : '#64748b', marginTop: '2px', fontWeight: waiveServiceCharge ? '600' : 'normal' }}>
+                          {waiveServiceCharge ? '✨ Service charge waived off' : 'Service charge'}
+                        </div>
                       </div>
-                      <span style={{ fontSize: '13px', fontWeight: '700', color: '#7dd3fc', whiteSpace: 'nowrap' }}>₹{sPrice.toLocaleString('en-IN')}</span>
+                      <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        {waiveServiceCharge ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span style={{ fontSize: '11px', color: '#94a3b8', textDecoration: 'line-through' }}>₹{sPrice.toLocaleString('en-IN')}</span>
+                            <span style={{ fontSize: '13px', fontWeight: '800', color: '#4ade80' }}>₹0</span>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '13px', fontWeight: '700', color: '#7dd3fc' }}>₹{sPrice.toLocaleString('en-IN')}</span>
+                        )}
+                      </div>
                     </div>
                   );
                 })()}
@@ -1586,9 +1724,10 @@ export default function ManagementDashboard() {
               {/* Totals */}
               {(serviceForm.service_type || selectedParts.length > 0) && (() => {
                 const sObj = catalogServices.find(s => s.name === serviceForm.service_type);
-                const serviceCharge = sObj ? parseFloat(sObj.price || 0) : 0;
+                const originalServiceCharge = sObj ? parseFloat(sObj.price || 0) : (serviceForm.service_type ? 350 : 0);
+                const effectiveServiceCharge = waiveServiceCharge ? 0 : originalServiceCharge;
                 const partsTotal = selectedParts.reduce((sum, p) => sum + parseFloat(p.mrp || p.price || 0), 0);
-                const grandTotal = serviceCharge + partsTotal;
+                const grandTotal = effectiveServiceCharge + partsTotal;
 
                 return (
                   <div style={{ borderTop: '1px solid rgba(255,255,255,0.12)', marginTop: '12px', paddingTop: '12px' }}>
@@ -1598,10 +1737,17 @@ export default function ManagementDashboard() {
                         <span style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: '600' }}>₹{partsTotal.toLocaleString('en-IN')}</span>
                       </div>
                     )}
-                    {serviceCharge > 0 && (
+                    {originalServiceCharge > 0 && (
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
                         <span style={{ fontSize: '12px', color: '#94a3b8' }}>Service Charge</span>
-                        <span style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: '600' }}>₹{serviceCharge.toLocaleString('en-IN')}</span>
+                        {waiveServiceCharge ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span style={{ fontSize: '11px', color: '#94a3b8', textDecoration: 'line-through' }}>₹{originalServiceCharge.toLocaleString('en-IN')}</span>
+                            <span style={{ fontSize: '12px', color: '#4ade80', fontWeight: '700' }}>₹0 (Waived)</span>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: '600' }}>₹{originalServiceCharge.toLocaleString('en-IN')}</span>
+                        )}
                       </div>
                     )}
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '10px', paddingTop: '10px', borderTop: '1px dashed rgba(255,255,255,0.15)' }}>
@@ -2635,7 +2781,7 @@ export default function ManagementDashboard() {
                           type="button"
                           onClick={() => {
                             if (token) {
-                              axios.get('/api/vehicles', authHeaders)
+                              axios.get(`${API_BASE}/api/vehicles`, authHeaders)
                                 .then(res => { if (res.data) setVehicles(res.data); })
                                 .catch(err => console.error('Error refreshing vehicles:', err));
                             }
