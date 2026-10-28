@@ -3,7 +3,7 @@ import {
   Wrench, Bike, User, DollarSign, Calendar, Clock, Plus, Search, 
   Filter, CheckCircle2, AlertTriangle, Share2, Printer, Edit3, 
   Trash2, X, ShieldAlert, Check, RefreshCw, Send, ArrowRight, FileText, Package,
-  Eye, ExternalLink, Phone, MessageSquare, AlertCircle, Camera, UploadCloud
+  Eye, ExternalLink, Phone, MessageSquare, AlertCircle, Camera, UploadCloud, CreditCard
 } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
@@ -54,6 +54,17 @@ export default function VehicleServices() {
   const [submitting, setSubmitting] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
+  // Service Payment Update Modal State
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [selectedServiceForPayment, setSelectedServiceForPayment] = useState(null);
+  const [paymentUpdateForm, setPaymentUpdateForm] = useState({
+    payment_status: 'paid',
+    payment_mode: 'cash',
+    paid_at: getLocalDatetimeString(),
+    payment_remarks: ''
+  });
+  const [submittingPaymentUpdate, setSubmittingPaymentUpdate] = useState(false);
+
   // Form State
   const [formData, setFormData] = useState({
     vehicle_id: '',
@@ -69,11 +80,14 @@ export default function VehicleServices() {
     image_url: ''
   });
 
+  const [modalRiderSearch, setModalRiderSearch] = useState('');
+  const [systemUpiId, setSystemUpiId] = useState('9113750231@oksbi');
+
   const fetchData = async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const [srvRes, vehRes, usrRes, prtRes] = await Promise.all([
+      const [srvRes, vehRes, usrRes, prtRes, upiRes] = await Promise.all([
         axios.get(`${import.meta.env.VITE_API_URL || ''}/api/maintenance`, {
           headers: { Authorization: `Bearer ${token}` }
         }).catch(() => ({ data: [] })),
@@ -85,12 +99,18 @@ export default function VehicleServices() {
         }).catch(() => ({ data: [] })),
         axios.get(`${import.meta.env.VITE_API_URL || ''}/api/catalog/parts`, {
           headers: { Authorization: `Bearer ${token}` }
-        }).catch(() => ({ data: [] }))
+        }).catch(() => ({ data: [] })),
+        axios.get(`${import.meta.env.VITE_API_URL || ''}/api/system/upi-settings`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }).catch(() => ({ data: {} }))
       ]);
       setServices(srvRes.data);
       setVehicles(vehRes.data);
       setUsers(usrRes.data);
       setCatalogParts(prtRes.data || []);
+      if (upiRes.data?.upi_id) {
+        setSystemUpiId(upiRes.data.upi_id.trim());
+      }
     } catch (err) {
       console.error('Error loading service data:', err);
     } finally {
@@ -193,24 +213,29 @@ export default function VehicleServices() {
   // Save Service Record
   const handleSave = async (e) => {
     e.preventDefault();
-    if (!formData.vehicle_id || !formData.issue_description.trim()) {
-      alert('Please select vehicle and enter service details');
+    if (!formData.vehicle_id) {
+      alert('Please select vehicle number');
       return;
     }
 
     setSubmitting(true);
     try {
+      const payload = {
+        ...formData,
+        issue_description: formData.issue_description.trim() || formData.service_type || 'General Workshop Service'
+      };
+
       if (modalMode === 'create') {
         await axios.post(
           `${import.meta.env.VITE_API_URL || ''}/api/maintenance`,
-          formData,
+          payload,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         alert('Vehicle service / parts replacement record added successfully!');
       } else {
         await axios.put(
           `${import.meta.env.VITE_API_URL || ''}/api/maintenance/${editingId}`,
-          formData,
+          payload,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         alert('Service record updated successfully!');
@@ -237,8 +262,9 @@ export default function VehicleServices() {
     }
   };
 
-  // Quick Status Updater for Reported Issues
+  // Quick Status Updater for Reported Issues & In-Progress Services
   const handleUpdateStatus = async (id, newStatus, currentSrv) => {
+    if (newStatus === 'completed' && !window.confirm(`Mark service on EV ${currentSrv.vehicle_id} as completed? This will set vehicle back to Available.`)) return;
     try {
       await axios.put(`${import.meta.env.VITE_API_URL || ''}/api/maintenance/${id}`, {
         ...currentSrv,
@@ -246,9 +272,54 @@ export default function VehicleServices() {
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
+      alert(`Service status updated to ${newStatus === 'completed' ? 'Completed (Vehicle is now Available)' : 'In Progress (Under Maintenance)'}!`);
       fetchData();
     } catch (err) {
       alert('Error updating status: ' + (err.response?.data?.error || err.message));
+    }
+  };
+
+  // Open Update Payment Modal for Service Record
+  const handleOpenUpdatePaymentModal = (srv) => {
+    setSelectedServiceForPayment(srv);
+    setPaymentUpdateForm({
+      payment_status: srv.payment_status === 'pending' || srv.status === 'in_progress' ? 'paid' : (srv.payment_status || 'paid'),
+      payment_mode: srv.payment_mode || (srv.payment_status === 'deducted_from_deposit' ? 'deposit' : 'cash'),
+      paid_at: srv.paid_at ? getLocalDatetimeString(new Date(srv.paid_at)) : getLocalDatetimeString(),
+      payment_remarks: srv.payment_remarks || ''
+    });
+    setPaymentModalOpen(true);
+  };
+
+  // Submit Payment Update
+  const handleSubmitPaymentUpdate = async (e) => {
+    e.preventDefault();
+    if (!selectedServiceForPayment) return;
+    setSubmittingPaymentUpdate(true);
+    try {
+      const isDeposit = paymentUpdateForm.payment_mode === 'deposit';
+      if (isDeposit && paymentUpdateForm.payment_status === 'paid') {
+        const res = await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/maintenance/${selectedServiceForPayment.id}/deduct-deposit`, {}, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        alert(res.data?.message || 'Payment deducted from rider security deposit!');
+      } else {
+        await axios.put(`${import.meta.env.VITE_API_URL || ''}/api/maintenance/${selectedServiceForPayment.id}`, {
+          payment_status: paymentUpdateForm.payment_status,
+          payment_mode: paymentUpdateForm.payment_mode,
+          paid_at: paymentUpdateForm.paid_at,
+          payment_remarks: paymentUpdateForm.payment_remarks
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        alert(`Payment status updated to ${paymentUpdateForm.payment_status === 'paid' ? 'PAID & SETTLED' : 'PENDING'}!`);
+      }
+      setPaymentModalOpen(false);
+      fetchData();
+    } catch (err) {
+      alert('Failed to update payment: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSubmittingPaymentUpdate(false);
     }
   };
 
@@ -286,7 +357,7 @@ export default function VehicleServices() {
       return;
     }
 
-    const upiId = '9113750231@oksbi';
+    const upiId = systemUpiId || '9113750231@oksbi';
     const amount = parseFloat(srv.cost || 0);
     const upiIntentUrl = `upi://pay?pa=${upiId}&pn=LocalToto&am=${amount}&tn=Service_${srv.vehicle_id}`;
 
@@ -294,8 +365,8 @@ export default function VehicleServices() {
 ----------------------------------------
 *🛵 Vehicle:* ${srv.vehicle_id} (${srv.vehicle_model || 'LT.ev Scooter'})
 *👤 Rider:* ${srv.user_name || 'Rider'}
-*🔧 Service:* ${srv.service_type}
-*📝 Details / Parts:* ${srv.issue_description}
+*🔧 Service:* ${srv.service_type || 'General Service'}
+*📝 Details / Parts:* ${srv.issue_description || 'General Workshop Service'}
 ${srv.parts_replaced ? `*🔩 Parts Replaced:* ${srv.parts_replaced}\n` : ''}*💰 Total Amount Due:* ₹${amount.toLocaleString('en-IN')}
 
 *📲 Pay Instantly via UPI Link:*
@@ -304,7 +375,7 @@ ${upiIntentUrl}
 *Or Pay to UPI ID:* ${upiId}
 _After payment, please share screenshot or UTR number._
 ----------------------------------------
-_Support: +91 9113750231 | https://ltev.in_`;
+_Support: +91 78705 72429 | https://ltev.in_`;
 
     const url = `https://wa.me/91${phone}?text=${encodeURIComponent(message)}`;
     window.open(url, '_blank');
@@ -816,6 +887,15 @@ _Support: +91 9113750231 | https://ltev.in_`;
                     <Printer size={13} /> Receipt
                   </button>
 
+                  {/* Update Payment Modal Button */}
+                  <button
+                    onClick={() => handleOpenUpdatePaymentModal(srv)}
+                    title="Update Payment Method / Record Payment"
+                    style={{ background: '#f8fafc', color: '#0f172a', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: '8px', fontWeight: '700', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    <CreditCard size={13} /> Update Payment
+                  </button>
+
                   {isBilledToRider && isPending && parseFloat(srv.security_deposit_balance || 0) >= parseFloat(srv.cost || 0) && (
                     <button
                       onClick={() => handleDeductFromDeposit(srv)}
@@ -952,12 +1032,11 @@ _Support: +91 9113750231 | https://ltev.in_`;
               {/* Service Description / Work Done */}
               <div>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                  Service Description & Issues Fixed *
+                  Service Description & Issues Fixed <span style={{ fontSize: '11px', color: '#64748b', fontWeight: '500' }}>(Optional)</span>
                 </label>
                 <textarea
-                  required
                   rows={3}
-                  placeholder="e.g. Front brake shoe replaced, rear tyre puncture repaired, chain lubed and tested."
+                  placeholder="Optional: e.g. Front brake shoe replaced, rear tyre puncture repaired, chain lubed and tested."
                   value={formData.issue_description}
                   onChange={(e) => setFormData({ ...formData, issue_description: e.target.value })}
                   style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', background: '#f8fafc', color: '#0f172a', outline: 'none', boxSizing: 'border-box' }}
@@ -1162,20 +1241,46 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 </div>
 
                 <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                    Linked Rider / Driver {formData.billed_to === 'rider' && <span style={{ color: '#ef4444' }}>*</span>}
-                  </label>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <label style={{ fontSize: '13px', fontWeight: '700', color: '#334155' }}>
+                      Linked Rider / Driver {formData.billed_to === 'rider' && <span style={{ color: '#ef4444' }}>*</span>}
+                    </label>
+                    <span style={{ fontSize: '11px', color: '#0284c7', fontWeight: '700' }}>
+                      Manual Billing for Old/Active Riders
+                    </span>
+                  </div>
+
+                  {/* Search input to quickly find any past or current rider */}
+                  <input
+                    type="text"
+                    placeholder="🔍 Search rider by name or phone..."
+                    value={modalRiderSearch}
+                    onChange={(e) => setModalRiderSearch(e.target.value)}
+                    style={{ width: '100%', padding: '6px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', marginBottom: '6px', boxSizing: 'border-box' }}
+                  />
+
                   <select
                     value={formData.user_id}
-                    onChange={(e) => setFormData({ ...formData, user_id: e.target.value })}
-                    style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', background: '#f8fafc', color: '#0f172a', outline: 'none' }}
+                    onChange={(e) => setFormData({ 
+                      ...formData, 
+                      user_id: e.target.value,
+                      billed_to: e.target.value ? 'rider' : formData.billed_to,
+                      payment_status: e.target.value ? 'pending' : formData.payment_status
+                    })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#f8fafc', color: '#0f172a', outline: 'none' }}
                   >
-                    <option value="">-- Select Rider --</option>
-                    {users.map(u => (
-                      <option key={u.id} value={u.raw_id || u.user_id || u.id}>
-                        {u.name} (📞 {u.phone})
-                      </option>
-                    ))}
+                    <option value="">-- Select Rider (Current or Old Rider) --</option>
+                    {users
+                      .filter(u => {
+                        if (!modalRiderSearch.trim()) return true;
+                        const q = modalRiderSearch.toLowerCase().trim();
+                        return (u.name || '').toLowerCase().includes(q) || (u.phone || '').includes(q) || String(u.id).includes(q);
+                      })
+                      .map(u => (
+                        <option key={u.id} value={u.raw_id || u.user_id || u.id}>
+                          {u.name} (📞 {u.phone || 'No phone'}) {u.assigned_vehicle ? `[EV: ${u.assigned_vehicle}]` : '[Past/Unassigned Rider]'}
+                        </option>
+                      ))}
                   </select>
                 </div>
               </div>
@@ -1326,6 +1431,163 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 style={{ maxWidth: '100%', maxHeight: '68vh', objectFit: 'contain', borderRadius: '8px' }} 
               />
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: UPDATE SERVICE PAYMENT & SETTLEMENT */}
+      {/* ============================================================ */}
+      {paymentModalOpen && selectedServiceForPayment && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 120, padding: '16px' }}>
+          <div style={{ background: 'white', width: '100%', maxWidth: '460px', borderRadius: '14px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)', overflow: 'hidden', border: '1px solid #e2e8f0' }}>
+            
+            {/* Modal Header */}
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>
+                  Update Service Payment
+                </h3>
+                <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
+                  Job Card #{selectedServiceForPayment.id} • EV {selectedServiceForPayment.vehicle_id}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPaymentModalOpen(false)}
+                style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: '4px' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form onSubmit={handleSubmitPaymentUpdate} style={{ padding: '20px' }}>
+              {/* Bill Details Summary Card */}
+              <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '8px', padding: '12px 14px', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: '11px', color: '#0369a1', fontWeight: '700', textTransform: 'uppercase' }}>Total Bill Amount</div>
+                    <div style={{ fontSize: '20px', fontWeight: '900', color: '#0369a1' }}>
+                      ₹{parseFloat(selectedServiceForPayment.cost || 0).toLocaleString('en-IN')}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right', fontSize: '12px', color: '#334155' }}>
+                    <div>Rider: <strong>{selectedServiceForPayment.user_name || 'Fleet'}</strong></div>
+                    <div>Service: <strong>{selectedServiceForPayment.service_type || 'General'}</strong></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Payment Status Option */}
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                  Payment Status
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentUpdateForm(prev => ({ ...prev, payment_status: 'paid' }))}
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: paymentUpdateForm.payment_status === 'paid' ? '2px solid #16a34a' : '1px solid #cbd5e1',
+                      background: paymentUpdateForm.payment_status === 'paid' ? '#f0fdf4' : 'white',
+                      color: paymentUpdateForm.payment_status === 'paid' ? '#166534' : '#64748b',
+                      fontWeight: '700',
+                      fontSize: '12px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    ✓ Paid & Settled
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentUpdateForm(prev => ({ ...prev, payment_status: 'pending' }))}
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: paymentUpdateForm.payment_status === 'pending' ? '2px solid #ea580c' : '1px solid #cbd5e1',
+                      background: paymentUpdateForm.payment_status === 'pending' ? '#fff7ed' : 'white',
+                      color: paymentUpdateForm.payment_status === 'pending' ? '#c2410c' : '#64748b',
+                      fontWeight: '700',
+                      fontSize: '12px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    ⚠️ Payment Pending / Due
+                  </button>
+                </div>
+              </div>
+
+              {/* Payment Method / Mode */}
+              {paymentUpdateForm.payment_status === 'paid' && (
+                <>
+                  <div style={{ marginBottom: '14px' }}>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                      Payment Method
+                    </label>
+                    <select
+                      value={paymentUpdateForm.payment_mode}
+                      onChange={(e) => setPaymentUpdateForm(prev => ({ ...prev, payment_mode: e.target.value }))}
+                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box', fontWeight: '600' }}
+                    >
+                      <option value="cash">💵 Cash Payment (Collected at Stand)</option>
+                      <option value="upi">📱 UPI / Online (GPay / PhonePe / Paytm / Bank)</option>
+                      <option value="deposit">🛡️ Deduct from Rider Security Deposit</option>
+                      <option value="company">🏢 Company Fleet Expense</option>
+                    </select>
+                  </div>
+
+                  {/* Payment Date & Time */}
+                  <div style={{ marginBottom: '14px' }}>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                      Payment Received Date & Time
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={paymentUpdateForm.paid_at}
+                      onChange={(e) => setPaymentUpdateForm(prev => ({ ...prev, paid_at: e.target.value }))}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }}
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* Remarks / UTR Reference */}
+              <div style={{ marginBottom: '18px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                  Payment Reference / Remarks (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. UTR #123456789 or Cash received by Manoj"
+                  value={paymentUpdateForm.payment_remarks}
+                  onChange={(e) => setPaymentUpdateForm(prev => ({ ...prev, payment_remarks: e.target.value }))}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              {/* Modal Action Buttons */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setPaymentModalOpen(false)}
+                  style={{ padding: '8px 14px', borderRadius: '8px', border: '1px solid #cbd5e1', background: 'white', color: '#64748b', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingPaymentUpdate}
+                  style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: '#0284c7', color: 'white', fontSize: '13px', fontWeight: '700', cursor: 'pointer' }}
+                >
+                  {submittingPaymentUpdate ? 'Saving...' : 'Save & Update Invoice'}
+                </button>
+              </div>
+
+            </form>
+
           </div>
         </div>
       )}

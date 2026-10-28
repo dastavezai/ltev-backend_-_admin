@@ -36,10 +36,20 @@ export default function VehicleDetails() {
   // Receipt Modal State
   const [receiptModalOpen, setReceiptModalOpen] = useState(false);
   const [selectedReceiptData, setSelectedReceiptData] = useState(null);
+  const [systemUpiId, setSystemUpiId] = useState('9113750231@oksbi');
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    axios.get('/api/system/upi-settings', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    }).then(res => {
+      if (res.data?.upi_id) setSystemUpiId(res.data.upi_id.trim());
+    }).catch(() => {});
+  }, []);
 
   const handleSendPaymentReminder = (log) => {
     const phone = (vehicle.current_renter_phone || '').replace(/\D/g, '').slice(-10);
-    const upiId = '9113750231@oksbi';
+    const upiId = systemUpiId || '9113750231@oksbi';
     const amount = parseFloat(log.cost || 0);
     const upiIntentUrl = `upi://pay?pa=${upiId}&pn=LocalToto&am=${amount}&tn=Service_${vehicle.id}`;
 
@@ -48,7 +58,7 @@ export default function VehicleDetails() {
 *🛵 Vehicle:* ${vehicle.id} (${vehicle.model})
 *👤 Rider:* ${vehicle.current_renter || 'Rider'}
 *🔧 Service:* ${log.service_type || 'Vehicle Maintenance'}
-*📝 Details:* ${log.issue_description}
+*📝 Details:* ${log.issue_description || 'General Workshop Service'}
 ${log.parts_replaced ? `*🔩 Parts Replaced:* ${log.parts_replaced}\n` : ''}*💰 Total Amount Due:* ₹${amount.toLocaleString('en-IN')}
 
 *📲 Pay Instantly via UPI Link:*
@@ -57,7 +67,7 @@ ${upiIntentUrl}
 *Or Pay to UPI ID:* ${upiId}
 _After payment, please share screenshot or UTR number._
 ----------------------------------------
-_Support: +91 9113750231 | https://ltev.in_`;
+_Support: +91 78705 72429 | https://ltev.in_`;
 
     if (phone) {
       window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(message)}`, '_blank');

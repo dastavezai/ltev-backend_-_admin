@@ -32,7 +32,7 @@ export default function Dashboard() {
     fetchStats();
   }, []);
 
-  const preBookingsList = recentBookings.filter(b => b.status === 'pre_booking');
+  const preBookingsList = recentBookings.filter(b => (b.status === 'pre_booking' || !b.vehicle_id) && b.status !== 'active' && !b.vehicle_id);
   const overdueList = recentBookings.filter(b => b.is_overdue || b.payment_status === 'overdue');
 
   const stats = [

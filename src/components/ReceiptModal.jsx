@@ -35,7 +35,7 @@ ${data.remarks ? `*Remarks:* ${data.remarks}` : ''}
 
 ----------------------------------------
 _Thank you for choosing LT EV Mobility!_
-_Support: +91 9113750231 | https://ltev.in_`;
+_Support: +91 78705 72429 | https://ltev.in_`;
 
     const url = `https://wa.me/91${phone}?text=${encodeURIComponent(receiptText)}`;
     window.open(url, '_blank');
@@ -156,7 +156,7 @@ _Support: +91 9113750231 | https://ltev.in_`;
               <p style={{ margin: 0, fontSize: '12px', color: '#64748b', fontWeight: '500' }}>Smart Urban Electric Mobility Solutions</p>
               <div style={{ marginTop: '8px', fontSize: '11px', color: '#475569', lineHeight: '1.5' }}>
                 <div>📍 Bailey Road, Khajpura, Patna, Bihar - 800014</div>
-                <div>📞 +91 9113750231 &bull; ✉ support@ltev.in &bull; 🌐 https://ltev.in</div>
+                <div>📞 +91 78705 72429 &bull; ✉ support@ltev.in &bull; 🌐 https://ltev.in</div>
               </div>
             </div>
 

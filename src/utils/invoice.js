@@ -135,7 +135,7 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
       <div class="meta-col">
         <h4>Reservation & EV Status</h4>
         <div class="meta-item">Service Type: <strong>EV Rental</strong></div>
-        <div class="meta-item">Vehicle Status: <strong style="color: #0284c7;">Advance Booking</strong></div>
+        <div class="meta-item">Vehicle Status: <strong style="color: ${data.vehicle_id ? '#16a34a' : '#0284c7'};">${data.vehicle_id ? `Assigned (${data.vehicle_name || data.vehicle_id}) — Active Rental` : 'Advance Booking (Pending Vehicle)'}</strong></div>
         <div class="meta-item">Primary Payment: <strong>${paymentMode}</strong></div>
         ${cleanReceipt ? `<div class="meta-item">Payment Breakdown / Ref: <strong>${cleanReceipt}</strong></div>` : ''}
       </div>
@@ -538,8 +538,34 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
     const serviceType = data.service_type || 'General Periodic Service & Tuning';
     const issueDesc = data.issue_description || 'Front brake shoe replaced, chain adjustment & inspection.';
     const billedTo = (data.billed_to || 'rider').toUpperCase();
-    const paymentStatus = (data.payment_status || 'paid').toUpperCase();
     const isRiderBilled = billedTo === 'RIDER';
+
+    const jobStatus = (data.status || 'completed').toLowerCase();
+    const isInProgress = jobStatus === 'in_progress' || jobStatus === 'reported';
+    const rawPaymentStatus = (data.payment_status || (isInProgress ? 'pending' : (isRiderBilled ? 'pending' : 'paid'))).toLowerCase();
+    const isPaid = (rawPaymentStatus === 'paid' || rawPaymentStatus === 'deducted_from_deposit') && !isInProgress;
+
+    let paymentBadgeText = 'PAID & SETTLED';
+    let paymentBadgeColor = '#16a34a';
+    let paymentBadgeBg = '#f0fdf4';
+    let paymentBadgeBorder = '#86efac';
+
+    if (isInProgress) {
+      paymentBadgeText = 'UNDER SERVICE (PAYMENT PENDING)';
+      paymentBadgeColor = '#ea580c';
+      paymentBadgeBg = '#fff7ed';
+      paymentBadgeBorder = '#fdba74';
+    } else if (!isPaid) {
+      paymentBadgeText = 'PAYMENT PENDING / DUE';
+      paymentBadgeColor = '#dc2626';
+      paymentBadgeBg = '#fef2f2';
+      paymentBadgeBorder = '#fca5a5';
+    } else if (rawPaymentStatus === 'deducted_from_deposit') {
+      paymentBadgeText = 'PAID (DEDUCTED FROM DEPOSIT)';
+      paymentBadgeColor = '#0284c7';
+      paymentBadgeBg = '#f0f9ff';
+      paymentBadgeBorder = '#bae6fd';
+    }
 
     // Parse itemized parts and charges
     let items = [];
@@ -656,9 +682,12 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
         <h4>Job Card & Payment Status</h4>
         <div class="meta-item">Job Card ID: <strong style="font-family: monospace;">${serviceId}</strong></div>
         <div class="meta-item">Service Date: <strong>${formattedServiceDate}</strong></div>
+        <div class="meta-item">Work Status: <strong style="color: ${isInProgress ? '#ea580c' : '#16a34a'};">${isInProgress ? 'In Progress (Under Repair)' : 'Completed (Vehicle Ready)'}</strong></div>
+        <div class="meta-item">Payment Status: <strong style="color: ${paymentBadgeColor};">${paymentBadgeText}</strong></div>
+        ${isPaid && data.payment_mode ? `<div class="meta-item">Payment Mode: <strong style="text-transform: uppercase;">${data.payment_mode}</strong></div>` : ''}
+        ${data.payment_remarks ? `<div class="meta-item">Payment Ref: <strong>${data.payment_remarks}</strong></div>` : ''}
         <div class="meta-item">Invoice Generated: <strong style="color: #0284c7;">${invoiceDate}, ${invoiceTime}</strong></div>
         <div class="meta-item">Billed To: <strong>${isRiderBilled ? 'Rider Account' : 'Company Fleet Expense'}</strong></div>
-        <div class="meta-item">Payment Status: <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#dc2626'};">${paymentStatus === 'PAID' ? 'PAID & SETTLED' : 'PENDING'}</strong></div>
       </div>
     </div>
 
@@ -722,12 +751,25 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
         </div>` : ''}
         <div class="totals-row" style="border-top: 1px solid #e2e8f0; font-weight: 800; font-size: 15px;">
           <span>Grand Total</span>
-          <span style="color: #16a34a;">₹${totalAmount.toLocaleString('en-IN')}.00</span>
+          <span style="color: #0f172a;">₹${totalAmount.toLocaleString('en-IN')}.00</span>
         </div>
-        <div class="totals-row highlight" style="background: ${paymentStatus === 'PAID' ? '#f0fdf4' : '#fff7ed'};">
-          <span style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'};">Status</span>
-          <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'};">${paymentStatus === 'PAID' ? 'PAID & SETTLED' : 'PENDING'}</strong>
+        <div class="totals-row">
+          <span>Amount Paid</span>
+          <strong style="color: ${isPaid ? '#16a34a' : '#64748b'};">₹${(isPaid ? totalAmount : 0).toLocaleString('en-IN')}.00</strong>
         </div>
+        <div class="totals-row">
+          <span>Amount Due</span>
+          <strong style="color: ${isPaid ? '#16a34a' : '#dc2626'}; font-size: 14px;">₹${(isPaid ? 0 : totalAmount).toLocaleString('en-IN')}.00</strong>
+        </div>
+        <div class="totals-row highlight" style="background: ${paymentBadgeBg}; border: 1px solid ${paymentBadgeBorder};">
+          <span style="color: ${paymentBadgeColor}; font-weight: 700;">Status</span>
+          <strong style="color: ${paymentBadgeColor};">${paymentBadgeText}</strong>
+        </div>
+        ${isPaid && data.payment_mode ? `
+        <div class="totals-row" style="font-size: 12px; color: #64748b;">
+          <span>Payment Mode</span>
+          <strong style="color: #0f172a; text-transform: uppercase;">${data.payment_mode}</strong>
+        </div>` : ''}
       </div>
     </div>
 
@@ -751,6 +793,206 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
 
   </div>
   ${getInvoiceScriptHTML(serviceId, cleanPhone)}
+</body>
+</html>`;
+  }
+
+  // ============================================================
+  // 5. NO OBJECTION CERTIFICATE (NOC) & RIDE SETTLEMENT TEMPLATE
+  // ============================================================
+  if (type === 'noc_certificate') {
+    const nocId = data.noc_number || data.id || `NOC-${Date.now().toString().slice(-6)}`;
+    const issueDate = data.closure_date || data.vehicle_returned_at || data.created_at || Date.now();
+    const formattedIssueDate = formatIndianDate(issueDate);
+    const issueTime = formatIndianTime(issueDate);
+
+    const riderName = data.user_name || data.name || 'Rider';
+    const riderPhone = (data.user_phone && data.user_phone !== '9000000000' && data.user_phone !== '0000000000') ? data.user_phone : (data.phone || 'N/A');
+    const riderId = data.user_id ? (String(data.user_id).startsWith('USR-') ? data.user_id : `USR-${String(data.user_id).padStart(3, '0')}`) : 'N/A';
+
+    const vehicleCode = data.vehicle_id || data.vehicle_reg || 'N/A';
+    const vehicleModel = data.vehicle_model || 'LT Commercial EV';
+    const startDate = data.rent_start_date ? formatIndianDate(data.rent_start_date) : 'N/A';
+    const returnDate = data.vehicle_returned_at ? formatIndianDate(data.vehicle_returned_at) : formattedIssueDate;
+    const durationDays = data.rental_duration_days || 0;
+    const returnStand = data.return_stand || 'Khajpura Stand';
+    const conditionNotes = data.vehicle_condition_notes || 'All body panels, motor, and battery inspected. Surrendered in satisfactory condition.';
+
+    const initialDeposit = parseFloat(data.initial_security_deposit || 0);
+    const deductionsAmount = parseFloat(data.deductions_amount || 0);
+    const netRefundable = parseFloat(data.net_refundable_amount || 0);
+
+    const deductionsList = Array.isArray(data.deductions_breakdown) ? data.deductions_breakdown : (typeof data.deductions_breakdown === 'string' ? JSON.parse(data.deductions_breakdown || '[]') : []);
+    const servicesList = Array.isArray(data.services_summary) ? data.services_summary : (typeof data.services_summary === 'string' ? JSON.parse(data.services_summary || '[]') : []);
+
+    const coolingDays = data.cooling_period_days || 30;
+    const expectedRefundDate = data.expected_refund_date ? formatIndianDate(data.expected_refund_date) : 'N/A';
+    const isRefundProcessed = data.refund_status === 'refund_processed';
+    const refundPaidDate = data.refund_paid_date ? formatIndianDate(data.refund_paid_date) : null;
+
+    const payoutMode = (data.payout_mode || (data.payout_upi_id ? 'upi' : 'bank')).toUpperCase();
+    const payoutUpi = data.payout_upi_id || 'N/A';
+    const payoutAcc = data.payout_account_number || 'N/A';
+    const payoutIfsc = data.payout_ifsc_code || 'N/A';
+    const payoutHolder = data.payout_account_holder || riderName;
+
+    const title = `No Objection Certificate (NOC) — ${riderName} (${nocId})`;
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${title}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+  <style>${getCommonCSS()}</style>
+</head>
+<body>
+  ${getActionBarHTML(nocId, 'No Objection Certificate (NOC)')}
+  <div class="invoice-wrapper" id="printable-invoice">
+    ${getBrandHeaderHTML(logoUrl, companyLegal, companyAddress, nocId, formattedIssueDate, issueTime)}
+
+    <div style="text-align: center; margin-bottom: 22px; padding: 12px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px;">
+      <h2 style="font-size: 18px; font-weight: 800; color: #0f172a; letter-spacing: -0.3px; margin: 0 0 4px 0; text-transform: uppercase;">
+        No Objection Certificate (NOC) & Ride Account Settlement
+      </h2>
+      <p style="font-size: 12px; color: #475569; margin: 0;">
+        Official certificate confirming complete vehicle surrender, workshop clearance, and security deposit settlement.
+      </p>
+    </div>
+
+    <!-- Rider & Vehicle Meta Grid -->
+    <div class="meta-grid">
+      <div class="meta-col">
+        <h4>1. Rider & Identity Clearance</h4>
+        <div class="meta-item">Rider Name: <strong>${riderName}</strong></div>
+        <div class="meta-item">Rider ID: <strong style="font-family: monospace;">${riderId}</strong></div>
+        <div class="meta-item">Mobile Number: <strong style="font-family: monospace;">${riderPhone}</strong></div>
+        <div class="meta-item">Account Status: <strong style="color: #16a34a;">Ride Account Closed (Settled)</strong></div>
+        <div class="meta-item">NOC Ref Number: <strong style="font-family: monospace; color: #0284c7;">${nocId}</strong></div>
+      </div>
+      <div class="meta-col">
+        <h4>2. Scooter Surrender & Inspection</h4>
+        <div class="meta-item">Assigned EV: <strong style="color: #0284c7;">🛵 ${vehicleCode}</strong> <span style="font-size: 11px; color: #64748b;">(${vehicleModel})</span></div>
+        <div class="meta-item">Rental Period: <strong>${startDate} → ${returnDate}</strong></div>
+        <div class="meta-item">Rental Duration: <strong>${durationDays} Day${durationDays === 1 ? '' : 's'}</strong></div>
+        <div class="meta-item">Return Stand: <strong>${returnStand}</strong></div>
+        <div class="meta-item">Vehicle Condition: <em>${conditionNotes}</em></div>
+      </div>
+    </div>
+
+    <!-- Workshop & Maintenance Clearance -->
+    <div style="margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px 16px; background: #fafafa;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <span style="font-size: 12px; font-weight: 700; color: #334155; text-transform: uppercase;">3. Workshop & Maintenance Clearance</span>
+        <span style="font-size: 11px; font-weight: 700; color: #16a34a; background: #dcfce7; padding: 2px 8px; border-radius: 4px;">
+          ✓ Fully Cleared (${servicesList.length} Service Record${servicesList.length === 1 ? '' : 's'})
+        </span>
+      </div>
+      ${servicesList.length > 0 ? `
+        <div style="font-size: 11px; color: #64748b; line-height: 1.6;">
+          ${servicesList.slice(0, 4).map(s => `• ${s.service_type || 'General Service'} on ${formatIndianDate(s.date)} — ₹${s.cost || 0} (${s.payment_status || 'cleared'})`).join('<br>')}
+          ${servicesList.length > 4 ? `• and ${servicesList.length - 4} more workshop services inspected and cleared.` : ''}
+        </div>
+      ` : `
+        <div style="font-size: 12px; color: #64748b;">No outstanding maintenance logs or workshop damages reported. Zero service liabilities pending.</div>
+      `}
+    </div>
+
+    <!-- Security Deposit Settlement Table -->
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 70%;">4. Security Deposit Settlement Item</th>
+            <th class="text-right" style="width: 30%;">Amount (₹)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <div style="font-weight: 700; color: #0f172a;">Total Security Deposit Paid on Account</div>
+              <div style="font-size: 11px; color: #64748b;">Refundable deposit paid during onboarding / booking handover.</div>
+            </td>
+            <td class="text-right" style="font-weight: 700; color: #0f172a;">₹${initialDeposit.toLocaleString('en-IN')}.00</td>
+          </tr>
+          ${deductionsList.map(d => `
+            <tr>
+              <td>
+                <div style="font-weight: 600; color: #dc2626;">(-) Deduction: ${d.title || 'Damage / Penalty / Challan'}</div>
+                <div style="font-size: 11px; color: #64748b;">${d.reason || 'Deducted as per rental settlement agreement'}</div>
+              </td>
+              <td class="text-right" style="font-weight: 600; color: #dc2626;">-₹${parseFloat(d.amount || 0).toLocaleString('en-IN')}.00</td>
+            </tr>
+          `).join('')}
+          ${deductionsList.length === 0 ? `
+            <tr>
+              <td>
+                <div style="color: #64748b;">Deductions (Damages, unpaid dues, traffic challans)</div>
+              </td>
+              <td class="text-right" style="color: #64748b;">₹0.00</td>
+            </tr>
+          ` : ''}
+          <tr style="background: #f0fdf4; border-top: 2px solid #86efac;">
+            <td>
+              <div style="font-size: 13px; font-weight: 800; color: #166534; text-transform: uppercase;">Net Refundable Security Deposit</div>
+              <div style="font-size: 11px; color: #15803d;">Amount payable to rider following 30–45 days verification cooling window.</div>
+            </td>
+            <td class="text-right">
+              <span style="font-size: 16px; font-weight: 800; color: #166534;">₹${netRefundable.toLocaleString('en-IN')}.00</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 30-45 Days Refund Policy & Payout Details -->
+    <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px 18px; margin-bottom: 24px;">
+      <h4 style="font-size: 12px; font-weight: 800; color: #0f172a; text-transform: uppercase; margin-bottom: 8px;">
+        5. 30–45 Days Security Deposit Refund Policy & Schedule
+      </h4>
+      <div style="font-size: 12px; color: #334155; line-height: 1.6; margin-bottom: 12px;">
+        In accordance with commercial electric vehicle lease guidelines, the refundable security deposit of 
+        <strong style="color: #166534;">₹${netRefundable.toLocaleString('en-IN')}.00</strong> is processed within 
+        <strong>30 to 45 calendar days</strong> from vehicle surrender date. This cooling duration ensures complete verification 
+        of late-reported traffic e-challans, state RTO camera penalties, toll disputes, and comprehensive battery health evaluation.
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; background: #ffffff; padding: 10px 14px; border-radius: 6px; border: 1px solid #e2e8f0; font-size: 12px;">
+        <div>
+          <div style="color: #64748b; font-size: 11px;">Expected Refund Date (Post 30-45 Days):</div>
+          <div style="font-weight: 700; color: #0284c7; font-size: 13px;">${expectedRefundDate} (${coolingDays} Days Policy)</div>
+        </div>
+        <div>
+          <div style="color: #64748b; font-size: 11px;">Refund Payout Status:</div>
+          <div>
+            ${isRefundProcessed ? `
+              <span style="color: #15803d; font-weight: 800;">✓ Refund Settled on ${refundPaidDate || 'Recent'} (${data.refund_txn_id || 'Processed'})</span>
+            ` : `
+              <span style="color: #b45309; font-weight: 800;">⏳ Under 30-45 Days Verification Cooling Period</span>
+            `}
+          </div>
+        </div>
+        <div style="grid-column: span 2; border-top: 1px dashed #e2e8f0; padding-top: 6px; margin-top: 2px;">
+          <div style="color: #64748b; font-size: 11px;">Rider Destination Payout Account:</div>
+          <div style="font-weight: 600; color: #0f172a; font-family: monospace;">
+            ${payoutMode === 'UPI' ? `UPI ID: ${payoutUpi}` : `Bank A/c: ${payoutAcc} | IFSC: ${payoutIfsc} | Name: ${payoutHolder}`}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Official Declaration -->
+    <div style="font-size: 11px; color: #64748b; line-height: 1.5; margin-bottom: 24px; border-left: 3px solid #0284c7; padding-left: 12px;">
+      <strong>Official Declaration:</strong> Wheely Buzz Localtoto Transport Solution Private Limited certifies that the aforementioned 
+      commercial EV has been surrendered and inspected. The rider's active ride account is officially closed with zero outstanding vehicle 
+      possession. The rider profile remains securely archived for future rentals.
+    </div>
+
+    ${getInvoiceFooterHTML(companyLegal)}
+  </div>
+
+  ${getInvoiceScriptHTML(nocId, riderPhone)}
 </body>
 </html>`;
   }
@@ -1170,3 +1412,4 @@ export const openAdvanceBookingInvoice = (data) => handleOpenInvoiceWindow(data,
 export const openRentPaymentInvoice = (data) => handleOpenInvoiceWindow(data, 'rent_payment');
 export const openHandoverInvoice = (data) => handleOpenInvoiceWindow(data, 'booking_confirm');
 export const openServiceInvoice = (data) => handleOpenInvoiceWindow(data, 'service_parts');
+export const openNOCInvoice = (data) => handleOpenInvoiceWindow(data, 'noc_certificate');

@@ -859,11 +859,11 @@ const Parts = forwardRef(function Parts(props, ref) {
               {/* Description & Vehicle Compatibility */}
               <div>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>
-                  Description & Vehicle Compatibility
+                  Description & Vehicle Compatibility <span style={{ fontSize: '11px', color: '#64748b', fontWeight: '500' }}>(Optional)</span>
                 </label>
                 <textarea
                   rows={3}
-                  placeholder="e.g. Fits all standard LT Commercial EV models (Hero Optima, etc.). Genuine workshop grade material."
+                  placeholder="Optional: Enter compatible EV models, material details or leave blank."
                   value={form.description}
                   onChange={e => setForm({ ...form, description: e.target.value })}
                   style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }}

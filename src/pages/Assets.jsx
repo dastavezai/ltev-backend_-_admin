@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Bike, Package, MapPin, Plus, RefreshCw } from 'lucide-react';
+import { Bike, Package, MapPin, Wrench, Plus, RefreshCw } from 'lucide-react';
 import Vehicles from './Vehicles';
 import Parts from './Parts';
 import Stands from './Stands';
+import ServicesCatalog from './ServicesCatalog';
 
 export default function Assets() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -13,6 +14,7 @@ export default function Assets() {
   const vehiclesRef = useRef(null);
   const partsRef = useRef(null);
   const standsRef = useRef(null);
+  const servicesRef = useRef(null);
 
   const handleTabChange = (tab) => {
     setSearchParams({ tab });
@@ -27,6 +29,8 @@ export default function Assets() {
         await partsRef.current?.refresh();
       } else if (activeTab === 'stands') {
         await standsRef.current?.refresh();
+      } else if (activeTab === 'services') {
+        await servicesRef.current?.refresh();
       }
     } finally {
       setTimeout(() => setRefreshing(false), 500);
@@ -40,6 +44,8 @@ export default function Assets() {
       partsRef.current?.openAddModal();
     } else if (activeTab === 'stands') {
       standsRef.current?.openAddModal();
+    } else if (activeTab === 'services') {
+      servicesRef.current?.openAddModal();
     }
   };
 
@@ -47,12 +53,14 @@ export default function Assets() {
     { id: 'vehicles', label: 'Vehicles', icon: <Bike size={15} /> },
     { id: 'parts', label: 'Spare Parts', icon: <Package size={15} /> },
     { id: 'stands', label: 'Stands', icon: <MapPin size={15} /> },
+    { id: 'services', label: 'Services', icon: <Wrench size={15} /> },
   ];
 
   const getAddButtonText = () => {
     if (activeTab === 'vehicles') return 'Add Vehicle';
     if (activeTab === 'parts') return 'Add New Spare Part';
     if (activeTab === 'stands') return 'Add New Stand';
+    if (activeTab === 'services') return 'Add New Service';
     return 'Add';
   };
 
@@ -186,6 +194,7 @@ export default function Assets() {
         {activeTab === 'vehicles' && <Vehicles ref={vehiclesRef} />}
         {activeTab === 'parts' && <Parts ref={partsRef} />}
         {activeTab === 'stands' && <Stands ref={standsRef} />}
+        {activeTab === 'services' && <ServicesCatalog ref={servicesRef} />}
       </main>
     </div>
   );

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Wrench, DollarSign, Calendar, CalendarPlus, CalendarCheck, Search, Plus, RefreshCw, 
   CheckCircle, Clock, Send, X, Check, ExternalLink, 
-  Bike, AlertCircle, ArrowRight, RotateCcw, User, Phone, MapPin, Trash2, FileText, ShieldCheck
+  Bike, AlertCircle, ArrowRight, RotateCcw, User, Phone, MapPin, Trash2, FileText, ShieldCheck, CreditCard
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useNavigate } from 'react-router-dom';
@@ -74,11 +74,27 @@ export default function ManagementDashboard() {
     cost: '350',
     status: 'in_progress', // 'in_progress' | 'completed'
     billed_to: 'company', // 'company' | 'rider'
-    payment_status: 'paid'
+    payment_status: 'pending' // pending by default when in progress
   });
   const [waiveServiceCharge, setWaiveServiceCharge] = useState(false);
+  const [selectedServicesList, setSelectedServicesList] = useState([]); // [{ id, name, price, waived: boolean }]
+  const [selectedServiceRider, setSelectedServiceRider] = useState(null); // manually picked old or active rider
+  const [serviceRiderSearch, setServiceRiderSearch] = useState('');
+  const [serviceRiderDropdownOpen, setServiceRiderDropdownOpen] = useState(false);
+  const [systemUpiId, setSystemUpiId] = useState('9113750231@oksbi');
   const [submittingService, setSubmittingService] = useState(false);
   const [serviceRecordsFilter, setServiceRecordsFilter] = useState('all'); // 'all' | 'reported' | 'in_progress' | 'completed'
+
+  // Service Payment Update Modal
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [selectedServiceForPayment, setSelectedServiceForPayment] = useState(null);
+  const [paymentUpdateForm, setPaymentUpdateForm] = useState({
+    payment_status: 'paid',
+    payment_mode: 'cash',
+    paid_at: getLocalDatetimeString(),
+    payment_remarks: ''
+  });
+  const [submittingPaymentUpdate, setSubmittingPaymentUpdate] = useState(false);
 
   // -------------------------------------------------------------
   // TAB 2: RENT & PAYMENTS STATE
@@ -99,7 +115,7 @@ export default function ManagementDashboard() {
   // -------------------------------------------------------------
   // TAB 3: ADVANCE BOOKINGS & ALLOCATION STATE
   // -------------------------------------------------------------
-  const [bookingFilter, setBookingFilter] = useState('all'); // 'all' | 'waiting' | 'assigned'
+  const [bookingFilter, setBookingFilter] = useState('waiting'); // 'waiting' | 'assigned' | 'all'
   const [assignSlotModalOpen, setAssignSlotModalOpen] = useState(false);
   const [assignSlotStep, setAssignSlotStep] = useState(1);
   const [assignSlotEvSearch, setAssignSlotEvSearch] = useState('');
@@ -148,7 +164,7 @@ export default function ManagementDashboard() {
   const fetchOperationsData = useCallback(async () => {
     setLoading(true);
     try {
-      const [vehRes, standsRes, bkgRes, usrRes, plnRes, mntRes, catSvcRes, catPrtRes] = await Promise.all([
+      const [vehRes, standsRes, bkgRes, usrRes, plnRes, mntRes, catSvcRes, catPrtRes, upiRes] = await Promise.all([
         axios.get(`${API_BASE}/api/vehicles`, authHeaders).catch(() => ({ data: [] })),
         axios.get(`${API_BASE}/api/stands`, authHeaders).catch(() => ({ data: [] })),
         axios.get(`${API_BASE}/api/bookings/all`, authHeaders).catch(() => ({ data: [] })),
@@ -156,7 +172,8 @@ export default function ManagementDashboard() {
         axios.get(`${API_BASE}/api/plans`, authHeaders).catch(() => ({ data: [] })),
         axios.get(`${API_BASE}/api/maintenance`, authHeaders).catch(() => ({ data: [] })),
         axios.get(`${API_BASE}/api/catalog/services`, authHeaders).catch(() => ({ data: [] })),
-        axios.get(`${API_BASE}/api/catalog/parts`, authHeaders).catch(() => ({ data: [] }))
+        axios.get(`${API_BASE}/api/catalog/parts`, authHeaders).catch(() => ({ data: [] })),
+        axios.get(`${API_BASE}/api/system/upi-settings`, authHeaders).catch(() => ({ data: {} }))
       ]);
 
       setVehicles(vehRes.data || []);
@@ -167,6 +184,9 @@ export default function ManagementDashboard() {
       setMaintenanceLogs(mntRes.data || []);
       setCatalogServices(catSvcRes.data || []);
       setCatalogParts(catPrtRes.data || []);
+      if (upiRes?.data?.upi_id) {
+        setSystemUpiId(upiRes.data.upi_id.trim());
+      }
 
       if (usrRes.data?.length > 0) {
         setCreateBookingForm(prev => prev.user_id ? prev : ({ ...prev, user_id: String(usrRes.data[0].id) }));
@@ -259,6 +279,36 @@ export default function ManagementDashboard() {
     }).slice(0, 8);
   }, [vehicles, vehicleSearchQuery, getVehicleCode]);
 
+  // Matching riders (including past / old riders) for Service Billing
+  const matchingSearchRiders = useMemo(() => {
+    if (!serviceRiderSearch || !serviceRiderSearch.trim()) {
+      return (users || []).slice(0, 10);
+    }
+    const q = serviceRiderSearch.toLowerCase().trim();
+    return (users || []).filter(u => {
+      const name = (u.name || '').toLowerCase();
+      const phone = (u.phone || '');
+      const email = (u.email || '').toLowerCase();
+      return name.includes(q) || phone.includes(q) || email.includes(q);
+    }).slice(0, 10);
+  }, [users, serviceRiderSearch]);
+
+  const handleSelectServiceRider = (u) => {
+    setSelectedServiceRider(u);
+    setServiceRiderSearch(`${u.name} (${u.phone || 'No phone'})`);
+    setServiceRiderDropdownOpen(false);
+    setServiceForm(prev => ({ ...prev, billed_to: 'rider' }));
+  };
+
+  const handleClearServiceRider = () => {
+    setSelectedServiceRider(null);
+    setServiceRiderSearch('');
+    setServiceRiderDropdownOpen(false);
+    if (!selectedServiceVehicle?.renter) {
+      setServiceForm(prev => ({ ...prev, billed_to: 'company' }));
+    }
+  };
+
   // Filtered vehicles for Service tab
   const filteredServiceVehicles = useMemo(() => {
     return vehicles.filter(v => {
@@ -285,6 +335,18 @@ export default function ManagementDashboard() {
     setServiceSearchPlate(code);
     setVehicleSearchQuery(`${code} ${veh.renter ? `• ${veh.renter}` : ''} ${veh.renter_phone ? `(${veh.renter_phone})` : ''}`);
     setVehicleDropdownOpen(false);
+
+    if (veh.renter) {
+      const matchedRider = users.find(u => u.name === veh.renter || (veh.renter_phone && u.phone === veh.renter_phone));
+      if (matchedRider) {
+        setSelectedServiceRider(matchedRider);
+        setServiceRiderSearch(`${matchedRider.name} (${matchedRider.phone || 'No phone'})`);
+      } else {
+        setSelectedServiceRider({ name: veh.renter, phone: veh.renter_phone || '' });
+        setServiceRiderSearch(`${veh.renter} (${veh.renter_phone || ''})`);
+      }
+    }
+
     setServiceForm(prev => ({
       ...prev,
       vehicle_id: code,
@@ -314,28 +376,53 @@ export default function ManagementDashboard() {
     }
   };
 
-  // Recalculate bill cost based on catalog pricing & selected parts
-  const recalculateServiceCost = (serviceName, currentSelectedParts, isWaived = waiveServiceCharge) => {
-    const sObj = catalogServices.find(s => s.name === serviceName);
-    const servicePrice = isWaived ? 0 : (sObj ? parseFloat(sObj.price || 0) : (serviceName ? 350 : 0));
-    const partsPrice = currentSelectedParts.reduce((sum, p) => sum + parseFloat(p.mrp || p.price || 0), 0);
-    const totalCost = servicePrice + partsPrice;
+  // Recalculate bill cost based on catalog pricing & selected parts & services
+  const recalculateServiceCost = (servicesList, currentSelectedParts, isFullWaived = waiveServiceCharge) => {
+    let serviceTotal = 0;
+    if (!isFullWaived) {
+      serviceTotal = servicesList.reduce((sum, s) => sum + (s.waived ? 0 : parseFloat(s.price || 0)), 0);
+    }
+    const partsTotal = currentSelectedParts.reduce((sum, p) => sum + parseFloat(p.mrp || p.price || 0), 0);
+    const grandTotal = serviceTotal + partsTotal;
+
+    const serviceNames = servicesList.map(s => s.name).join(', ') || 'General Periodic Service & Tuning';
+    const partsReplaced = currentSelectedParts.map(p => `${p.name} (₹${parseFloat(p.mrp || p.price || 0)})`).join(', ');
 
     setServiceForm(prev => ({
       ...prev,
-      service_type: serviceName,
-      parts_replaced: currentSelectedParts.map(p => `${p.name} (₹${parseFloat(p.mrp || p.price || 0)})`).join(', '),
-      cost: String(totalCost)
+      service_type: serviceNames,
+      parts_replaced: partsReplaced,
+      cost: String(grandTotal)
     }));
   };
 
-  const handleServiceTypeChange = (val) => {
-    recalculateServiceCost(val, selectedParts, waiveServiceCharge);
+  const handleToggleAddService = (svc) => {
+    let updated = [];
+    if (selectedServicesList.some(s => s.id === svc.id)) {
+      updated = selectedServicesList.filter(s => s.id !== svc.id);
+    } else {
+      updated = [...selectedServicesList, { ...svc, waived: false }];
+    }
+    setSelectedServicesList(updated);
+    recalculateServiceCost(updated, selectedParts, waiveServiceCharge);
   };
 
-  const handleToggleWaiveServiceCharge = (waived) => {
-    setWaiveServiceCharge(waived);
-    recalculateServiceCost(serviceForm.service_type, selectedParts, waived);
+  const handleToggleWaiveSingleService = (svcId) => {
+    const updated = selectedServicesList.map(s => s.id === svcId ? { ...s, waived: !s.waived } : s);
+    setSelectedServicesList(updated);
+    recalculateServiceCost(updated, selectedParts, waiveServiceCharge);
+  };
+
+  const handleToggleFullServiceWaiver = (fullWaived) => {
+    setWaiveServiceCharge(fullWaived);
+    recalculateServiceCost(selectedServicesList, selectedParts, fullWaived);
+  };
+
+  const handleServiceTypeChange = (val) => {
+    const sObj = catalogServices.find(s => s.name === val);
+    const updated = sObj ? [{ ...sObj, waived: false }] : (val ? [{ id: 'custom', name: val, price: 350, waived: false }] : []);
+    setSelectedServicesList(updated);
+    recalculateServiceCost(updated, selectedParts, waiveServiceCharge);
   };
 
   const togglePartSelection = (part) => {
@@ -346,7 +433,7 @@ export default function ManagementDashboard() {
       updated = [...selectedParts, part];
     }
     setSelectedParts(updated);
-    recalculateServiceCost(serviceForm.service_type, updated, waiveServiceCharge);
+    recalculateServiceCost(selectedServicesList, updated, waiveServiceCharge);
   };
 
   // Open Official Service & Parts Invoice
@@ -376,25 +463,44 @@ export default function ManagementDashboard() {
   // Submit Service Record
   const handleSubmitServiceBilling = async (e) => {
     e.preventDefault();
-    if (!serviceForm.vehicle_id || !serviceForm.issue_description) {
-      alert('Please enter vehicle number and service description.');
+    if (!serviceForm.vehicle_id) {
+      alert('Please enter or select vehicle number.');
       return;
     }
 
     setSubmittingService(true);
     try {
-      let linkedUserId = null;
-      if (selectedServiceVehicle?.renter) {
+      let linkedUserId = selectedServiceRider ? selectedServiceRider.id : null;
+      let linkedUserName = selectedServiceRider ? selectedServiceRider.name : null;
+      let linkedUserPhone = selectedServiceRider ? selectedServiceRider.phone : null;
+
+      if (!linkedUserId && selectedServiceVehicle?.renter) {
         const foundUser = users.find(u => u.name === selectedServiceVehicle.renter);
-        if (foundUser) linkedUserId = foundUser.id;
+        if (foundUser) {
+          linkedUserId = foundUser.id;
+          linkedUserName = foundUser.name;
+          linkedUserPhone = foundUser.phone;
+        }
       }
 
       // Prepare itemized breakdown for backend and invoice
       const itemsBreakdown = [];
-      const sObj = catalogServices.find(s => s.name === serviceForm.service_type);
-      const originalServiceCharge = sObj ? parseFloat(sObj.price || 0) : 350;
-
-      if (serviceForm.service_type) {
+      if (selectedServicesList.length > 0) {
+        selectedServicesList.forEach(s => {
+          const isWaived = waiveServiceCharge || s.waived;
+          const originalPrice = parseFloat(s.price || 0);
+          itemsBreakdown.push({
+            name: s.name + (isWaived ? ' (Service Charge Waived Off)' : ''),
+            type: 'Labor & Service',
+            qty: 1,
+            rate: isWaived ? 0 : originalPrice,
+            amount: isWaived ? 0 : originalPrice,
+            is_labor: true
+          });
+        });
+      } else if (serviceForm.service_type) {
+        const sObj = catalogServices.find(s => s.name === serviceForm.service_type);
+        const originalServiceCharge = sObj ? parseFloat(sObj.price || 0) : 350;
         itemsBreakdown.push({
           name: serviceForm.service_type + (waiveServiceCharge ? ' (Service Charge Waived Off)' : ''),
           type: 'Labor & Service',
@@ -418,10 +524,14 @@ export default function ManagementDashboard() {
       });
 
       const targetVehicleId = selectedServiceVehicle?.id || serviceForm.vehicle_id;
+      const finalIssueDesc = serviceForm.issue_description.trim() || serviceForm.service_type || 'General Workshop Service';
+
       const res = await axios.post(`${API_BASE}/api/maintenance`, {
         ...serviceForm,
+        issue_description: finalIssueDesc,
         vehicle_id: targetVehicleId,
         user_id: linkedUserId,
+        billed_to: linkedUserId ? 'rider' : serviceForm.billed_to,
         date_reported: new Date().toISOString(),
         items_breakdown: itemsBreakdown
       }, authHeaders);
@@ -429,11 +539,13 @@ export default function ManagementDashboard() {
       const createdLog = res.data?.log || {
         id: Date.now(),
         vehicle_id: serviceForm.vehicle_id,
+        user_name: linkedUserName,
+        user_phone: linkedUserPhone,
         service_type: serviceForm.service_type + (waiveServiceCharge ? ' (Charge Waived)' : ''),
-        issue_description: serviceForm.issue_description,
+        issue_description: finalIssueDesc,
         parts_replaced: serviceForm.parts_replaced,
         cost: serviceForm.cost,
-        billed_to: serviceForm.billed_to,
+        billed_to: linkedUserId ? 'rider' : serviceForm.billed_to,
         payment_status: serviceForm.payment_status,
         date_reported: new Date().toISOString(),
         items_breakdown: itemsBreakdown
@@ -457,12 +569,16 @@ export default function ManagementDashboard() {
         cost: '350',
         status: 'in_progress',
         billed_to: 'company',
-        payment_status: 'paid'
+        payment_status: 'pending'
       });
+      setSelectedServicesList([]);
       setWaiveServiceCharge(false);
       setSelectedParts([]);
       setSelectedServiceVehicle(null);
+      setSelectedServiceRider(null);
       setServiceSearchPlate('');
+      setVehicleSearchQuery('');
+      setServiceRiderSearch('');
       fetchOperationsData();
     } catch (err) {
       alert('Failed to log service: ' + (err.response?.data?.error || err.message));
@@ -471,24 +587,86 @@ export default function ManagementDashboard() {
     }
   };
 
-  // Mark existing service ticket as completed
+  // Mark existing service ticket as completed and restore vehicle to Available
   const handleMarkServiceCompleted = async (logId, vehicleId) => {
     if (!window.confirm(`Mark service on EV ${vehicleId} as completed? This will set the vehicle back to Available.`)) return;
     try {
       await axios.put(`${API_BASE}/api/maintenance/${logId}`, {
         status: 'completed',
-        vehicle_id: vehicleId
-      }, authHeaders);
-      
-      // Update vehicle to available if not currently rented
-      await axios.put(`${API_BASE}/api/vehicles/${vehicleId}`, {
-        status: 'available'
+        vehicle_id: vehicleId,
+        issue_description: 'General Workshop Service'
       }, authHeaders);
 
+      alert(`Service on EV ${vehicleId} marked completed! Vehicle is now set to Available.`);
       fetchOperationsData();
     } catch (err) {
       alert('Failed to update service: ' + (err.response?.data?.error || err.message));
     }
+  };
+
+  // Open Update Payment Modal for any service bill
+  const handleOpenUpdatePaymentModal = (log) => {
+    setSelectedServiceForPayment(log);
+    setPaymentUpdateForm({
+      payment_status: log.payment_status === 'pending' || log.status === 'in_progress' ? 'paid' : (log.payment_status || 'paid'),
+      payment_mode: log.payment_mode || (log.payment_status === 'deducted_from_deposit' ? 'deposit' : 'cash'),
+      paid_at: log.paid_at ? getLocalDatetimeString(new Date(log.paid_at)) : getLocalDatetimeString(),
+      payment_remarks: log.payment_remarks || ''
+    });
+    setPaymentModalOpen(true);
+  };
+
+  // Submit Payment Update
+  const handleSubmitPaymentUpdate = async (e) => {
+    e.preventDefault();
+    if (!selectedServiceForPayment) return;
+    setSubmittingPaymentUpdate(true);
+    try {
+      const isDeposit = paymentUpdateForm.payment_mode === 'deposit';
+      if (isDeposit && paymentUpdateForm.payment_status === 'paid') {
+        const res = await axios.post(`${API_BASE}/api/maintenance/${selectedServiceForPayment.id}/deduct-deposit`, {}, authHeaders);
+        alert(res.data?.message || 'Payment deducted from rider security deposit!');
+      } else {
+        await axios.put(`${API_BASE}/api/maintenance/${selectedServiceForPayment.id}`, {
+          payment_status: paymentUpdateForm.payment_status,
+          payment_mode: paymentUpdateForm.payment_mode,
+          paid_at: paymentUpdateForm.paid_at,
+          payment_remarks: paymentUpdateForm.payment_remarks
+        }, authHeaders);
+        alert(`Payment status updated to ${paymentUpdateForm.payment_status === 'paid' ? 'PAID & SETTLED' : 'PENDING'}!`);
+      }
+      setPaymentModalOpen(false);
+      fetchOperationsData();
+    } catch (err) {
+      alert('Failed to update payment: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSubmittingPaymentUpdate(false);
+    }
+  };
+
+  // Send WhatsApp bill / payment request to rider
+  const handleSendServiceWhatsApp = (log) => {
+    const vCode = getVehicleCode(log.vehicle_id);
+    const vObj = vehicles.find(v => getVehicleCode(v) === vCode || String(v.id) === String(log.vehicle_id));
+    const phone = (log.user_phone || (vObj && vObj.renter_phone) || '').replace(/\D/g, '').slice(-10);
+    const cost = parseFloat(log.cost || 0);
+    const isPaid = (log.payment_status === 'paid' || log.payment_status === 'deducted_from_deposit') && log.status !== 'in_progress';
+    const upiId = systemUpiId || '9113750231@oksbi';
+
+    const msg = `*🛠️ LT EV MOBILITY - SERVICE INVOICE*
+----------------------------------------
+*🛵 EV Code:* ${vCode}
+*👤 Rider:* ${log.user_name || (vObj && vObj.renter) || 'Rider'}
+*🔧 Service:* ${log.service_type || 'General Service'}
+*📝 Details:* ${log.issue_description || 'Maintenance & repair'}
+${log.parts_replaced ? `*🔩 Parts Replaced:* ${log.parts_replaced}\n` : ''}*💰 Total Bill:* ₹${cost.toLocaleString('en-IN')}
+*📊 Status:* ${isPaid ? 'PAID & SETTLED' : log.status === 'in_progress' ? 'UNDER SERVICE (PAYMENT PENDING)' : 'PAYMENT PENDING / DUE'}
+${!isPaid ? `\n*📲 Pay via UPI:* ${upiId}\n_After payment, please share screenshot or UTR number._` : ''}
+----------------------------------------
+_Support: +91 78705 72429 | LocalToto Workshop Patna_`;
+
+    const url = phone ? `https://wa.me/91${phone}?text=${encodeURIComponent(msg)}` : `https://api.whatsapp.com/send?text=${encodeURIComponent(msg)}`;
+    window.open(url, '_blank');
   };
 
   // -------------------------------------------------------------
@@ -498,6 +676,9 @@ export default function ManagementDashboard() {
     return bookings.filter(b => {
       return b.status === 'active' || (b.vehicle_id && b.status !== 'completed' && b.status !== 'cancelled');
     }).map(b => {
+      const vObj = vehicles.find(v => String(v.id) === String(b.vehicle_id) || (v.model && v.model === b.vehicle_id));
+      const vehicleCode = vObj ? getVehicleCode(vObj) : getVehicleCode(b.vehicle_model || b.vehicle_reg || b.vehicle_id);
+
       const paid = parseFloat(b.total_cost || b.collected_amount || 0);
       const planPrice = parseFloat(b.plan_price || 1600);
       const planType = (b.plan_type || '').toLowerCase();
@@ -534,6 +715,7 @@ export default function ManagementDashboard() {
 
       return {
         ...b,
+        vehicle_code: vehicleCode,
         isRentOverdue: isOverdue,
         rentDaysOverdue: daysOverdue,
         rentDaysRemaining: daysRemaining,
@@ -542,7 +724,7 @@ export default function ManagementDashboard() {
         isMonthlyPlan: isMonthly
       };
     });
-  }, [bookings]);
+  }, [bookings, vehicles, getVehicleCode]);
 
   const filteredRentals = useMemo(() => {
     return activeRentalsList.filter(r => {
@@ -550,6 +732,7 @@ export default function ManagementDashboard() {
       const matches = !q || (
         (r.user_name || '').toLowerCase().includes(q) ||
         (r.user_phone || '').includes(q) ||
+        (r.vehicle_code || '').toLowerCase().includes(q) ||
         (r.vehicle_id || '').toLowerCase().includes(q)
       );
       if (!matches) return false;
@@ -1348,42 +1531,186 @@ export default function ManagementDashboard() {
                 )}
               </div>
 
-              {/* Service Type Dropdown from Catalog */}
+              {/* Manual Rider Selection (Old Riders or Current Riders) */}
+              <div style={{ position: 'relative', marginBottom: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', margin: 0 }}>
+                    Billed Rider (Old or Current Rider)
+                  </label>
+                  {selectedServiceRider && (
+                    <button
+                      type="button"
+                      onClick={handleClearServiceRider}
+                      style={{ background: 'none', border: 'none', color: '#dc2626', fontSize: '11px', cursor: 'pointer', fontWeight: '600', padding: 0 }}
+                    >
+                      ✕ Clear / Unlink Rider
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ position: 'relative' }}>
+                  <User size={14} color="#94a3b8" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
+                  <input
+                    type="text"
+                    placeholder="Search rider by name, phone or email (e.g. Roushan, 74849...)"
+                    value={serviceRiderSearch}
+                    onFocus={() => setServiceRiderDropdownOpen(true)}
+                    onChange={(e) => {
+                      setServiceRiderSearch(e.target.value);
+                      setServiceRiderDropdownOpen(true);
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px 8px 30px',
+                      borderRadius: '6px',
+                      border: selectedServiceRider ? '1.5px solid #0284c7' : '1px solid #cbd5e1',
+                      background: selectedServiceRider ? '#f0f9ff' : 'white',
+                      fontSize: '13px',
+                      fontWeight: selectedServiceRider ? '700' : 'normal',
+                      boxSizing: 'border-box'
+                    }}
+                  />
+                </div>
+
+                {serviceRiderDropdownOpen && matchingSearchRiders.length > 0 && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    right: 0,
+                    background: 'white',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '8px',
+                    marginTop: '4px',
+                    maxHeight: '200px',
+                    overflowY: 'auto',
+                    zIndex: 50,
+                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)'
+                  }}>
+                    {matchingSearchRiders.map(u => (
+                      <div
+                        key={u.id}
+                        onClick={() => handleSelectServiceRider(u)}
+                        style={{
+                          padding: '8px 12px',
+                          borderBottom: '1px solid #f1f5f9',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          background: selectedServiceRider?.id === u.id ? '#f0f9ff' : 'white'
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: '700', fontSize: '13px', color: '#0f172a' }}>
+                            {u.name}
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#64748b' }}>
+                            📞 {u.phone || 'No phone'} {u.assigned_vehicle_id ? `• EV: ${u.assigned_vehicle_id}` : '• Past / Unassigned Rider'}
+                          </div>
+                        </div>
+                        <span style={{ fontSize: '11px', color: '#0284c7', fontWeight: '600' }}>
+                          Select
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Workshop Services from Catalog with Per-Service & Full Waiver */}
               <div style={{ marginBottom: '14px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                   <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', margin: 0 }}>
-                    Service Type (From Catalog & Pricing)
+                    Workshop Services (Catalog & Pricing)
                   </label>
-                  {serviceForm.service_type && (
-                    <span style={{ fontSize: '11px', color: waiveServiceCharge ? '#16a34a' : '#64748b', fontWeight: '600' }}>
-                      {waiveServiceCharge ? 'Charge Waived Off (₹0)' : 'Standard Labor Charge'}
-                    </span>
+                  <span style={{ fontSize: '11px', color: '#64748b' }}>
+                    Select services to add to bill
+                  </span>
+                </div>
+
+                {/* Service Selection Chips from Catalog */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', maxHeight: '140px', overflowY: 'auto', padding: '8px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '8px' }}>
+                  {catalogServices.map(svc => {
+                    const isSelected = selectedServicesList.some(s => s.id === svc.id);
+                    const selectedItem = selectedServicesList.find(s => s.id === svc.id);
+                    const isWaived = waiveServiceCharge || Boolean(selectedItem?.waived);
+                    const price = parseFloat(svc.price || 0);
+
+                    return (
+                      <div
+                        key={svc.id}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '4px 8px',
+                          borderRadius: '6px',
+                          border: isSelected ? '1.5px solid #0284c7' : '1px solid #cbd5e1',
+                          background: isSelected ? '#f0f9ff' : 'white',
+                          fontSize: '12px'
+                        }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleToggleAddService(svc)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            padding: 0,
+                            cursor: 'pointer',
+                            fontWeight: isSelected ? '700' : '500',
+                            color: isSelected ? '#0369a1' : '#334155',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
+                        >
+                          <span>{isSelected ? '✓ ' : '+ '}{svc.name}</span>
+                          <span style={{
+                            fontWeight: '700',
+                            color: isWaived ? '#16a34a' : (isSelected ? '#0284c7' : '#059669'),
+                            textDecoration: isWaived ? 'line-through' : 'none'
+                          }}>
+                            ₹{price}
+                          </span>
+                        </button>
+
+                        {/* Per-Service Waiver Button when service is selected */}
+                        {isSelected && !waiveServiceCharge && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleWaiveSingleService(svc.id);
+                            }}
+                            title={isWaived ? "Restore labor charge" : "Waive charge for this specific service"}
+                            style={{
+                              border: 'none',
+                              borderRadius: '3px',
+                              padding: '2px 5px',
+                              fontSize: '10px',
+                              fontWeight: '700',
+                              cursor: 'pointer',
+                              background: isWaived ? '#bbf7d0' : '#f1f5f9',
+                              color: isWaived ? '#166534' : '#64748b'
+                            }}
+                          >
+                            {isWaived ? '✨ Waived' : 'Waive'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {catalogServices.length === 0 && (
+                    <div style={{ fontSize: '11px', color: '#64748b' }}>No services in catalog. Add them in Assets &gt; Services.</div>
                   )}
                 </div>
-                <select
-                  value={serviceForm.service_type}
-                  onChange={(e) => handleServiceTypeChange(e.target.value)}
-                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }}
-                >
-                  <option value="">Select Service Type</option>
-                  {catalogServices.length > 0 ? (
-                    catalogServices.map(s => (
-                      <option key={s.id} value={s.name}>
-                        {s.name} — ₹{parseFloat(s.price).toLocaleString('en-IN')}
-                      </option>
-                    ))
-                  ) : (
-                    SERVICE_PRESETS.map(preset => (
-                      <option key={preset} value={preset}>{preset}</option>
-                    ))
-                  )}
-                </select>
 
-                {/* Option to Waive Off Service Charge */}
+                {/* Master Waiver Toggle: Waive ALL services */}
                 <div
-                  onClick={() => handleToggleWaiveServiceCharge(!waiveServiceCharge)}
+                  onClick={() => handleToggleFullServiceWaiver(!waiveServiceCharge)}
                   style={{
-                    marginTop: '8px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
@@ -1411,9 +1738,9 @@ export default function ManagementDashboard() {
                   >
                     <input
                       type="checkbox"
-                      id="waive-service-charge-toggle"
+                      id="waive-all-service-charges-toggle"
                       checked={waiveServiceCharge}
-                      onChange={(e) => handleToggleWaiveServiceCharge(e.target.checked)}
+                      onChange={(e) => handleToggleFullServiceWaiver(e.target.checked)}
                       style={{
                         width: '16px',
                         height: '16px',
@@ -1421,7 +1748,7 @@ export default function ManagementDashboard() {
                         accentColor: '#16a34a'
                       }}
                     />
-                    <span>Waive Off Service Charge (₹0 Labor / Inspection Fee)</span>
+                    <span>Waive Off All Service Charges (100% Free Labor / Inspection)</span>
                   </label>
 
                   {waiveServiceCharge ? (
@@ -1431,16 +1758,13 @@ export default function ManagementDashboard() {
                       background: '#bbf7d0',
                       color: '#166534',
                       padding: '2px 8px',
-                      borderRadius: '4px',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '4px'
+                      borderRadius: '4px'
                     }}>
-                      ✓ 100% WAIVED
+                      ✓ ALL SERVICES WAIVED
                     </span>
                   ) : (
                     <span style={{ fontSize: '11px', color: '#94a3b8' }}>
-                      Click to waive
+                      Click to waive all
                     </span>
                   )}
                 </div>
@@ -1511,15 +1835,14 @@ export default function ManagementDashboard() {
               {/* Issue Description */}
               <div style={{ marginBottom: '14px' }}>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
-                  Work Details / Issue Description
+                  Work Details / Issue Description (Optional)
                 </label>
                 <textarea
                   rows="2"
-                  placeholder="e.g. Replaced rear tyre tube and adjusted brake wire"
+                  placeholder="e.g. Replaced rear tyre tube and adjusted brake wire (Optional)"
                   value={serviceForm.issue_description}
                   onChange={(e) => setServiceForm(prev => ({ ...prev, issue_description: e.target.value }))}
                   style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }}
-                  required
                 />
               </div>
 
@@ -1563,19 +1886,21 @@ export default function ManagementDashboard() {
               </div>
 
               {/* Status Radio: In Progress vs Completed */}
-              <div style={{ marginBottom: '20px' }}>
+              <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
-                  Service Status
+                  Work Status
                 </label>
-                <div style={{ display: 'flex', gap: '12px' }}>
+                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', cursor: 'pointer' }}>
                     <input
                       type="radio"
                       name="serviceStatus"
                       checked={serviceForm.status === 'in_progress'}
-                      onChange={() => setServiceForm(prev => ({ ...prev, status: 'in_progress' }))}
+                      onChange={() => setServiceForm(prev => ({ ...prev, status: 'in_progress', payment_status: 'pending' }))}
                     />
-                    <span>In Progress (Marks EV as Maintenance)</span>
+                    <span style={{ fontWeight: serviceForm.status === 'in_progress' ? '700' : '500', color: serviceForm.status === 'in_progress' ? '#b45309' : '#334155' }}>
+                      In Progress (Under Maintenance)
+                    </span>
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', cursor: 'pointer' }}>
                     <input
@@ -1584,8 +1909,28 @@ export default function ManagementDashboard() {
                       checked={serviceForm.status === 'completed'}
                       onChange={() => setServiceForm(prev => ({ ...prev, status: 'completed' }))}
                     />
-                    <span>Completed (Ready)</span>
+                    <span style={{ fontWeight: serviceForm.status === 'completed' ? '700' : '500', color: serviceForm.status === 'completed' ? '#16a34a' : '#334155' }}>
+                      Completed (Vehicle Ready)
+                    </span>
                   </label>
+                </div>
+              </div>
+
+              {/* Initial Payment Status Selector */}
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
+                  Initial Payment Status
+                </label>
+                <select
+                  value={serviceForm.payment_status}
+                  onChange={(e) => setServiceForm(prev => ({ ...prev, payment_status: e.target.value }))}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box', fontWeight: '700', color: serviceForm.payment_status === 'paid' ? '#16a34a' : '#ea580c' }}
+                >
+                  <option value="pending">⚠️ Payment Pending / Due (Update Payment Later)</option>
+                  <option value="paid">✓ Paid & Settled Now</option>
+                </select>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                  💡 Generate and send invoice first — you can update payment method (Cash, UPI, Deposit) anytime later!
                 </div>
               </div>
 
@@ -1665,31 +2010,58 @@ export default function ManagementDashboard() {
               {/* Line items */}
               <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '12px' }}>
 
-                {/* Service charge line */}
-                {serviceForm.service_type && (() => {
-                  const sObj = catalogServices.find(s => s.name === serviceForm.service_type);
-                  const sPrice = sObj ? parseFloat(sObj.price || 0) : 350;
-                  return (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-                      <div style={{ flex: 1, paddingRight: '8px' }}>
-                        <div style={{ fontSize: '12px', color: '#cbd5e1', fontWeight: '500' }}>🔧 {serviceForm.service_type}</div>
-                        <div style={{ fontSize: '10px', color: waiveServiceCharge ? '#4ade80' : '#64748b', marginTop: '2px', fontWeight: waiveServiceCharge ? '600' : 'normal' }}>
-                          {waiveServiceCharge ? '✨ Service charge waived off' : 'Service charge'}
+                {/* Service charge line items */}
+                {selectedServicesList.length > 0 ? (
+                  selectedServicesList.map(s => {
+                    const originalPrice = parseFloat(s.price || 0);
+                    const isWaived = waiveServiceCharge || Boolean(s.waived);
+                    return (
+                      <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                        <div style={{ flex: 1, paddingRight: '8px' }}>
+                          <div style={{ fontSize: '12px', color: '#cbd5e1', fontWeight: '500' }}>🔧 {s.name}</div>
+                          <div style={{ fontSize: '10px', color: isWaived ? '#4ade80' : '#64748b', marginTop: '2px', fontWeight: isWaived ? '600' : 'normal' }}>
+                            {isWaived ? '✨ Service charge waived off' : 'Labor charge'}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          {isWaived ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ fontSize: '11px', color: '#94a3b8', textDecoration: 'line-through' }}>₹{originalPrice.toLocaleString('en-IN')}</span>
+                              <span style={{ fontSize: '13px', fontWeight: '800', color: '#4ade80' }}>₹0</span>
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: '13px', fontWeight: '700', color: '#7dd3fc' }}>₹{originalPrice.toLocaleString('en-IN')}</span>
+                          )}
                         </div>
                       </div>
-                      <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        {waiveServiceCharge ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span style={{ fontSize: '11px', color: '#94a3b8', textDecoration: 'line-through' }}>₹{sPrice.toLocaleString('en-IN')}</span>
-                            <span style={{ fontSize: '13px', fontWeight: '800', color: '#4ade80' }}>₹0</span>
+                    );
+                  })
+                ) : (
+                  serviceForm.service_type && (() => {
+                    const sObj = catalogServices.find(s => s.name === serviceForm.service_type);
+                    const sPrice = sObj ? parseFloat(sObj.price || 0) : 350;
+                    return (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                        <div style={{ flex: 1, paddingRight: '8px' }}>
+                          <div style={{ fontSize: '12px', color: '#cbd5e1', fontWeight: '500' }}>🔧 {serviceForm.service_type}</div>
+                          <div style={{ fontSize: '10px', color: waiveServiceCharge ? '#4ade80' : '#64748b', marginTop: '2px', fontWeight: waiveServiceCharge ? '600' : 'normal' }}>
+                            {waiveServiceCharge ? '✨ Service charge waived off' : 'Service charge'}
                           </div>
-                        ) : (
-                          <span style={{ fontSize: '13px', fontWeight: '700', color: '#7dd3fc' }}>₹{sPrice.toLocaleString('en-IN')}</span>
-                        )}
+                        </div>
+                        <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          {waiveServiceCharge ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ fontSize: '11px', color: '#94a3b8', textDecoration: 'line-through' }}>₹{sPrice.toLocaleString('en-IN')}</span>
+                              <span style={{ fontSize: '13px', fontWeight: '800', color: '#4ade80' }}>₹0</span>
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: '13px', fontWeight: '700', color: '#7dd3fc' }}>₹{sPrice.toLocaleString('en-IN')}</span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })()}
+                    );
+                  })()
+                )}
 
                 {/* Parts line items */}
                 {selectedParts.length > 0 && (
@@ -1848,7 +2220,8 @@ export default function ManagementDashboard() {
                   <th style={{ padding: '12px 16px' }}>Service / Problem Description</th>
                   <th style={{ padding: '12px 16px' }}>Cost</th>
                   <th style={{ padding: '12px 16px' }}>Billed To</th>
-                  <th style={{ padding: '12px 16px' }}>Status</th>
+                  <th style={{ padding: '12px 16px' }}>Work Status</th>
+                  <th style={{ padding: '12px 16px' }}>Payment Status</th>
                   <th style={{ padding: '12px 16px', textAlign: 'right' }}>Action</th>
                 </tr>
               </thead>
@@ -1925,8 +2298,26 @@ export default function ManagementDashboard() {
                             </span>
                           )}
                         </td>
+                        <td style={{ padding: '12px 16px' }}>
+                          {(() => {
+                            const isPaid = (log.payment_status === 'paid' || log.payment_status === 'deducted_from_deposit') && log.status !== 'in_progress';
+                            if (isPaid) {
+                              const modeLabel = log.payment_status === 'deducted_from_deposit' ? 'Deposit' : (log.payment_mode || 'Cash');
+                              return (
+                                <span style={{ background: '#dcfce7', color: '#16a34a', border: '1px solid #bbf7d0', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '700' }}>
+                                  ✓ Paid ({modeLabel})
+                                </span>
+                              );
+                            }
+                            return (
+                              <span style={{ background: '#fff7ed', color: '#c2410c', border: '1px solid #fed7aa', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '700' }}>
+                                ⚠️ Due (₹{parseFloat(log.cost || 0).toLocaleString('en-IN')})
+                              </span>
+                            );
+                          })()}
+                        </td>
                         <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' }}>
                             <button
                               type="button"
                               onClick={() => handleOpenServiceInvoice(log)}
@@ -1934,7 +2325,7 @@ export default function ManagementDashboard() {
                                 background: '#f0f9ff',
                                 color: '#0284c7',
                                 border: '1px solid #bae6fd',
-                                padding: '4px 9px',
+                                padding: '4px 8px',
                                 borderRadius: '4px',
                                 fontSize: '11px',
                                 fontWeight: '600',
@@ -1948,6 +2339,48 @@ export default function ManagementDashboard() {
                               <FileText size={12} />
                               <span>Invoice</span>
                             </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSendServiceWhatsApp(log)}
+                              style={{
+                                background: '#ecfdf5',
+                                color: '#059669',
+                                border: '1px solid #a7f3d0',
+                                padding: '4px 8px',
+                                borderRadius: '4px',
+                                fontSize: '11px',
+                                fontWeight: '600',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px'
+                              }}
+                              title="Send Bill & Payment Link on WhatsApp"
+                            >
+                              <Send size={12} />
+                              <span>Send</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenUpdatePaymentModal(log)}
+                              style={{
+                                background: '#f8fafc',
+                                color: '#0f172a',
+                                border: '1px solid #cbd5e1',
+                                padding: '4px 8px',
+                                borderRadius: '4px',
+                                fontSize: '11px',
+                                fontWeight: '700',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px'
+                              }}
+                              title="Update Payment Method / Record Payment"
+                            >
+                              <CreditCard size={12} />
+                              <span>Payment</span>
+                            </button>
                             {isReported && (
                               <button
                                 onClick={() => navigate('/services')}
@@ -1960,6 +2393,7 @@ export default function ManagementDashboard() {
                               <button
                                 onClick={() => handleMarkServiceCompleted(log.id, log.vehicle_id)}
                                 style={{ background: '#0f172a', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', cursor: 'pointer' }}
+                                title="Mark repair completed and set EV Available"
                               >
                                 Mark Ready
                               </button>
@@ -2062,7 +2496,9 @@ export default function ManagementDashboard() {
                       <div style={{ fontSize: '12px', color: '#64748b' }}>{rental.user_phone || 'No phone'}</div>
                     </td>
                     <td style={{ padding: '12px 16px' }}>
-                      <span style={{ fontWeight: '600', color: '#0284c7' }}>{rental.vehicle_id || 'Unassigned'}</span>
+                      <span style={{ fontWeight: '700', color: '#0284c7', fontSize: '13px' }}>
+                        {rental.vehicle_code || getVehicleCode(rental.vehicle_id) || 'Unassigned'}
+                      </span>
                     </td>
                     <td style={{ padding: '12px 16px' }}>
                       <div style={{ fontWeight: '600' }}>₹{rental.planRate.toLocaleString('en-IN')}</div>
@@ -2184,10 +2620,11 @@ export default function ManagementDashboard() {
             </div>
 
             <div className="mgmt-table-scroll">
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px', minWidth: '600px' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px', minWidth: '650px' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontSize: '12px', fontWeight: '600' }}>
                   <th style={{ padding: '10px 14px' }}>Rider</th>
+                  <th style={{ padding: '10px 14px' }}>Status</th>
                   <th style={{ padding: '10px 14px' }}>Plan / EV</th>
                   <th style={{ padding: '10px 14px' }}>Advance Paid</th>
                   <th style={{ padding: '10px 14px' }}>Balance Due</th>
@@ -2198,12 +2635,24 @@ export default function ManagementDashboard() {
                 {filteredAdvanceBookings.map(bkg => {
                   const paid = parseFloat(bkg.total_cost || bkg.collected_amount || 0);
                   const due = Math.max(0, 5100 - paid);
+                  const isAssigned = Boolean(bkg.vehicle_id && bkg.status !== 'pre_booking');
 
                   return (
                     <tr key={bkg.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
                       <td style={{ padding: '10px 14px' }}>
                         <div style={{ fontWeight: '600', color: '#0f172a' }}>{bkg.user_name || 'Rider'}</div>
                         <div style={{ fontSize: '11px', color: '#64748b' }}>📞 {bkg.user_phone}</div>
+                      </td>
+                      <td style={{ padding: '10px 14px' }}>
+                        {isAssigned ? (
+                          <span style={{ background: '#dcfce7', color: '#15803d', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '700', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                            ✓ Active Rental
+                          </span>
+                        ) : (
+                          <span style={{ background: '#fef3c7', color: '#b45309', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '700', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                            ⏳ Waiting Queue
+                          </span>
+                        )}
                       </td>
                       <td style={{ padding: '10px 14px', color: '#475569' }}>
                         <div>{bkg.plan_name || 'Weekly'}</div>
@@ -2309,7 +2758,7 @@ export default function ManagementDashboard() {
                 })}
                 {filteredAdvanceBookings.length === 0 && (
                   <tr>
-                    <td colSpan="5" style={{ padding: '30px', textAlign: 'center', color: '#64748b' }}>
+                    <td colSpan="6" style={{ padding: '30px', textAlign: 'center', color: '#64748b' }}>
                       {bookingFilter === 'assigned' ? 'No handed over bookings found.' : 'No waiting pre-bookings in the queue.'}
                     </td>
                   </tr>
@@ -2400,7 +2849,7 @@ export default function ManagementDashboard() {
                   Collect Rent Payment
                 </h3>
                 <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
-                  {selectedRentalForPayment.user_name} • {selectedRentalForPayment.vehicle_id}
+                  {selectedRentalForPayment.user_name} • <strong style={{ color: '#0369a1' }}>{selectedRentalForPayment.vehicle_code || getVehicleCode(selectedRentalForPayment.vehicle_id)}</strong>
                 </div>
               </div>
               <button onClick={() => setRentPaymentModalOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8' }}>
@@ -3378,6 +3827,163 @@ Helpline: +91 78705 7249`);
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: UPDATE SERVICE PAYMENT & SETTLEMENT */}
+      {/* ============================================================ */}
+      {paymentModalOpen && selectedServiceForPayment && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 120, padding: '16px' }}>
+          <div style={{ background: 'white', width: '100%', maxWidth: '460px', borderRadius: '14px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)', overflow: 'hidden', border: '1px solid #e2e8f0' }}>
+            
+            {/* Modal Header */}
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>
+                  Update Service Payment
+                </h3>
+                <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
+                  Job Card #{selectedServiceForPayment.id} • EV {getVehicleCode(selectedServiceForPayment.vehicle_id)}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPaymentModalOpen(false)}
+                style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: '4px' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form onSubmit={handleSubmitPaymentUpdate} style={{ padding: '20px' }}>
+              {/* Bill Details Summary Card */}
+              <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '8px', padding: '12px 14px', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: '11px', color: '#0369a1', fontWeight: '700', textTransform: 'uppercase' }}>Total Bill Amount</div>
+                    <div style={{ fontSize: '20px', fontWeight: '900', color: '#0369a1' }}>
+                      ₹{parseFloat(selectedServiceForPayment.cost || 0).toLocaleString('en-IN')}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right', fontSize: '12px', color: '#334155' }}>
+                    <div>Rider: <strong>{selectedServiceForPayment.user_name || 'Fleet'}</strong></div>
+                    <div>Service: <strong>{selectedServiceForPayment.service_type || 'General'}</strong></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Payment Status Option */}
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                  Payment Status
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentUpdateForm(prev => ({ ...prev, payment_status: 'paid' }))}
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: paymentUpdateForm.payment_status === 'paid' ? '2px solid #16a34a' : '1px solid #cbd5e1',
+                      background: paymentUpdateForm.payment_status === 'paid' ? '#f0fdf4' : 'white',
+                      color: paymentUpdateForm.payment_status === 'paid' ? '#166534' : '#64748b',
+                      fontWeight: '700',
+                      fontSize: '12px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    ✓ Paid & Settled
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentUpdateForm(prev => ({ ...prev, payment_status: 'pending' }))}
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: paymentUpdateForm.payment_status === 'pending' ? '2px solid #ea580c' : '1px solid #cbd5e1',
+                      background: paymentUpdateForm.payment_status === 'pending' ? '#fff7ed' : 'white',
+                      color: paymentUpdateForm.payment_status === 'pending' ? '#c2410c' : '#64748b',
+                      fontWeight: '700',
+                      fontSize: '12px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    ⚠️ Payment Pending / Due
+                  </button>
+                </div>
+              </div>
+
+              {/* Payment Method / Mode */}
+              {paymentUpdateForm.payment_status === 'paid' && (
+                <>
+                  <div style={{ marginBottom: '14px' }}>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                      Payment Method
+                    </label>
+                    <select
+                      value={paymentUpdateForm.payment_mode}
+                      onChange={(e) => setPaymentUpdateForm(prev => ({ ...prev, payment_mode: e.target.value }))}
+                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box', fontWeight: '600' }}
+                    >
+                      <option value="cash">💵 Cash Payment (Collected at Stand)</option>
+                      <option value="upi">📱 UPI / Online (GPay / PhonePe / Paytm / Bank)</option>
+                      <option value="deposit">🛡️ Deduct from Rider Security Deposit</option>
+                      <option value="company">🏢 Company Fleet Expense</option>
+                    </select>
+                  </div>
+
+                  {/* Payment Date & Time */}
+                  <div style={{ marginBottom: '14px' }}>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                      Payment Received Date & Time
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={paymentUpdateForm.paid_at}
+                      onChange={(e) => setPaymentUpdateForm(prev => ({ ...prev, paid_at: e.target.value }))}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }}
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* Remarks / UTR Reference */}
+              <div style={{ marginBottom: '18px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
+                  Payment Reference / Remarks (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. UTR #123456789 or Cash received by Manoj"
+                  value={paymentUpdateForm.payment_remarks}
+                  onChange={(e) => setPaymentUpdateForm(prev => ({ ...prev, payment_remarks: e.target.value }))}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              {/* Modal Action Buttons */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setPaymentModalOpen(false)}
+                  style={{ padding: '8px 14px', borderRadius: '8px', border: '1px solid #cbd5e1', background: 'white', color: '#64748b', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingPaymentUpdate}
+                  style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: '#0284c7', color: 'white', fontSize: '13px', fontWeight: '700', cursor: 'pointer' }}
+                >
+                  {submittingPaymentUpdate ? 'Saving...' : 'Save & Update Invoice'}
+                </button>
+              </div>
+
+            </form>
+
           </div>
         </div>
       )}

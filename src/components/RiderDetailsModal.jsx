@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   X, Phone, Mail, Calendar, CreditCard, ShieldCheck, ShieldAlert, Shield, 
   Bike, Zap, DollarSign, Plus, Trash2, Clock, Send, Bell, CheckCircle2, 
@@ -7,7 +7,7 @@ import {
   ArrowUpRight, ArrowDownLeft, Download
 } from 'lucide-react';
 import axios from 'axios';
-import { openRentPaymentInvoice } from '../utils/invoice';
+import { openRentPaymentInvoice, openNOCInvoice } from '../utils/invoice';
 
 // Helper to format local Date for datetime-local input
 const getLocalDatetimeString = (dateObj = new Date()) => {
@@ -33,6 +33,16 @@ export default function RiderDetailsModal({
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copiedPhone, setCopiedPhone] = useState(false);
+  const [systemUpiId, setSystemUpiId] = useState('9113750231@oksbi');
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    axios.get('/api/system/upi-settings', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    }).then(res => {
+      if (res.data?.upi_id) setSystemUpiId(res.data.upi_id.trim());
+    }).catch(() => {});
+  }, []);
   
   // Extra Due Form State
   const [showAddDueForm, setShowAddDueForm] = useState(false);
@@ -100,6 +110,138 @@ export default function RiderDetailsModal({
     status: 'success'
   });
   const [submittingEditTx, setSubmittingEditTx] = useState(false);
+
+  // NOC & Ride Closure State
+  const [nocDeductions, setNocDeductions] = useState([]);
+  const [nocCoolingDays, setNocCoolingDays] = useState(30);
+  const [nocReturnStand, setNocReturnStand] = useState('Khajpura Stand');
+  const [nocConditionNotes, setNocConditionNotes] = useState('All body panels, motor, and battery inspected. Surrendered in satisfactory condition.');
+  const [nocPayoutMode, setNocPayoutMode] = useState('upi');
+  const [nocPayoutUpi, setNocPayoutUpi] = useState('');
+  const [nocPayoutAcc, setNocPayoutAcc] = useState('');
+  const [nocPayoutIfsc, setNocPayoutIfsc] = useState('');
+  const [nocPayoutHolder, setNocPayoutHolder] = useState('');
+  const [submittingNoc, setSubmittingNoc] = useState(false);
+  const [processingRefundNoc, setProcessingRefundNoc] = useState(false);
+  const [refundNocModalOpen, setRefundNocModalOpen] = useState(false);
+  const [refundNocForm, setRefundNocForm] = useState({ payment_mode: 'upi', txn_id: '', remarks: '' });
+
+  useEffect(() => {
+    if (details?.user) {
+      if (details.user.payout_upi_id) {
+        setNocPayoutUpi(details.user.payout_upi_id);
+        setNocPayoutMode('upi');
+      }
+      if (details.user.payout_account_number) {
+        setNocPayoutAcc(details.user.payout_account_number);
+        setNocPayoutIfsc(details.user.payout_ifsc_code || '');
+        setNocPayoutHolder(details.user.payout_account_holder || details.user.name || '');
+        if (!details.user.payout_upi_id) setNocPayoutMode('bank');
+      }
+    }
+  }, [details]);
+
+  const handleAddDeduction = () => {
+    setNocDeductions(prev => [...prev, { title: '', amount: '', reason: '' }]);
+  };
+
+  const handleRemoveDeduction = (index) => {
+    setNocDeductions(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleDeductionChange = (index, field, value) => {
+    setNocDeductions(prev => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], [field]: value };
+      return copy;
+    });
+  };
+
+  const handleCreateNoc = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!window.confirm("Are you sure you want to close this rider's ride account and issue the official NOC?\n\n• The active vehicle will be surrendered to the stand.\n• The 30–45 days security deposit refund cooling period will begin.\n• The rider's profile will remain saved for future bookings.")) {
+      return;
+    }
+
+    setSubmittingNoc(true);
+    try {
+      const activeRental = details?.active_rental;
+      const res = await axios.post('/api/noc/create', {
+        user_id: rawId,
+        rental_id: activeRental?.id || null,
+        vehicle_id: activeRental?.vehicle_id || null,
+        return_stand: nocReturnStand,
+        vehicle_condition_notes: nocConditionNotes,
+        cooling_period_days: nocCoolingDays,
+        deductions_breakdown: nocDeductions.filter(d => parseFloat(d.amount || 0) > 0),
+        payout_mode: nocPayoutMode,
+        payout_upi_id: nocPayoutUpi,
+        payout_account_number: nocPayoutAcc,
+        payout_ifsc_code: nocPayoutIfsc,
+        payout_account_holder: nocPayoutHolder || rider.name,
+        issued_by: 'Admin'
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      alert('Ride account successfully closed and NOC certificate generated!');
+      if (res.data?.noc) {
+        openNOCInvoice(res.data.noc);
+      }
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error('Error issuing NOC:', err);
+      alert('Failed to issue NOC: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSubmittingNoc(false);
+    }
+  };
+
+  const handleProcessNocRefund = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const activeNoc = details?.active_noc;
+    if (!activeNoc) return;
+
+    if (!window.confirm(`Confirm payment of ₹${activeNoc.net_refundable_amount} security deposit refund to ${rider.name}?\nThis will mark the NOC refund as settled and update user deposit balance.`)) {
+      return;
+    }
+
+    setProcessingRefundNoc(true);
+    try {
+      const res = await axios.put(`/api/noc/${activeNoc.id}/process-refund`, {
+        refund_payment_mode: refundNocForm.payment_mode,
+        refund_txn_id: refundNocForm.txn_id,
+        refund_remarks: refundNocForm.remarks || 'Security Deposit Refund Settled'
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      alert(res.data?.message || 'Refund successfully processed!');
+      setRefundNocModalOpen(false);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error('Error processing refund:', err);
+      alert('Failed to process refund: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setProcessingRefundNoc(false);
+    }
+  };
+
+  const handleReopenRideAccount = async () => {
+    const activeNoc = details?.active_noc;
+    if (!activeNoc) return;
+    if (!window.confirm("Reopen ride account for this rider?\nThis will set their account status back to Active so they can take new rentals.")) return;
+
+    try {
+      await axios.post(`/api/noc/${activeNoc.id}/reopen-account`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert('Ride account reopened successfully!');
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      alert('Failed to reopen account: ' + (err.response?.data?.error || err.message));
+    }
+  };
 
   const rawId = rider.raw_id || rider.user_id || rider.id;
   const token = localStorage.getItem('token');
@@ -704,14 +846,23 @@ export default function RiderDetailsModal({
 
   const handleSendWhatsAppReminder = () => {
     const totalDue = details?.dues_summary?.total_due || 0;
-    const upiId = '9113750231@oksbi';
+    const upiId = systemUpiId || '9113750231@oksbi';
     const upiIntentUrl = `upi://pay?pa=${upiId}&pn=LocalToto&am=${totalDue}&tn=LT_Due_${rawId}`;
+
+    let vehicleText = 'No EV Assigned';
+    if (details?.active_rental) {
+      const vm = details.active_rental.vehicle_model;
+      const vr = details.active_rental.vehicle_reg;
+      vehicleText = vm && vr && vm !== vr ? `${vm} (${vr})` : (vm || vr || 'Assigned EV');
+    } else if (rider.assigned_vehicle) {
+      vehicleText = rider.assigned_vehicle;
+    }
 
     const text = `*⚡ LT.ev Mobility - Payment & Account Notice*
 ----------------------------------------
 *👤 Rider:* ${rider.name} (${rider.id})
 *📱 Contact:* ${rider.phone || 'N/A'}
-*🛵 Vehicle:* ${details?.active_rental ? `${details.active_rental.vehicle_model} (${details.active_rental.vehicle_reg})` : (rider.assigned_vehicle || 'No EV Assigned')}
+*🛵 Vehicle:* ${vehicleText}
 *💰 Outstanding Total Due:* ₹${totalDue.toLocaleString('en-IN')}
 
 *📲 Pay Instantly via UPI Link:*
@@ -720,7 +871,7 @@ ${upiIntentUrl}
 *Or Pay to UPI ID:* ${upiId}
 _After payment, please share screenshot or UTR number._
 ----------------------------------------
-_Support: +91 9113750231 | https://ltev.in_`;
+_Support: +91 78705 72429 | https://ltev.in_`;
 
     if (cleanPhone) {
       window.open(`https://wa.me/91${cleanPhone}?text=${encodeURIComponent(text)}`, '_blank');
@@ -1106,7 +1257,8 @@ _Support: +91 9113750231 | https://ltev.in_`;
                 { id: 'kyc', label: 'Document', badge: kycStatus === 'verified' ? '✓' : '!' },
                 { id: 'vehicle', label: 'Rentals', badge: null },
                 { id: 'wallet', label: 'Transcation', badge: pendingApprovalsCount || null, badgeColor: '#eab308' },
-                { id: 'notice', label: 'Notification', badge: null }
+                { id: 'notice', label: 'Notification', badge: null },
+                { id: 'noc', label: 'NOC & Settlement', badge: details?.active_noc ? 'NOC' : (details?.user?.ride_account_status === 'ride_closed' ? 'Closed' : null), badgeColor: '#0284c7' }
               ].map(tab => {
                 const isActive = activeTab === tab.id;
                 return (
@@ -2225,6 +2377,515 @@ _Support: +91 9113750231 | https://ltev.in_`;
                     </div>
                   </div>
                 )}
+
+                {/* ======================================================== */}
+                {/* TAB 6: NOC (NO OBJECTION CERTIFICATE) & RIDE SETTLEMENT  */}
+                {/* ======================================================== */}
+                {activeTab === 'noc' && (() => {
+                  const activeNoc = details.active_noc;
+                  const activeRental = details.active_rental;
+                  const servicesList = details.services_history || details.maintenance_logs || [];
+                  const depositBal = parseFloat(details.user?.security_deposit_balance || rider.security_deposit_balance || 0);
+                  const totalDeductions = nocDeductions.reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
+                  const netRefundable = Math.max(0, depositBal - totalDeductions);
+                  const coolingRefundDate = new Date(Date.now() + nocCoolingDays * 86400000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+
+                  if (activeNoc) {
+                    const nocServices = Array.isArray(activeNoc.services_summary) ? activeNoc.services_summary : (typeof activeNoc.services_summary === 'string' ? JSON.parse(activeNoc.services_summary || '[]') : []);
+                    const nocDeductionsList = Array.isArray(activeNoc.deductions_breakdown) ? activeNoc.deductions_breakdown : (typeof activeNoc.deductions_breakdown === 'string' ? JSON.parse(activeNoc.deductions_breakdown || '[]') : []);
+
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                        {/* Active NOC Certificate View */}
+                        <div style={{
+                          background: 'linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%)',
+                          borderRadius: '16px',
+                          border: '1px solid #86efac',
+                          padding: '24px',
+                          boxShadow: '0 4px 12px -2px rgba(22, 163, 74, 0.08)'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '14px', marginBottom: '20px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                              <div style={{
+                                width: '48px', height: '48px', borderRadius: '12px',
+                                background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                color: '#15803d', border: '1px solid #86efac'
+                              }}>
+                                <ShieldCheck size={28} />
+                              </div>
+                              <div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '800', color: '#0f172a' }}>
+                                    Official NOC Issued & Ride Account Closed
+                                  </h3>
+                                  <span style={{
+                                    background: '#dcfce7', color: '#15803d', padding: '2px 8px', borderRadius: '4px',
+                                    fontSize: '11px', fontWeight: '800'
+                                  }}>
+                                    ✓ CLEARED
+                                  </span>
+                                </div>
+                                <p style={{ margin: '3px 0 0 0', fontSize: '12px', color: '#64748b' }}>
+                                  Certificate Ref: <strong style={{ color: '#0284c7', fontFamily: 'monospace' }}>{activeNoc.noc_number || activeNoc.id}</strong> • Issued on {new Date(activeNoc.closure_date || activeNoc.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                              <button
+                                type="button"
+                                onClick={() => openNOCInvoice(activeNoc)}
+                                style={{
+                                  display: 'flex', alignItems: 'center', gap: '6px',
+                                  background: '#0284c7', color: 'white', border: 'none',
+                                  padding: '9px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: '700',
+                                  cursor: 'pointer', boxShadow: '0 2px 6px rgba(2, 132, 199, 0.25)'
+                                }}
+                              >
+                                <FileText size={15} /> Print / View Official NOC
+                              </button>
+                              {activeNoc.refund_status !== 'refund_processed' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRefundNocForm({ payment_mode: activeNoc.payout_mode || 'upi', txn_id: '', remarks: '' });
+                                    setRefundNocModalOpen(true);
+                                  }}
+                                  style={{
+                                    display: 'flex', alignItems: 'center', gap: '6px',
+                                    background: '#16a34a', color: 'white', border: 'none',
+                                    padding: '9px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: '700',
+                                    cursor: 'pointer', boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)'
+                                  }}
+                                >
+                                  <DollarSign size={15} /> Process Security Refund
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={handleReopenRideAccount}
+                                style={{
+                                  display: 'flex', alignItems: 'center', gap: '6px',
+                                  background: 'white', color: '#475569', border: '1px solid #cbd5e1',
+                                  padding: '9px 14px', borderRadius: '8px', fontSize: '12px', fontWeight: '700',
+                                  cursor: 'pointer'
+                                }}
+                                title="Reopen ride account to let rider rent again"
+                              >
+                                <RefreshCw size={13} /> Reopen Ride Account
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* 4-Metric Grid */}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px', marginBottom: '18px' }}>
+                            <div style={{ background: 'white', padding: '14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                              <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase' }}>Surrendered Scooter</div>
+                              <div style={{ fontSize: '15px', fontWeight: '800', color: '#0284c7', marginTop: '4px' }}>
+                                🛵 {activeNoc.vehicle_id || 'N/A'}
+                              </div>
+                              <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                                {activeNoc.rental_duration_days || 0} days rented • {activeNoc.return_stand || 'Stand'}
+                              </div>
+                            </div>
+
+                            <div style={{ background: 'white', padding: '14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                              <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase' }}>Workshop Clearance</div>
+                              <div style={{ fontSize: '15px', fontWeight: '800', color: '#16a34a', marginTop: '4px' }}>
+                                ✓ Fully Cleared
+                              </div>
+                              <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                                {activeNoc.services_count || 0} services verified • Zero liabilities
+                              </div>
+                            </div>
+
+                            <div style={{ background: 'white', padding: '14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                              <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase' }}>Refundable Security Deposit</div>
+                              <div style={{ fontSize: '18px', fontWeight: '900', color: '#166534', marginTop: '4px' }}>
+                                ₹{parseFloat(activeNoc.net_refundable_amount || 0).toLocaleString('en-IN')}
+                              </div>
+                              <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                                Paid ₹{parseFloat(activeNoc.initial_security_deposit || 0).toLocaleString('en-IN')} - Deductions ₹{parseFloat(activeNoc.deductions_amount || 0).toLocaleString('en-IN')}
+                              </div>
+                            </div>
+
+                            <div style={{ background: 'white', padding: '14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                              <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase' }}>Refund Policy (30–45 Days)</div>
+                              <div style={{ fontSize: '13px', fontWeight: '800', color: activeNoc.refund_status === 'refund_processed' ? '#16a34a' : '#d97706', marginTop: '4px' }}>
+                                {activeNoc.refund_status === 'refund_processed' ? '✓ Refund Settled' : `Scheduled: ${new Date(activeNoc.expected_refund_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                              </div>
+                              <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                                {activeNoc.cooling_period_days || 30} days cooling window
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* 30-45 Days Status Banner */}
+                          <div style={{
+                            background: activeNoc.refund_status === 'refund_processed' ? '#f0fdf4' : '#fffbeb',
+                            border: `1px solid ${activeNoc.refund_status === 'refund_processed' ? '#bbf7d0' : '#fde68a'}`,
+                            borderRadius: '10px',
+                            padding: '14px 18px',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            gap: '12px'
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                              <Clock size={20} color={activeNoc.refund_status === 'refund_processed' ? '#16a34a' : '#b45309'} />
+                              <div>
+                                <div style={{ fontSize: '13px', fontWeight: '800', color: activeNoc.refund_status === 'refund_processed' ? '#166534' : '#92400e' }}>
+                                  {activeNoc.refund_status === 'refund_processed' 
+                                    ? `✓ Security Deposit Refund Settled on ${new Date(activeNoc.refund_paid_date).toLocaleDateString()} via ${activeNoc.refund_payment_mode?.toUpperCase()} (Txn Ref: ${activeNoc.refund_txn_id || 'Processed'})`
+                                    : `⏳ 30–45 Days Verification Cooling Period in Progress (Scheduled Refund: ${new Date(activeNoc.expected_refund_date).toLocaleDateString()})`}
+                                </div>
+                                <div style={{ fontSize: '12px', color: activeNoc.refund_status === 'refund_processed' ? '#15803d' : '#78350f', marginTop: '2px' }}>
+                                  Rider Payout Destination: <strong>{activeNoc.payout_mode?.toUpperCase()}: {activeNoc.payout_mode === 'upi' ? (activeNoc.payout_upi_id || 'Not specified') : `A/c ${activeNoc.payout_account_number} (${activeNoc.payout_ifsc_code})`}</strong>
+                                </div>
+                              </div>
+                            </div>
+
+                            {activeNoc.refund_status !== 'refund_processed' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRefundNocForm({ payment_mode: activeNoc.payout_mode || 'upi', txn_id: '', remarks: '' });
+                                  setRefundNocModalOpen(true);
+                                }}
+                                style={{
+                                  background: '#0f172a', color: 'white', border: 'none',
+                                  padding: '7px 14px', borderRadius: '6px', fontSize: '12px', fontWeight: '700',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                Mark Refund as Paid
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Deductions Breakdown & Services Table */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                          <div style={{ background: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #e2e8f0' }}>
+                            <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: '800', color: '#0f172a' }}>Deductions Itemization</h4>
+                            {nocDeductionsList.length > 0 ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                {nocDeductionsList.map((d, i) => (
+                                  <div key={i} style={{ background: '#fef2f2', border: '1px solid #fee2e2', padding: '10px 12px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <div>
+                                      <div style={{ fontWeight: '700', color: '#dc2626', fontSize: '13px' }}>{d.title}</div>
+                                      {d.reason && <div style={{ fontSize: '11px', color: '#991b1b', marginTop: '2px' }}>{d.reason}</div>}
+                                    </div>
+                                    <div style={{ fontWeight: '800', color: '#dc2626', fontSize: '14px' }}>-₹{parseFloat(d.amount || 0).toLocaleString('en-IN')}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div style={{ padding: '20px', textAlign: 'center', color: '#64748b', fontSize: '13px', background: '#f8fafc', borderRadius: '8px' }}>
+                                No deductions applied. Full deposit is refundable.
+                              </div>
+                            )}
+                          </div>
+
+                          <div style={{ background: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #e2e8f0' }}>
+                            <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: '800', color: '#0f172a' }}>Workshop & Maintenance Clearance Log</h4>
+                            {nocServices.length > 0 ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '250px', overflowY: 'auto' }}>
+                                {nocServices.map((s, i) => (
+                                  <div key={i} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '10px 12px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <div>
+                                      <div style={{ fontWeight: '700', color: '#0f172a', fontSize: '13px' }}>{s.service_type || 'General Service'}</div>
+                                      <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>{new Date(s.date).toLocaleDateString('en-IN')} • {s.billed_to === 'driver' ? 'Billed to Rider' : 'Company Service'}</div>
+                                    </div>
+                                    <div style={{ fontWeight: '700', color: '#16a34a', fontSize: '12px' }}>₹{parseFloat(s.cost || 0)} (Cleared)</div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div style={{ padding: '20px', textAlign: 'center', color: '#64748b', fontSize: '13px', background: '#f8fafc', borderRadius: '8px' }}>
+                                No workshop services on record during this rental.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // If no NOC exists yet -> Pre-Settlement Form
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                      {/* Explanatory Policy Banner */}
+                      <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '12px', padding: '14px 18px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{ background: '#dbeafe', color: '#1d4ed8', width: '36px', height: '36px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          <Shield size={20} />
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '13px', fontWeight: '800', color: '#1e40af' }}>
+                            Ride Account Settlement & No Objection Certificate (NOC)
+                          </div>
+                          <div style={{ fontSize: '12px', color: '#3b82f6', marginTop: '2px' }}>
+                            Closing the ride account surrenders the vehicle and finishes active billing. The rider's profile is preserved for future rentals. Security deposit refund is scheduled within 30 to 45 days.
+                          </div>
+                        </div>
+                      </div>
+
+                      <form onSubmit={handleCreateNoc} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                        {/* Section 1: Scooter & Return Stand */}
+                        <div style={{ background: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #e2e8f0' }}>
+                          <h4 style={{ margin: '0 0 14px 0', fontSize: '14px', fontWeight: '800', color: '#0f172a', textTransform: 'uppercase' }}>
+                            1. Scooter Surrender & Stand Inspection
+                          </h4>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '14px' }}>
+                            <div>
+                              <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '4px' }}>Currently Assigned Scooter</label>
+                              <div style={{ padding: '9px 12px', borderRadius: '8px', background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: '13px', fontWeight: '700', color: activeRental?.vehicle_id ? '#0284c7' : '#64748b' }}>
+                                {activeRental?.vehicle_id ? `🛵 ${activeRental.vehicle_id} (${activeRental.vehicle_model || 'LT Commercial EV'})` : 'No Active Scooter Assigned'}
+                              </div>
+                            </div>
+
+                            <div>
+                              <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '4px' }}>Surrender Stand *</label>
+                              <input
+                                required
+                                type="text"
+                                value={nocReturnStand}
+                                onChange={e => setNocReturnStand(e.target.value)}
+                                placeholder="e.g. Khajpura Stand"
+                                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', outline: 'none' }}
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '4px' }}>Inspection & Physical Surrender Notes</label>
+                            <textarea
+                              rows="2"
+                              value={nocConditionNotes}
+                              onChange={e => setNocConditionNotes(e.target.value)}
+                              placeholder="Inspection details regarding panels, battery, and motor..."
+                              style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', outline: 'none', resize: 'vertical' }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Section 2: Service History Clearance */}
+                        <div style={{ background: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #e2e8f0' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                            <h4 style={{ margin: 0, fontSize: '14px', fontWeight: '800', color: '#0f172a', textTransform: 'uppercase' }}>
+                              2. Service & Maintenance History Clearance ({servicesList.length})
+                            </h4>
+                            <span style={{ fontSize: '11px', fontWeight: '700', color: '#16a34a', background: '#dcfce7', padding: '2px 8px', borderRadius: '4px' }}>
+                              ✓ All Logs Cleared
+                            </span>
+                          </div>
+                          {servicesList.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+                              {servicesList.map(s => (
+                                <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f8fafc', padding: '10px 12px', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '12px' }}>
+                                  <div>
+                                    <span style={{ fontWeight: '700', color: '#0f172a' }}>{s.service_type || s.issue_description || 'General Service'}</span>
+                                    <span style={{ color: '#64748b', marginLeft: '8px' }}>📅 {new Date(s.date_reported).toLocaleDateString('en-IN')}</span>
+                                  </div>
+                                  <div style={{ fontWeight: '700', color: s.payment_status === 'paid' ? '#16a34a' : '#d97706' }}>
+                                    ₹{parseFloat(s.cost || 0)} ({s.payment_status || 'cleared'})
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ padding: '14px', background: '#f8fafc', borderRadius: '8px', color: '#64748b', fontSize: '12px', textAlign: 'center' }}>
+                              No workshop services or maintenance logs recorded for this rider.
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Section 3: Security Deposit Settlement & Deductions */}
+                        <div style={{ background: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #e2e8f0' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                            <div>
+                              <h4 style={{ margin: 0, fontSize: '14px', fontWeight: '800', color: '#0f172a', textTransform: 'uppercase' }}>
+                                3. Security Deposit & Deductions Calculator
+                              </h4>
+                              <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: '#64748b' }}>
+                                Current Deposit Balance on File: <strong style={{ color: '#0f172a' }}>₹{depositBal.toLocaleString('en-IN')}</strong>
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleAddDeduction}
+                              style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#fee2e2', color: '#dc2626', border: '1px solid #fecaca', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: '700', cursor: 'pointer' }}
+                            >
+                              <Plus size={14} /> Add Deduction
+                            </button>
+                          </div>
+
+                          {nocDeductions.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '14px' }}>
+                              {nocDeductions.map((d, index) => (
+                                <div key={index} style={{ display: 'flex', gap: '10px', alignItems: 'center', background: '#fff5f5', padding: '10px', borderRadius: '8px', border: '1px solid #fecaca' }}>
+                                  <input
+                                    required
+                                    type="text"
+                                    placeholder="Deduction reason (e.g. Body damage, Traffic challan, Late fine)"
+                                    value={d.title}
+                                    onChange={e => handleDeductionChange(index, 'title', e.target.value)}
+                                    style={{ flex: 2, padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                                  />
+                                  <input
+                                    required
+                                    type="number"
+                                    min="0"
+                                    placeholder="Amount (₹)"
+                                    value={d.amount}
+                                    onChange={e => handleDeductionChange(index, 'amount', e.target.value)}
+                                    style={{ width: '110px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none', fontWeight: '700', color: '#dc2626' }}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveDeduction(index)}
+                                    style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '6px' }}
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Live Settlement Calculation Card */}
+                          <div style={{ background: '#f8fafc', padding: '14px 18px', borderRadius: '10px', border: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                              <div style={{ fontSize: '12px', color: '#64748b' }}>Deposit (₹{depositBal.toLocaleString('en-IN')}) - Deductions (₹{totalDeductions.toLocaleString('en-IN')})</div>
+                              <div style={{ fontSize: '16px', fontWeight: '800', color: '#166534', marginTop: '2px' }}>
+                                Net Refundable Security Amount: ₹{netRefundable.toLocaleString('en-IN')}
+                              </div>
+                            </div>
+                            <span style={{ fontSize: '12px', fontWeight: '800', background: '#dcfce7', color: '#15803d', padding: '4px 12px', borderRadius: '6px' }}>
+                              Payable in 30–45 Days
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Section 4: 30-45 Days Refund Policy & Rider Destination Payout */}
+                        <div style={{ background: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #e2e8f0' }}>
+                          <h4 style={{ margin: '0 0 14px 0', fontSize: '14px', fontWeight: '800', color: '#0f172a', textTransform: 'uppercase' }}>
+                            4. 30–45 Days Refund Policy & Rider Destination Payout
+                          </h4>
+
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '14px' }}>
+                            <div>
+                              <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '4px' }}>
+                                Refund Cooling Duration (Policy: 30–45 Days)
+                              </label>
+                              <select
+                                value={nocCoolingDays}
+                                onChange={e => setNocCoolingDays(parseInt(e.target.value, 10))}
+                                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', outline: 'none', background: 'white' }}
+                              >
+                                <option value={30}>30 Days (Standard Commercial EV Policy)</option>
+                                <option value={45}>45 Days (Extended Verification Policy)</option>
+                              </select>
+                              <div style={{ fontSize: '11px', color: '#0284c7', marginTop: '4px' }}>
+                                Scheduled Refund Date: <strong>{coolingRefundDate}</strong>
+                              </div>
+                            </div>
+
+                            <div>
+                              <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '4px' }}>
+                                Rider Payout Transfer Mode
+                              </label>
+                              <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}>
+                                  <input
+                                    type="radio"
+                                    name="nocPayoutMode"
+                                    value="upi"
+                                    checked={nocPayoutMode === 'upi'}
+                                    onChange={() => setNocPayoutMode('upi')}
+                                  /> UPI Transfer
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}>
+                                  <input
+                                    type="radio"
+                                    name="nocPayoutMode"
+                                    value="bank"
+                                    checked={nocPayoutMode === 'bank'}
+                                    onChange={() => setNocPayoutMode('bank')}
+                                  /> Bank Account (NEFT/IMPS)
+                                </label>
+                              </div>
+                            </div>
+                          </div>
+
+                          {nocPayoutMode === 'upi' ? (
+                            <div>
+                              <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '4px' }}>Rider UPI ID</label>
+                              <input
+                                type="text"
+                                placeholder="e.g. 7870572429@upi or rider@okhdfcbank"
+                                value={nocPayoutUpi}
+                                onChange={e => setNocPayoutUpi(e.target.value)}
+                                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', outline: 'none', fontFamily: 'monospace' }}
+                              />
+                            </div>
+                          ) : (
+                            <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: '10px' }}>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#334155', marginBottom: '3px' }}>Bank Account Number</label>
+                                <input
+                                  type="text"
+                                  placeholder="Account Number"
+                                  value={nocPayoutAcc}
+                                  onChange={e => setNocPayoutAcc(e.target.value)}
+                                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#334155', marginBottom: '3px' }}>IFSC Code</label>
+                                <input
+                                  type="text"
+                                  placeholder="SBIN0001234"
+                                  value={nocPayoutIfsc}
+                                  onChange={e => setNocPayoutIfsc(e.target.value.toUpperCase())}
+                                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#334155', marginBottom: '3px' }}>Account Holder Name</label>
+                                <input
+                                  type="text"
+                                  placeholder="Name as in bank"
+                                  value={nocPayoutHolder}
+                                  onChange={e => setNocPayoutHolder(e.target.value)}
+                                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Submit Action */}
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                          <button
+                            type="submit"
+                            disabled={submittingNoc}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: '8px',
+                              background: '#0f172a', color: 'white', border: 'none',
+                              padding: '12px 24px', borderRadius: '8px', fontSize: '14px', fontWeight: '800',
+                              cursor: submittingNoc ? 'not-allowed' : 'pointer',
+                              boxShadow: '0 4px 12px rgba(15, 23, 42, 0.25)'
+                            }}
+                          >
+                            <ShieldCheck size={18} /> {submittingNoc ? 'Closing Account & Issuing NOC...' : 'Close Ride Account & Issue NOC Certificate'}
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  );
+                })()}
               </>
             )}
           </div>
@@ -3129,6 +3790,195 @@ _Support: +91 9113750231 | https://ltev.in_`;
                   style={{ flex: 1.5, padding: '10px', borderRadius: '8px', border: 'none', background: '#00a66c', color: 'white', fontWeight: '800', fontSize: '12px', cursor: submittingEditTx ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
                 >
                   <CheckCircle2 size={14} /> {submittingEditTx ? 'Saving...' : 'Save Transaction'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: PROCESS NOC SECURITY DEPOSIT REFUND                   */}
+      {/* ============================================================ */}
+      {refundNocModalOpen && details?.active_noc && (
+        <div 
+          onClick={() => setRefundNocModalOpen(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.65)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 11000,
+            padding: '20px'
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'white',
+              width: '100%',
+              maxWidth: '520px',
+              borderRadius: '20px',
+              overflow: 'hidden',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+              border: '1px solid #cbd5e1',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              padding: '18px 24px',
+              borderBottom: '1px solid #e2e8f0',
+              background: '#f8fafc',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '17px', fontWeight: '800', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <DollarSign size={18} color="#16a34a" /> Process Security Deposit Refund
+                </h3>
+                <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
+                  NOC Ref: <strong style={{ color: '#0284c7', fontFamily: 'monospace' }}>{details.active_noc.noc_number || details.active_noc.id}</strong> • Rider: <strong>{rider.name}</strong>
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setRefundNocModalOpen(false)}
+                style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#64748b' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Form */}
+            <form 
+              onSubmit={handleProcessNocRefund}
+              style={{ padding: '22px', display: 'flex', flexDirection: 'column', gap: '16px' }}
+            >
+              {/* Refund Summary Banner */}
+              <div style={{
+                background: 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)',
+                padding: '16px 18px',
+                borderRadius: '12px',
+                border: '1px solid #86efac',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <div>
+                  <div style={{ fontSize: '12px', color: '#166534', fontWeight: '700' }}>Approved Net Refund Amount</div>
+                  <div style={{ fontSize: '24px', fontWeight: '900', color: '#15803d', marginTop: '2px' }}>
+                    ₹{parseFloat(details.active_noc.net_refundable_amount || 0).toLocaleString('en-IN')}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right', fontSize: '11px', color: '#166534' }}>
+                  <div>Deposit: ₹{parseFloat(details.active_noc.initial_security_deposit || 0).toLocaleString('en-IN')}</div>
+                  <div>Deductions: -₹{parseFloat(details.active_noc.deductions_amount || 0).toLocaleString('en-IN')}</div>
+                </div>
+              </div>
+
+              {/* Rider Destination Account Information */}
+              <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                <div style={{ fontSize: '11px', fontWeight: '800', color: '#475569', textTransform: 'uppercase', marginBottom: '6px' }}>
+                  Rider's Registered Payout Destination
+                </div>
+                {details.active_noc.payout_mode === 'bank' ? (
+                  <div style={{ fontSize: '13px', color: '#0f172a' }}>
+                    <div><strong>A/C:</strong> <span style={{ fontFamily: 'monospace' }}>{details.active_noc.payout_account_number || 'N/A'}</span></div>
+                    <div><strong>IFSC:</strong> <span style={{ fontFamily: 'monospace' }}>{details.active_noc.payout_ifsc_code || 'N/A'}</span></div>
+                    <div><strong>Holder:</strong> {details.active_noc.payout_account_holder || rider.name}</div>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '14px', color: '#0284c7', fontWeight: '700', fontFamily: 'monospace' }}>
+                    UPI: {details.active_noc.payout_upi_id || rider.payout_upi_id || 'Not specified'}
+                  </div>
+                )}
+              </div>
+
+              {/* Payment Mode Selection */}
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Payment Method *
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                  {['upi', 'bank_transfer', 'cash', 'other'].map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setRefundNocForm(prev => ({ ...prev, payment_mode: mode }))}
+                      style={{
+                        padding: '9px 6px',
+                        borderRadius: '8px',
+                        border: refundNocForm.payment_mode === mode ? '2px solid #16a34a' : '1px solid #cbd5e1',
+                        background: refundNocForm.payment_mode === mode ? '#f0fdf4' : 'white',
+                        color: refundNocForm.payment_mode === mode ? '#15803d' : '#475569',
+                        fontWeight: '800',
+                        fontSize: '11px',
+                        textTransform: 'uppercase',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {mode.replace('_', ' ')}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* UTR / Reference ID */}
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Bank UTR / Transaction Reference ID *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. 430129384729 or UPI/4301..."
+                  value={refundNocForm.txn_id}
+                  onChange={(e) => setRefundNocForm(prev => ({ ...prev, txn_id: e.target.value }))}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', outline: 'none', fontFamily: 'monospace' }}
+                />
+              </div>
+
+              {/* Remarks */}
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: '800', color: '#475569', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Settlement Remarks / Audit Notes
+                </label>
+                <input
+                  type="text"
+                  placeholder="Optional remarks (e.g. Verified zero pending challans)"
+                  value={refundNocForm.remarks}
+                  onChange={(e) => setRefundNocForm(prev => ({ ...prev, remarks: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                />
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', gap: '10px', marginTop: '6px', paddingTop: '14px', borderTop: '1px solid #e2e8f0' }}>
+                <button
+                  type="button"
+                  onClick={() => setRefundNocModalOpen(false)}
+                  style={{ flex: 1, padding: '11px', borderRadius: '8px', border: '1px solid #cbd5e1', background: 'white', color: '#475569', fontWeight: '700', fontSize: '13px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={processingRefundNoc}
+                  style={{
+                    flex: 1.6, padding: '11px', borderRadius: '8px', border: 'none',
+                    background: '#16a34a', color: 'white', fontWeight: '800', fontSize: '13px',
+                    cursor: processingRefundNoc ? 'not-allowed' : 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                    boxShadow: '0 4px 12px rgba(22, 163, 74, 0.25)'
+                  }}
+                >
+                  <CheckCircle2 size={16} /> {processingRefundNoc ? 'Processing Refund...' : 'Confirm Refund Payment'}
                 </button>
               </div>
             </form>

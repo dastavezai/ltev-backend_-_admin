@@ -554,7 +554,7 @@ export default function Login() {
 
                   <h4 style={{ color: '#0f172a', margin: '14px 0 6px 0' }}>4. Grievance Contact</h4>
                   <p>
-                    For refund disputes, riders may reach our dedicated finance desk at <strong>refunds@ltev.in</strong> or call <strong>+91 91137 50231</strong> with the Cashfree Order ID or transaction reference.
+                    For refund disputes, riders may reach our dedicated finance desk at <strong>refunds@ltev.in</strong> or call <strong>+91 78705 72429</strong> with the Cashfree Order ID or transaction reference.
                   </p>
                 </div>
               )}

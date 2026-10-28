@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
   Calendar, Clock, CreditCard, Filter, Search, Bike, User, ShieldCheck, 
   CheckCircle2, RotateCcw, XCircle, RefreshCw, ChevronRight, Zap, 
@@ -10,6 +11,7 @@ import { useAuth } from '../context/AuthContext';
 import ReceiptModal from '../components/ReceiptModal';
 
 export default function Rentals() {
+  const navigate = useNavigate();
   const { token } = useAuth();
   const [rentals, setRentals] = useState([]);
   const [vehicles, setVehicles] = useState([]);
@@ -220,14 +222,22 @@ export default function Rentals() {
   };
 
   const handleConfirmReturn = async (id) => {
+    const targetRental = rentals.find(r => r.id === id);
     if (!window.confirm(`Confirm that vehicle for rental #${id} has been received? It will be marked as available for new bookings.`)) return;
     try {
       await axios.post(`${import.meta.env.VITE_API_URL || ''}/api/rentals/${id}/confirm-return`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      alert('EV return confirmed! Vehicle is now available for new bookings.');
       fetchRentals();
       fetchAuxData();
+      
+      if (targetRental && targetRental.user_id) {
+        if (window.confirm('EV return confirmed! Vehicle is now marked available.\n\nWould you like to issue the NOC Certificate & settle the security deposit for this rider now?')) {
+          navigate(`/users?riderId=${targetRental.user_id}&tab=noc`);
+          return;
+        }
+      }
+      alert('EV return confirmed! Vehicle is now available for new bookings.');
     } catch (error) {
       alert('Error confirming return: ' + (error.response?.data?.error || error.message));
     }

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { 
   Search, UserPlus, Users, User, ShieldCheck, ShieldAlert, Shield, X, Edit2, Ban, 
   CheckCircle2, RefreshCw, CreditCard, AlertTriangle, Bike, Plus, Trash2, 
@@ -51,6 +52,8 @@ export default function UserManagement() {
   // Direct Notice State
   const [directNotice, setDirectNotice] = useState({ title: '', message: '', sending: false });
 
+  const [searchParams] = useSearchParams();
+
   const fetchUsers = async () => {
     setLoading(true);
     try {
@@ -68,6 +71,19 @@ export default function UserManagement() {
   useEffect(() => {
     fetchUsers();
   }, []);
+
+  useEffect(() => {
+    const riderIdParam = searchParams.get('riderId');
+    const tabParam = searchParams.get('tab');
+    if (riderIdParam && users.length > 0) {
+      const foundUser = users.find(u => String(u.id) === String(riderIdParam));
+      if (foundUser) {
+        setSelectedRider(foundUser);
+        setActiveTab(tabParam || 'noc');
+        fetchRiderDetails(foundUser.id);
+      }
+    }
+  }, [searchParams, users]);
 
   const fetchRiderDetails = async (riderId) => {
     setLoadingDetails(true);
@@ -613,18 +629,30 @@ export default function UserManagement() {
 
                       {/* Account Status */}
                       <td style={{ padding: '18px 24px' }}>
-                        <span style={{ 
-                          display: 'inline-block', 
-                          background: user.status === 'active' ? '#d1fae5' : user.status === 'pending' ? '#fef3c7' : '#fee2e2', 
-                          color: user.status === 'active' ? '#059669' : user.status === 'pending' ? '#d97706' : '#dc2626', 
-                          padding: '4px 10px', 
-                          borderRadius: '8px', 
-                          fontSize: '11px', 
-                          fontWeight: '800', 
-                          textTransform: 'uppercase' 
-                        }}>
-                          {user.status}
-                        </span>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', alignItems: 'flex-start' }}>
+                          <span style={{ 
+                            display: 'inline-block', 
+                            background: user.status === 'active' ? '#d1fae5' : user.status === 'pending' ? '#fef3c7' : '#fee2e2', 
+                            color: user.status === 'active' ? '#059669' : user.status === 'pending' ? '#d97706' : '#dc2626', 
+                            padding: '4px 10px', 
+                            borderRadius: '8px', 
+                            fontSize: '11px', 
+                            fontWeight: '800', 
+                            textTransform: 'uppercase' 
+                          }}>
+                            {user.status}
+                          </span>
+                          {user.ride_account_status === 'ride_closed' && (
+                            <span style={{
+                              display: 'inline-flex', alignItems: 'center', gap: '3px',
+                              background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0',
+                              padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: '800',
+                              textTransform: 'uppercase'
+                            }}>
+                              <ShieldCheck size={11} /> NOC Issued
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Actions */}
@@ -636,6 +664,28 @@ export default function UserManagement() {
                             title="Manage Profile & Dues"
                           >
                             <CreditCard size={14} /> View & Manage
+                          </button>
+
+                          <button 
+                            onClick={() => {
+                              setSelectedRider(user);
+                              setActiveTab('noc');
+                              setShowAddDueForm(false);
+                              setEditingDue(null);
+                              fetchRiderDetails(user.id);
+                            }}
+                            style={{ 
+                              display: 'flex', alignItems: 'center', gap: '5px',
+                              background: user.ride_account_status === 'ride_closed' ? '#f0fdf4' : '#fafafa',
+                              border: user.ride_account_status === 'ride_closed' ? '1px solid #86efac' : '1px solid #cbd5e1',
+                              padding: '8px 11px', borderRadius: '8px', fontWeight: '700', fontSize: '12px',
+                              cursor: 'pointer',
+                              color: user.ride_account_status === 'ride_closed' ? '#15803d' : '#334155'
+                            }}
+                            title="No Objection Certificate (NOC) & Ride Settlement"
+                          >
+                            <ShieldCheck size={14} color={user.ride_account_status === 'ride_closed' ? '#16a34a' : '#64748b'} />
+                            NOC
                           </button>
 
                           <button 

@@ -167,12 +167,14 @@ async function initDatabase() {
       CREATE TABLE IF NOT EXISTS maintenance_logs (
         id SERIAL PRIMARY KEY,
         vehicle_id VARCHAR(50) REFERENCES vehicles(id),
-        issue_description TEXT NOT NULL,
+        issue_description TEXT DEFAULT 'General Workshop Service',
         cost DECIMAL(10, 2),
         status VARCHAR(50) NOT NULL DEFAULT 'completed',
         date_reported DATE NOT NULL DEFAULT CURRENT_DATE
       )
     `);
+    await pool.query(`ALTER TABLE maintenance_logs ALTER COLUMN issue_description DROP NOT NULL`);
+    await pool.query(`ALTER TABLE maintenance_logs ALTER COLUMN issue_description SET DEFAULT 'General Workshop Service'`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS service_type VARCHAR(100) DEFAULT 'General Service'`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS parts_replaced TEXT`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);
@@ -181,10 +183,30 @@ async function initDatabase() {
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS duration VARCHAR(100)`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS estimated_completion TIMESTAMP`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS image_url TEXT`);
-    await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS images TEXT`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS items_breakdown JSONB`);
+    await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(50) DEFAULT 'cash'`);
+    await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP WITH TIME ZONE`);
+    await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS payment_remarks TEXT`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`);
     await pool.query(`ALTER TABLE maintenance_logs ALTER COLUMN date_reported TYPE TIMESTAMP WITH TIME ZONE USING date_reported::timestamp with time zone`);
+
+    // Services Catalog Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS services_catalog (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        category VARCHAR(100) DEFAULT 'General',
+        price DECIMAL(10, 2) NOT NULL DEFAULT 350.00,
+        duration_minutes INTEGER DEFAULT 30,
+        description TEXT,
+        status VARCHAR(50) DEFAULT 'active',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Cashfree orders platform fee columns
+    await pool.query(`ALTER TABLE cashfree_orders ADD COLUMN IF NOT EXISTS charge_amount NUMERIC(10, 2)`);
+    await pool.query(`ALTER TABLE cashfree_orders ADD COLUMN IF NOT EXISTS gateway_fee NUMERIC(10, 2)`);
 
     // Booking & Pre-Booking Dues Migrations
     await pool.query(`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(50) DEFAULT 'online'`);
@@ -286,7 +308,63 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_rider_dues_status ON rider_dues(status);
     `);
 
-    console.log('[DB-INIT] All tables, catalogs, and settings initialized successfully.');
+    // NOC & Ride Account Closure Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS noc_records (
+        id VARCHAR(50) PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        rental_id VARCHAR(50),
+        vehicle_id VARCHAR(50),
+        vehicle_model VARCHAR(100),
+        vehicle_reg VARCHAR(100),
+        rent_start_date TIMESTAMP,
+        vehicle_returned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        rental_duration_days INTEGER DEFAULT 0,
+        return_stand VARCHAR(100),
+        vehicle_condition_notes TEXT,
+        
+        services_count INTEGER DEFAULT 0,
+        services_total_amount DECIMAL(10, 2) DEFAULT 0.00,
+        services_summary JSONB DEFAULT '[]',
+        
+        initial_security_deposit DECIMAL(10, 2) DEFAULT 0.00,
+        deductions_amount DECIMAL(10, 2) DEFAULT 0.00,
+        deductions_breakdown JSONB DEFAULT '[]',
+        net_refundable_amount DECIMAL(10, 2) DEFAULT 0.00,
+        
+        refund_status VARCHAR(50) DEFAULT 'under_cooling',
+        cooling_period_days INTEGER DEFAULT 30,
+        closure_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expected_refund_date TIMESTAMP,
+        refund_paid_date TIMESTAMP,
+        refund_payment_mode VARCHAR(50),
+        refund_txn_id VARCHAR(100),
+        refund_remarks TEXT,
+        
+        payout_mode VARCHAR(50) DEFAULT 'upi',
+        payout_upi_id VARCHAR(100),
+        payout_account_number VARCHAR(100),
+        payout_ifsc_code VARCHAR(50),
+        payout_account_holder VARCHAR(150),
+        
+        noc_number VARCHAR(100) UNIQUE,
+        account_closure_status VARCHAR(50) DEFAULT 'ride_closed',
+        issued_by VARCHAR(100) DEFAULT 'Admin',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_noc_user ON noc_records(user_id);
+      CREATE INDEX IF NOT EXISTS idx_noc_status ON noc_records(refund_status);
+    `);
+
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ride_account_status VARCHAR(50) DEFAULT 'active'`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS active_noc_id VARCHAR(50)`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payout_upi_id VARCHAR(100)`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payout_account_number VARCHAR(100)`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payout_ifsc_code VARCHAR(50)`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payout_account_holder VARCHAR(150)`);
+
+    console.log('[DB-INIT] All tables, catalogs, NOC, and settings initialized successfully.');
   } catch (err) {
     console.error('[DB-INIT-ERROR]', err.message);
   }
@@ -932,9 +1010,7 @@ app.get('/api/maintenance', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
-        m.id, m.vehicle_id, m.service_type, m.issue_description, m.parts_replaced,
-        m.cost, m.status, m.date_reported, m.user_id, m.billed_to, m.payment_status,
-        m.duration, m.estimated_completion, m.image_url, m.images, m.items_breakdown,
+        m.*,
         v.model as vehicle_model, v.location as vehicle_location,
         u.name as user_name, u.phone as user_phone, u.email as user_email,
         COALESCE(u.security_deposit_balance, 0) as security_deposit_balance
@@ -1021,17 +1097,23 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
     const finalCost = cost !== undefined && cost !== '' ? parseFloat(cost) : 0;
     const finalStatus = status || 'completed';
     const finalBilledTo = billed_to || 'company';
-    const finalPaymentStatus = payment_status || (finalBilledTo === 'rider' ? 'pending' : 'paid');
+    const finalPaymentStatus = payment_status || (finalStatus === 'in_progress' ? 'pending' : (finalBilledTo === 'rider' ? 'pending' : 'paid'));
+    const finalPaymentMode = req.body.payment_mode || (finalPaymentStatus === 'paid' ? 'cash' : null);
+    const finalPaidAt = finalPaymentStatus === 'paid' ? (req.body.paid_at ? new Date(req.body.paid_at) : new Date()) : null;
+    const finalPaymentRemarks = req.body.payment_remarks || null;
+    const finalIssueDesc = (issue_description && String(issue_description).trim()) 
+      ? String(issue_description).trim() 
+      : (service_type || 'General Workshop Service');
 
     const result = await client.query(`
       INSERT INTO maintenance_logs (
-        vehicle_id, service_type, issue_description, parts_replaced, cost, status, date_reported, user_id, billed_to, payment_status, duration, estimated_completion, image_url, images, items_breakdown
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        vehicle_id, service_type, issue_description, parts_replaced, cost, status, date_reported, user_id, billed_to, payment_status, payment_mode, paid_at, payment_remarks, duration, estimated_completion, image_url, images, items_breakdown
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       RETURNING *
     `, [
       resolvedVehicleId,
       service_type || 'General Service',
-      issue_description,
+      finalIssueDesc,
       parts_replaced || null,
       finalCost,
       finalStatus,
@@ -1039,6 +1121,9 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       cleanUserId,
       finalBilledTo,
       finalPaymentStatus,
+      finalPaymentMode,
+      finalPaidAt,
+      finalPaymentRemarks,
       duration || null,
       estimated_completion ? new Date(estimated_completion) : null,
       image_url || req.body.problem_image || null,
@@ -1052,13 +1137,14 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       deductedParts = await deductPartsStockFromInventory(client, parts_replaced);
     }
 
-    // If service is in_progress, update vehicle status to maintenance if currently available
+    // Sync vehicle status: if in_progress -> maintenance; if completed -> available (unless active rental exists)
     if (finalStatus === 'in_progress') {
-      await client.query("UPDATE vehicles SET status = 'maintenance' WHERE id = $1 AND status = 'available'", [resolvedVehicleId]);
+      await client.query("UPDATE vehicles SET status = 'maintenance' WHERE (id = $1 OR UPPER(TRIM(model)) = UPPER(TRIM($1))) AND status = 'available'", [String(resolvedVehicleId)]);
     } else if (finalStatus === 'completed') {
-      const activeCheck = await client.query("SELECT id FROM rentals WHERE vehicle_id = $1 AND status IN ('active', 'in_use', 'pending_return')", [resolvedVehicleId]);
-      if (activeCheck.rows.length === 0) {
-        await client.query("UPDATE vehicles SET status = 'available' WHERE id = $1 AND status = 'maintenance'", [resolvedVehicleId]);
+      const activeRental = await client.query("SELECT id FROM rentals WHERE (vehicle_id = $1 OR vehicle_id = $2) AND status IN ('active', 'in_use', 'pending_return')", [String(resolvedVehicleId), String(vehicle_id)]);
+      const activeBooking = await client.query("SELECT id FROM bookings WHERE (vehicle_id = $1 OR vehicle_id = $2) AND status IN ('active', 'assigned', 'in_use')", [String(resolvedVehicleId), String(vehicle_id)]);
+      if (activeRental.rows.length === 0 && activeBooking.rows.length === 0) {
+        await client.query("UPDATE vehicles SET status = 'available' WHERE id = $1 OR UPPER(TRIM(model)) = UPPER(TRIM($1)) OR UPPER(TRIM(registration_number)) = UPPER(TRIM($1))", [String(resolvedVehicleId)]);
       }
     }
 
@@ -1094,6 +1180,9 @@ app.put('/api/maintenance/:id', authenticateToken, async (req, res) => {
       user_id,
       billed_to,
       payment_status,
+      payment_mode,
+      paid_at,
+      payment_remarks,
       duration,
       estimated_completion,
       image_url,
@@ -1103,76 +1192,123 @@ app.put('/api/maintenance/:id', authenticateToken, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Fetch existing log to compare parts_replaced
-    const existingLogRes = await client.query('SELECT parts_replaced FROM maintenance_logs WHERE id = $1', [id]);
+    // Fetch existing log to preserve unspecified fields and compare parts_replaced
+    const existingLogRes = await client.query('SELECT * FROM maintenance_logs WHERE id = $1', [id]);
     if (existingLogRes.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Maintenance record not found' });
     }
-    const previousParts = existingLogRes.rows[0].parts_replaced;
+    const existing = existingLogRes.rows[0];
+    const previousParts = existing.parts_replaced;
 
-    // Resolve vehicle_id from display code to actual DB id
-    let resolvedVehicleIdPut = vehicle_id;
-    if (vehicle_id && (isNaN(parseInt(vehicle_id, 10)) || String(parseInt(vehicle_id, 10)) !== String(vehicle_id))) {
-      const vByModel = await client.query('SELECT id FROM vehicles WHERE UPPER(TRIM(model)) = $1 LIMIT 1', [vehicle_id.trim().toUpperCase()]);
+    // Resolve vehicle_id from display code to actual DB id, or retain existing
+    let resolvedVehicleIdPut = vehicle_id !== undefined ? vehicle_id : existing.vehicle_id;
+    if (resolvedVehicleIdPut && (isNaN(parseInt(resolvedVehicleIdPut, 10)) || String(parseInt(resolvedVehicleIdPut, 10)) !== String(resolvedVehicleIdPut))) {
+      const vByModel = await client.query('SELECT id FROM vehicles WHERE UPPER(TRIM(model)) = $1 OR UPPER(TRIM(registration_number)) = $1 LIMIT 1', [String(resolvedVehicleIdPut).trim().toUpperCase()]);
       if (vByModel.rows.length > 0) {
         resolvedVehicleIdPut = vByModel.rows[0].id;
       } else {
-        const ltMatch = vehicle_id.trim().toUpperCase().match(/^[A-Z]{2}(\d+)$/);
+        const ltMatch = String(resolvedVehicleIdPut).trim().toUpperCase().match(/^[A-Z]{2}(\d+)$/);
         if (ltMatch) {
           const numericId = parseInt(ltMatch[1], 10);
           const vById = await client.query('SELECT id FROM vehicles WHERE id = $1 LIMIT 1', [numericId]);
           if (vById.rows.length > 0) resolvedVehicleIdPut = numericId;
-        } else {
-          const vByReg = await client.query('SELECT id FROM vehicles WHERE UPPER(TRIM(registration_number)) = $1 LIMIT 1', [vehicle_id.trim().toUpperCase()]);
-          if (vByReg.rows.length > 0) resolvedVehicleIdPut = vByReg.rows[0].id;
         }
       }
     }
 
-    const cleanUserId = user_id ? (typeof user_id === 'string' && user_id.toUpperCase().startsWith('USR-') ? parseInt(user_id.replace(/^USR-/i, ''), 10) : parseInt(user_id, 10)) : null;
-    const finalDate = date_reported ? new Date(date_reported) : new Date();
-    const finalCost = cost !== undefined && cost !== '' ? parseFloat(cost) : 0;
+    const finalUserId = user_id !== undefined ? (user_id ? (typeof user_id === 'string' && user_id.toUpperCase().startsWith('USR-') ? parseInt(user_id.replace(/^USR-/i, ''), 10) : parseInt(user_id, 10)) : null) : existing.user_id;
+    const finalDate = date_reported ? new Date(date_reported) : existing.date_reported;
+    const finalCost = cost !== undefined && cost !== '' ? parseFloat(cost) : parseFloat(existing.cost || 0);
+    const finalServiceType = service_type !== undefined ? service_type : (existing.service_type || 'General Service');
+    const finalIssueDesc = (issue_description !== undefined && issue_description !== null && String(issue_description).trim()) 
+      ? String(issue_description).trim() 
+      : (existing.issue_description || finalServiceType || 'General Workshop Service');
+    const finalPartsReplaced = parts_replaced !== undefined ? parts_replaced : existing.parts_replaced;
+    const finalStatus = status !== undefined ? status : existing.status;
+    const finalBilledTo = billed_to !== undefined ? billed_to : (existing.billed_to || 'company');
+    const finalPaymentStatus = payment_status !== undefined ? payment_status : (existing.payment_status || 'paid');
+    const finalPaymentMode = payment_mode !== undefined ? payment_mode : (existing.payment_mode || 'cash');
+    const finalPaidAt = paid_at !== undefined ? (paid_at ? new Date(paid_at) : null) : (finalPaymentStatus === 'paid' && !existing.paid_at ? new Date() : existing.paid_at);
+    const finalPaymentRemarks = payment_remarks !== undefined ? payment_remarks : existing.payment_remarks;
+    const finalDuration = duration !== undefined ? duration : existing.duration;
+    const finalEstimatedCompletion = estimated_completion !== undefined ? (estimated_completion ? new Date(estimated_completion) : null) : existing.estimated_completion;
+    const finalImageUrl = image_url !== undefined ? image_url : (req.body.problem_image || existing.image_url);
+    const finalImages = images !== undefined ? images : existing.images;
+    const finalItemsBreakdown = items_breakdown !== undefined ? (typeof items_breakdown === 'string' ? items_breakdown : JSON.stringify(items_breakdown)) : existing.items_breakdown;
 
     const result = await client.query(`
       UPDATE maintenance_logs
       SET vehicle_id = $1, service_type = $2, issue_description = $3, parts_replaced = $4,
           cost = $5, status = $6, date_reported = $7, user_id = $8, billed_to = $9, payment_status = $10,
-          duration = COALESCE($11, duration), estimated_completion = COALESCE($12, estimated_completion),
-          image_url = COALESCE($13, image_url), images = COALESCE($14, images), items_breakdown = COALESCE($15, items_breakdown)
-      WHERE id = $16
+          payment_mode = $11, paid_at = $12, payment_remarks = $13,
+          duration = $14, estimated_completion = $15,
+          image_url = $16, images = $17, items_breakdown = $18
+      WHERE id = $19
       RETURNING *
     `, [
       resolvedVehicleIdPut,
-      service_type,
-      issue_description,
-      parts_replaced,
+      finalServiceType,
+      finalIssueDesc,
+      finalPartsReplaced,
       finalCost,
-      status,
+      finalStatus,
       finalDate,
-      cleanUserId,
-      billed_to,
-      payment_status,
-      duration || null,
-      estimated_completion ? new Date(estimated_completion) : null,
-      image_url || req.body.problem_image || null,
-      images || null,
-      items_breakdown ? (typeof items_breakdown === 'string' ? items_breakdown : JSON.stringify(items_breakdown)) : null,
+      finalUserId,
+      finalBilledTo,
+      finalPaymentStatus,
+      finalPaymentMode,
+      finalPaidAt,
+      finalPaymentRemarks,
+      finalDuration || null,
+      finalEstimatedCompletion,
+      finalImageUrl || null,
+      finalImages || null,
+      finalItemsBreakdown,
       id
     ]);
 
     // If parts replaced changed, restore old parts and deduct newly specified parts
-    if ((previousParts || '') !== (parts_replaced || '')) {
+    if ((previousParts || '') !== (finalPartsReplaced || '')) {
       if (previousParts) {
         await restorePartsStockToInventory(client, previousParts);
       }
-      if (parts_replaced) {
-        await deductPartsStockFromInventory(client, parts_replaced);
+      if (finalPartsReplaced) {
+        await deductPartsStockFromInventory(client, finalPartsReplaced);
       }
     }
 
+    // Synchronize Vehicle Status:
+    // When completed, check if vehicle has an active rental/booking; if not, mark Available!
+    if (finalStatus === 'completed') {
+      const activeRental = await client.query(
+        "SELECT id FROM rentals WHERE (vehicle_id = $1 OR vehicle_id = $2) AND status IN ('active', 'in_use', 'pending_return')",
+        [String(resolvedVehicleIdPut), String(existing.vehicle_id)]
+      );
+      const activeBooking = await client.query(
+        "SELECT id FROM bookings WHERE (vehicle_id = $1 OR vehicle_id = $2) AND status IN ('active', 'assigned', 'in_use')",
+        [String(resolvedVehicleIdPut), String(existing.vehicle_id)]
+      );
+      if (activeRental.rows.length === 0 && activeBooking.rows.length === 0) {
+        await client.query(
+          "UPDATE vehicles SET status = 'available' WHERE id = $1 OR UPPER(TRIM(model)) = UPPER(TRIM($1)) OR UPPER(TRIM(registration_number)) = UPPER(TRIM($1))",
+          [String(resolvedVehicleIdPut)]
+        );
+      } else {
+        await client.query(
+          "UPDATE vehicles SET status = 'rented' WHERE (id = $1 OR UPPER(TRIM(model)) = UPPER(TRIM($1))) AND status = 'maintenance'",
+          [String(resolvedVehicleIdPut)]
+        );
+      }
+    } else if (finalStatus === 'in_progress') {
+      await client.query(
+        "UPDATE vehicles SET status = 'maintenance' WHERE (id = $1 OR UPPER(TRIM(model)) = UPPER(TRIM($1))) AND status = 'available'",
+        [String(resolvedVehicleIdPut)]
+      );
+    }
+
     await client.query('COMMIT');
-    res.json({ success: true, log: result.rows[0], message: 'Service record updated & inventory synced!' });
+    res.json({ success: true, log: result.rows[0], message: 'Service record updated & vehicle status synced!' });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error updating maintenance log:', err);
@@ -1826,6 +1962,25 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
       LIMIT 15
     `, [id]);
 
+    // 2c. NOC Records for this user
+    const nocRes = await pool.query(`
+      SELECT * FROM noc_records 
+      WHERE user_id = $1 
+      ORDER BY created_at DESC
+    `, [id]);
+    const activeNoc = nocRes.rows.find(n => n.id === user.active_noc_id) || (nocRes.rows.length > 0 ? nocRes.rows[0] : null);
+
+    // 2d. Maintenance / Service History for this rider & vehicles
+    const assignedVehId = activeRental?.vehicle_id || (rentalHistoryRes.rows[0]?.vehicle_id) || null;
+    const maintenanceHistoryRes = await pool.query(`
+      SELECT m.*, v.model as vehicle_model, COALESCE(v.registration_number, v.id) as vehicle_reg
+      FROM maintenance_logs m
+      LEFT JOIN vehicles v ON (v.id = m.vehicle_id OR v.model = m.vehicle_id)
+      WHERE m.user_id = $1 OR ($2::text IS NOT NULL AND m.vehicle_id = $2::text)
+      ORDER BY m.date_reported DESC
+      LIMIT 30
+    `, [id, assignedVehId]);
+
     res.json({
       user: {
         ...user,
@@ -1835,6 +1990,10 @@ app.get('/api/riders/:id/details', authenticateToken, async (req, res) => {
       active_rental: activeRental,
       rental: activeRental,
       rental_history: rentalHistoryRes.rows,
+      active_noc: activeNoc,
+      noc_records: nocRes.rows,
+      services_history: maintenanceHistoryRes.rows,
+      maintenance_logs: maintenanceHistoryRes.rows,
       min_security_deposit: minDeposit,
       dues_summary: {
         cycle_due: cycleDue,
@@ -2254,6 +2413,465 @@ app.post('/api/security-deposits/set', authenticateToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
+  }
+});
+
+// ============================================================
+// NOC (NO OBJECTION CERTIFICATE) & RIDE SETTLEMENT API
+// ============================================================
+
+// 1. Get Rider Pre-Settlement & NOC Preview Data
+app.get('/api/noc/rider/:id', authenticateToken, async (req, res) => {
+  try {
+    let { id } = req.params;
+    if (typeof id === 'string' && id.startsWith('USR-')) {
+      id = parseInt(id.replace('USR-', ''), 10);
+    } else {
+      id = parseInt(id, 10);
+    }
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid user ID' });
+
+    // User & active NOC
+    const uRes = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+    if (uRes.rows.length === 0) return res.status(404).json({ error: 'Rider not found' });
+    const user = uRes.rows[0];
+
+    // Current active / recent rental
+    const rRes = await pool.query(`
+      SELECT r.*, v.model as vehicle_model, COALESCE(v.registration_number, v.id) as vehicle_reg,
+             p.name as plan_name, p.price as plan_price, p.type as plan_type
+      FROM rentals r
+      LEFT JOIN vehicles v ON (v.id = r.vehicle_id OR v.model = r.vehicle_id)
+      LEFT JOIN plans p ON p.id = r.plan_id
+      WHERE r.user_id = $1
+      ORDER BY CASE WHEN r.status IN ('active', 'in_use', 'pending_return') THEN 1 ELSE 2 END, r.id DESC
+      LIMIT 1
+    `, [id]);
+    const rental = rRes.rows[0] || null;
+
+    // Services history
+    const assignedVehId = rental?.vehicle_id || null;
+    const sRes = await pool.query(`
+      SELECT m.*, v.model as vehicle_model, COALESCE(v.registration_number, v.id) as vehicle_reg
+      FROM maintenance_logs m
+      LEFT JOIN vehicles v ON (v.id = m.vehicle_id OR v.model = m.vehicle_id)
+      WHERE m.user_id = $1 OR ($2::text IS NOT NULL AND m.vehicle_id = $2::text)
+      ORDER BY m.date_reported DESC
+    `, [id, assignedVehId]);
+
+    // Pending dues
+    const dRes = await pool.query(`
+      SELECT * FROM rider_dues WHERE user_id = $1 AND status = 'pending' ORDER BY due_date DESC
+    `, [id]);
+    const pendingDues = dRes.rows;
+    const pendingDuesTotal = pendingDues.reduce((sum, d) => sum + parseFloat(d.amount || 0), 0);
+
+    // Existing NOC records
+    const nocRes = await pool.query(`
+      SELECT * FROM noc_records WHERE user_id = $1 ORDER BY created_at DESC
+    `, [id]);
+    const activeNoc = nocRes.rows.find(n => n.id === user.active_noc_id) || (nocRes.rows.length > 0 ? nocRes.rows[0] : null);
+
+    const now = new Date();
+    const startDate = rental?.start_time ? new Date(rental.start_time) : (rental?.pre_booking_date ? new Date(rental.pre_booking_date) : now);
+    const durationDays = Math.max(1, Math.round((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
+    const depositBalance = parseFloat(user.security_deposit_balance || 0);
+
+    // Default cooling period 30 days
+    const defaultRefundDate = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    res.json({
+      user: {
+        ...user,
+        id: `USR-${String(user.id).padStart(3, '0')}`,
+        raw_id: user.id
+      },
+      active_noc: activeNoc,
+      noc_records: nocRes.rows,
+      rental,
+      duration_days: durationDays,
+      services: sRes.rows,
+      services_count: sRes.rows.length,
+      services_total: sRes.rows.reduce((sum, s) => sum + parseFloat(s.cost || 0), 0),
+      pending_dues: pendingDues,
+      pending_dues_total: pendingDuesTotal,
+      security_deposit_balance: depositBalance,
+      default_cooling_days: 30,
+      default_expected_refund_date: defaultRefundDate.toISOString(),
+      payout_info: {
+        mode: user.payout_upi_id ? 'upi' : (user.payout_account_number ? 'bank' : 'upi'),
+        upi_id: user.payout_upi_id || '',
+        account_number: user.payout_account_number || '',
+        ifsc_code: user.payout_ifsc_code || '',
+        account_holder: user.payout_account_holder || user.name || ''
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching rider NOC preview:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Create NOC & Close Rider Account (Finish Ride & Rental)
+app.post('/api/noc/create', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    let {
+      user_id,
+      rental_id,
+      vehicle_id,
+      return_stand,
+      vehicle_condition_notes,
+      cooling_period_days = 30,
+      deductions_breakdown = [],
+      payout_mode = 'upi',
+      payout_upi_id,
+      payout_account_number,
+      payout_ifsc_code,
+      payout_account_holder,
+      issued_by = 'Admin'
+    } = req.body;
+
+    let cleanUserId = user_id;
+    if (typeof cleanUserId === 'string' && cleanUserId.toUpperCase().startsWith('USR-')) {
+      cleanUserId = parseInt(cleanUserId.toUpperCase().replace('USR-', ''), 10);
+    } else {
+      cleanUserId = parseInt(cleanUserId, 10);
+    }
+    if (!cleanUserId || isNaN(cleanUserId)) {
+      return res.status(400).json({ error: 'Valid user ID is required.' });
+    }
+
+    await client.query('BEGIN');
+
+    // 1. User check
+    const uRes = await client.query('SELECT * FROM users WHERE id = $1', [cleanUserId]);
+    if (uRes.rows.length === 0) throw new Error('User not found.');
+    const user = uRes.rows[0];
+    const initialDeposit = parseFloat(user.security_deposit_balance || 0);
+
+    // 2. Rental check
+    let rental = null;
+    if (rental_id) {
+      const rRes = await client.query('SELECT * FROM rentals WHERE id = $1', [rental_id]);
+      if (rRes.rows.length > 0) rental = rRes.rows[0];
+    }
+    if (!rental) {
+      const rRes = await client.query(`
+        SELECT * FROM rentals 
+        WHERE user_id = $1 
+        ORDER BY CASE WHEN status IN ('active', 'in_use', 'pending_return') THEN 1 ELSE 2 END, id DESC 
+        LIMIT 1
+      `, [cleanUserId]);
+      if (rRes.rows.length > 0) rental = rRes.rows[0];
+    }
+
+    const assignedVehId = vehicle_id || rental?.vehicle_id;
+    let vehObj = null;
+    if (assignedVehId) {
+      const vRes = await client.query('SELECT * FROM vehicles WHERE id = $1 OR model = $1', [assignedVehId]);
+      if (vRes.rows.length > 0) vehObj = vRes.rows[0];
+    }
+
+    // 3. Mark rental completed & vehicle available
+    const returnedAt = new Date();
+    if (rental && (rental.status === 'active' || rental.status === 'in_use' || rental.status === 'pending_return')) {
+      await client.query(`
+        UPDATE rentals 
+        SET status = 'completed', end_time = $1, remarks = COALESCE(remarks, '') || ' [Ride Account Closed via NOC]'
+        WHERE id = $2
+      `, [returnedAt.toISOString(), rental.id]);
+    }
+    if (assignedVehId) {
+      await client.query(`
+        UPDATE vehicles 
+        SET status = 'available', location = COALESCE($1, location) 
+        WHERE id = $2 OR model = $2
+      `, [return_stand || null, assignedVehId]);
+    }
+
+    // 4. Calculate Duration
+    const startDate = rental?.start_time ? new Date(rental.start_time) : (rental?.pre_booking_date ? new Date(rental.pre_booking_date) : returnedAt);
+    const durationDays = Math.max(1, Math.round((returnedAt.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
+
+    // 5. Gather Service History
+    const servRes = await client.query(`
+      SELECT id, service_type, issue_description, cost, billed_to, payment_status, date_reported
+      FROM maintenance_logs
+      WHERE user_id = $1 OR ($2::text IS NOT NULL AND vehicle_id = $2::text)
+      ORDER BY date_reported DESC
+    `, [cleanUserId, assignedVehId || null]);
+
+    const servicesSummary = servRes.rows.map(s => ({
+      id: s.id,
+      service_type: s.service_type || s.issue_description || 'General Service',
+      cost: parseFloat(s.cost || 0),
+      billed_to: s.billed_to,
+      payment_status: s.payment_status,
+      date: s.date_reported
+    }));
+    const servicesTotalAmount = servicesSummary.reduce((sum, s) => sum + s.cost, 0);
+
+    // 6. Calculate Deductions & Net Refundable
+    const totalDeductions = (deductions_breakdown || []).reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
+    const netRefundable = Math.max(0, initialDeposit - totalDeductions);
+
+    // 7. Calculate 30-45 Days Cooling / Expected Refund Date
+    const coolingDays = Math.max(30, Math.min(45, parseInt(cooling_period_days, 10) || 30));
+    const expectedRefundDate = new Date(returnedAt.getTime() + coolingDays * 24 * 60 * 60 * 1000);
+
+    // 8. Unique NOC IDs
+    const dateStamp = returnedAt.toISOString().slice(0, 10).replace(/-/g, '');
+    const userPad = String(cleanUserId).padStart(3, '0');
+    const nocId = `NOC-${dateStamp}-USR${userPad}`;
+    const nocNumber = `LT-NOC-${Date.now().toString().slice(-6)}`;
+
+    // 9. If deductions are made, record deduction transaction
+    if (totalDeductions > 0) {
+      const deductionDetail = (deductions_breakdown || []).map(d => `${d.title}: ₹${d.amount}`).join('; ');
+      await client.query(`
+        INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+        VALUES ($1, $2, 'deduction', $3, CURRENT_TIMESTAMP)
+      `, [cleanUserId, totalDeductions, `NOC Settlement Deductions (${nocId}): ${deductionDetail}`]);
+
+      // Adjust deposit balance by deduction
+      await client.query(`
+        UPDATE users 
+        SET security_deposit_balance = GREATEST(0, security_deposit_balance - $1)
+        WHERE id = $2
+      `, [totalDeductions, cleanUserId]);
+    }
+
+    // 10. Delete old open NOC for this user if any exists to avoid duplicate active
+    await client.query('DELETE FROM noc_records WHERE id = $1', [nocId]);
+
+    // 11. Insert NOC record
+    const insertRes = await client.query(`
+      INSERT INTO noc_records (
+        id, user_id, rental_id, vehicle_id, vehicle_model, vehicle_reg,
+        rent_start_date, vehicle_returned_at, rental_duration_days, return_stand,
+        vehicle_condition_notes, services_count, services_total_amount, services_summary,
+        initial_security_deposit, deductions_amount, deductions_breakdown, net_refundable_amount,
+        refund_status, cooling_period_days, closure_date, expected_refund_date,
+        payout_mode, payout_upi_id, payout_account_number, payout_ifsc_code, payout_account_holder,
+        noc_number, account_closure_status, issued_by
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6,
+        $7, $8, $9, $10,
+        $11, $12, $13, $14,
+        $15, $16, $17, $18,
+        'under_cooling', $19, $20, $21,
+        $22, $23, $24, $25, $26,
+        $27, 'ride_closed', $28
+      ) RETURNING *
+    `, [
+      nocId, cleanUserId, rental?.id || null, assignedVehId || null, vehObj?.model || 'LT Commercial EV', vehObj?.registration_number || assignedVehId || 'N/A',
+      startDate.toISOString(), returnedAt.toISOString(), durationDays, return_stand || 'Khajpura Stand',
+      vehicle_condition_notes || 'All body panels and electrical components inspected. Scooter surrendered in good condition.',
+      servicesSummary.length, servicesTotalAmount, JSON.stringify(servicesSummary),
+      initialDeposit, totalDeductions, JSON.stringify(deductions_breakdown || []), netRefundable,
+      coolingDays, returnedAt.toISOString(), expectedRefundDate.toISOString(),
+      payout_mode || 'upi', payout_upi_id || user.payout_upi_id || null,
+      payout_account_number || user.payout_account_number || null,
+      payout_ifsc_code || user.payout_ifsc_code || null,
+      payout_account_holder || user.payout_account_holder || user.name || null,
+      nocNumber, issued_by || 'Admin'
+    ]);
+
+    // 12. Update users: ride_account_status = 'ride_closed', active_noc_id = nocId, store payout info
+    await client.query(`
+      UPDATE users 
+      SET ride_account_status = 'ride_closed',
+          active_noc_id = $1,
+          payout_upi_id = COALESCE($2, payout_upi_id),
+          payout_account_number = COALESCE($3, payout_account_number),
+          payout_ifsc_code = COALESCE($4, payout_ifsc_code),
+          payout_account_holder = COALESCE($5, payout_account_holder)
+      WHERE id = $6
+    `, [
+      nocId,
+      payout_upi_id || null,
+      payout_account_number || null,
+      payout_ifsc_code || null,
+      payout_account_holder || null,
+      cleanUserId
+    ]);
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Ride account closed and NOC issued successfully!', noc: insertRes.rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error creating NOC:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// 3. Get All NOC Records List (with 30-45 Days Status)
+app.get('/api/noc/list', authenticateToken, async (req, res) => {
+  try {
+    const { status, search } = req.query;
+    let query = `
+      SELECT n.*, u.name as user_name, u.phone as user_phone, u.email as user_email
+      FROM noc_records n
+      JOIN users u ON u.id = n.user_id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (status && status !== 'all') {
+      if (status === 'under_cooling') {
+        params.push(new Date().toISOString());
+        query += ` AND n.refund_status = 'under_cooling' AND n.expected_refund_date > $${params.length}`;
+      } else if (status === 'due_for_refund') {
+        params.push(new Date().toISOString());
+        query += ` AND n.refund_status = 'under_cooling' AND n.expected_refund_date <= $${params.length}`;
+      } else if (status === 'refund_processed') {
+        query += ` AND n.refund_status = 'refund_processed'`;
+      }
+    }
+
+    if (search) {
+      params.push(`%${search.trim().toLowerCase()}%`);
+      query += ` AND (
+        LOWER(u.name) LIKE $${params.length} OR 
+        u.phone LIKE $${params.length} OR 
+        LOWER(n.id) LIKE $${params.length} OR 
+        LOWER(n.noc_number) LIKE $${params.length} OR 
+        LOWER(n.vehicle_id) LIKE $${params.length}
+      )`;
+    }
+
+    query += ` ORDER BY n.created_at DESC`;
+    const result = await pool.query(query, params);
+
+    const now = new Date();
+    const rowsWithComputed = result.rows.map(row => {
+      const exp = new Date(row.expected_refund_date);
+      const isDue = now >= exp && row.refund_status !== 'refund_processed';
+      const daysRemaining = Math.max(0, Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+      return {
+        ...row,
+        is_refund_due: isDue,
+        days_remaining_for_refund: daysRemaining,
+        display_status: row.refund_status === 'refund_processed' ? 'refund_processed' : (isDue ? 'due_for_refund' : 'under_cooling')
+      };
+    });
+
+    res.json(rowsWithComputed);
+  } catch (err) {
+    console.error('Error listing NOC records:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Get Single NOC Record
+app.get('/api/noc/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT n.*, u.name as user_name, u.phone as user_phone, u.email as user_email, u.kyc_status
+      FROM noc_records n
+      JOIN users u ON u.id = n.user_id
+      WHERE n.id = $1 OR n.noc_number = $1
+    `, [id]);
+
+    if (result.rows.length === 0) return res.status(404).json({ error: 'NOC not found' });
+    const row = result.rows[0];
+
+    const now = new Date();
+    const exp = new Date(row.expected_refund_date);
+    const isDue = now >= exp && row.refund_status !== 'refund_processed';
+    const daysRemaining = Math.max(0, Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+
+    res.json({
+      ...row,
+      is_refund_due: isDue,
+      days_remaining_for_refund: daysRemaining,
+      display_status: row.refund_status === 'refund_processed' ? 'refund_processed' : (isDue ? 'due_for_refund' : 'under_cooling')
+    });
+  } catch (err) {
+    console.error('Error fetching NOC details:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. Process Security Deposit Refund (Admin marks 30-45 days refund as paid)
+app.put('/api/noc/:id/process-refund', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const { refund_payment_mode = 'upi', refund_txn_id, refund_remarks } = req.body;
+
+    await client.query('BEGIN');
+    const nocRes = await client.query('SELECT * FROM noc_records WHERE id = $1', [id]);
+    if (nocRes.rows.length === 0) throw new Error('NOC record not found.');
+    const noc = nocRes.rows[0];
+
+    if (noc.refund_status === 'refund_processed') {
+      throw new Error('Refund has already been processed for this NOC.');
+    }
+
+    const refundAmount = parseFloat(noc.net_refundable_amount || 0);
+
+    // 1. Update NOC record
+    const updatedNoc = await client.query(`
+      UPDATE noc_records
+      SET refund_status = 'refund_processed',
+          refund_paid_date = CURRENT_TIMESTAMP,
+          refund_payment_mode = $1,
+          refund_txn_id = $2,
+          refund_remarks = $3,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $4
+      RETURNING *
+    `, [refund_payment_mode, refund_txn_id || `TXN-REF-${Date.now()}`, refund_remarks || 'Security Deposit Refund Settled Post Cooling Period', id]);
+
+    // 2. Deduct from user's security deposit balance
+    if (refundAmount > 0) {
+      await client.query(`
+        UPDATE users 
+        SET security_deposit_balance = GREATEST(0, security_deposit_balance - $1),
+            security_deposit_paid = false
+        WHERE id = $2
+      `, [refundAmount, noc.user_id]);
+
+      await client.query(`
+        INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+        VALUES ($1, $2, 'refund', $3, CURRENT_TIMESTAMP)
+      `, [noc.user_id, refundAmount, `Security Deposit Refund (${id}) via ${refund_payment_mode.toUpperCase()}${refund_txn_id ? ' Ref: ' + refund_txn_id : ''}`]);
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: `Security deposit refund of ₹${refundAmount} recorded successfully!`, noc: updatedNoc.rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error processing refund:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// 6. Reopen Ride Account
+app.post('/api/noc/:id/reopen-account', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const nocRes = await pool.query('SELECT user_id FROM noc_records WHERE id = $1', [id]);
+    if (nocRes.rows.length === 0) return res.status(404).json({ error: 'NOC not found' });
+    const userId = nocRes.rows[0].user_id;
+
+    await pool.query(`
+      UPDATE users 
+      SET ride_account_status = 'active',
+          active_noc_id = NULL
+      WHERE id = $1
+    `, [userId]);
+
+    res.json({ success: true, message: 'Ride account reopened successfully! Rider is now active for new rentals.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -3065,7 +3683,7 @@ app.get('/api/bookings/all', authenticateToken, async (req, res) => {
         p.id as plan_id, p.name as plan_name, p.price as plan_price, p.type as plan_type
       FROM rentals r
       JOIN users u ON u.id = r.user_id
-      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN vehicles v ON (v.id = r.vehicle_id OR v.model = r.vehicle_id)
       LEFT JOIN plans p ON p.id = r.plan_id
       ORDER BY COALESCE(r.pre_booking_date, r.start_time, NOW()) DESC, r.id DESC
     `);
@@ -3618,6 +4236,8 @@ app.put('/api/bookings/:id', authenticateToken, async (req, res) => {
 
     const targetRentCycle = Math.max(0, totalPaidNow - targetBookingDeposit);
 
+    const resolvedStatus = (vehicle_id && (!status || status === 'pre_booking')) ? 'active' : (status || null);
+
     const result = await client.query(`
       UPDATE rentals 
       SET vehicle_id = COALESCE($1, vehicle_id),
@@ -3641,7 +4261,7 @@ app.put('/api/bookings/:id', authenticateToken, async (req, res) => {
       RETURNING *
     `, [
       vehicle_id || null, 
-      status || null, 
+      resolvedStatus, 
       remarks !== undefined ? remarks : null, 
       paid, 
       payment_mode || null, 
@@ -3707,7 +4327,7 @@ app.put('/api/bookings/:id', authenticateToken, async (req, res) => {
       `, [customStartDate.toISOString(), nextPaymentDate.toISOString(), id]);
 
       // 3. Mark vehicle as rented / in_use
-      await client.query('UPDATE vehicles SET status = $1 WHERE id = $2', ['rented', vehicle_id]);
+      await client.query('UPDATE vehicles SET status = $1 WHERE id = $2 OR model = $2', ['rented', vehicle_id]);
     }
 
     await client.query('COMMIT');
@@ -5773,7 +6393,7 @@ app.post('/api/maintenance/report-issue', authenticateToken, async (req, res) =>
 });
 
 // Helper to generate self-contained, itemized Service & Parts Invoice HTML
-function generateServiceInvoiceHTML(srv, baseUrl = '') {
+function generateServiceInvoiceHTML(srv, baseUrl = '', dynamicUpiId = '') {
   const now = new Date();
   const serviceCost = parseFloat(srv.cost || 0);
   const serviceDate = srv.date_reported ? new Date(srv.date_reported) : now;
@@ -5803,10 +6423,37 @@ function generateServiceInvoiceHTML(srv, baseUrl = '') {
   const serviceType = srv.service_type || 'General Service & Tuning';
   const issueDesc = srv.issue_description || 'General maintenance and component inspection.';
   const billedTo = (srv.billed_to || 'company').toUpperCase();
-  const paymentStatus = (srv.payment_status || 'paid').toUpperCase();
   const isRiderBilled = billedTo === 'RIDER';
+
+  const jobStatus = (srv.status || 'completed').toLowerCase();
+  const isInProgress = jobStatus === 'in_progress' || jobStatus === 'reported';
+  const rawPaymentStatus = (srv.payment_status || (isInProgress ? 'pending' : (isRiderBilled ? 'pending' : 'paid'))).toLowerCase();
+  const isPaid = (rawPaymentStatus === 'paid' || rawPaymentStatus === 'deducted_from_deposit') && !isInProgress;
+
+  let paymentBadgeText = 'PAID & SETTLED';
+  let paymentBadgeColor = '#16a34a';
+  let paymentBadgeBg = '#f0fdf4';
+  let paymentBadgeBorder = '#86efac';
+
+  if (isInProgress) {
+    paymentBadgeText = 'UNDER SERVICE (PAYMENT PENDING)';
+    paymentBadgeColor = '#ea580c';
+    paymentBadgeBg = '#fff7ed';
+    paymentBadgeBorder = '#fdba74';
+  } else if (!isPaid) {
+    paymentBadgeText = 'PAYMENT PENDING / DUE';
+    paymentBadgeColor = '#dc2626';
+    paymentBadgeBg = '#fef2f2';
+    paymentBadgeBorder = '#fca5a5';
+  } else if (rawPaymentStatus === 'deducted_from_deposit') {
+    paymentBadgeText = 'PAID (DEDUCTED FROM DEPOSIT)';
+    paymentBadgeColor = '#0284c7';
+    paymentBadgeBg = '#f0f9ff';
+    paymentBadgeBorder = '#bae6fd';
+  }
+
   const companyLegal = 'Wheely Buzz Localtoto Transport Solution Private Limited';
-  const companyAddress = 'Rukanpura, Bailey Road, Patna - 800014 | Helpline: +91 78705 7249';
+  const companyAddress = 'Rukanpura, Bailey Road, Patna - 800014 | Helpline: +91 78705 72429';
 
   // Parse itemized parts and charges list
   let items = [];
@@ -5962,6 +6609,7 @@ function generateServiceInvoiceHTML(srv, baseUrl = '') {
     </div>
     <div class="action-buttons">
       <button class="btn btn-pdf" onclick="downloadPDF()">Download PDF</button>
+      <button class="btn btn-whatsapp" onclick="shareOnWhatsApp()" style="background: #25D366; color: #ffffff;">Share on WhatsApp</button>
       <button class="btn btn-print" onclick="window.print()">Print Invoice</button>
     </div>
   </div>
@@ -5992,9 +6640,12 @@ function generateServiceInvoiceHTML(srv, baseUrl = '') {
         <div class="meta-item">Job Card ID: <strong style="font-family: monospace;">${serviceId}</strong></div>
         <div class="meta-item">Service Type: <strong>${serviceType}</strong></div>
         <div class="meta-item">Service Date: <strong>${formattedDate}</strong></div>
+        <div class="meta-item">Work Status: <strong style="color: ${isInProgress ? '#ea580c' : '#16a34a'};">${isInProgress ? 'In Progress (Under Repair)' : 'Completed (Vehicle Ready)'}</strong></div>
+        <div class="meta-item">Payment Status: <strong style="color: ${paymentBadgeColor};">${paymentBadgeText}</strong></div>
+        ${isPaid && srv.payment_mode ? `<div class="meta-item">Payment Mode: <strong style="text-transform: uppercase;">${srv.payment_mode}</strong></div>` : ''}
+        ${srv.payment_remarks ? `<div class="meta-item">Payment Ref: <strong>${srv.payment_remarks}</strong></div>` : ''}
         <div class="meta-item">Invoice Generated: <strong style="color: #00a66c;">${liveDate}, ${liveTime}</strong></div>
         <div class="meta-item">Billed To: <strong>${isRiderBilled ? 'Rider Account' : 'Company Fleet'}</strong></div>
-        <div class="meta-item">Payment Status: <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'};">${paymentStatus === 'PAID' ? 'PAID & SETTLED' : 'PENDING'}</strong></div>
       </div>
     </div>
 
@@ -6060,10 +6711,23 @@ function generateServiceInvoiceHTML(srv, baseUrl = '') {
           <span>Grand Total</span>
           <span style="color: #00a66c;">₹${totalAmount.toLocaleString('en-IN')}.00</span>
         </div>
-        <div class="totals-row highlight">
-          <span style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'}; font-weight: 700;">Payment Status</span>
-          <strong style="color: ${paymentStatus === 'PAID' ? '#16a34a' : '#ea580c'};">${paymentStatus === 'PAID' ? 'PAID & SETTLED' : 'PENDING PAYMENT'}</strong>
+        <div class="totals-row">
+          <span>Amount Paid</span>
+          <strong style="color: ${isPaid ? '#16a34a' : '#64748b'};">₹${(isPaid ? totalAmount : 0).toLocaleString('en-IN')}.00</strong>
         </div>
+        <div class="totals-row">
+          <span>Amount Due</span>
+          <strong style="color: ${isPaid ? '#16a34a' : '#dc2626'}; font-size: 14px;">₹${(isPaid ? 0 : totalAmount).toLocaleString('en-IN')}.00</strong>
+        </div>
+        <div class="totals-row highlight" style="background: ${paymentBadgeBg}; border: 1px solid ${paymentBadgeBorder};">
+          <span style="color: ${paymentBadgeColor}; font-weight: 700;">Payment Status</span>
+          <strong style="color: ${paymentBadgeColor};">${paymentBadgeText}</strong>
+        </div>
+        ${isPaid && srv.payment_mode ? `
+        <div class="totals-row" style="font-size: 12px; color: #64748b;">
+          <span>Payment Mode</span>
+          <strong style="color: #0f172a; text-transform: uppercase;">${srv.payment_mode}</strong>
+        </div>` : ''}
         <div class="totals-row">
           <span>Billed To</span>
           <strong>${isRiderBilled ? 'Rider Account' : 'Company Fleet'}</strong>
@@ -6106,6 +6770,28 @@ function generateServiceInvoiceHTML(srv, baseUrl = '') {
         window.print();
       }
     }
+
+    function shareOnWhatsApp() {
+      const phone = "${riderPhone}".replace(/\\D/g, '').slice(-10);
+      const isPaid = ${isPaid ? 'true' : 'false'};
+      const text = encodeURIComponent(
+        "*🛠️ LT EV MOBILITY - SERVICE INVOICE*\\n" +
+        "----------------------------------------\\n" +
+        "*Job Card:* ${serviceId}\\n" +
+        "*Vehicle:* ${vehicleCode}\\n" +
+        "*Service:* ${serviceType}\\n" +
+        "*Total Bill:* ₹${totalAmount}\\n" +
+        "*Payment Status:* ${paymentBadgeText}\\n" +
+        (!isPaid ? ("*Amount Due:* ₹${totalAmount}\\n*UPI Pay:* " + (dynamicUpiId || process.env.UPI_ID || '9113750231@oksbi') + "\\n") : "*Amount Paid:* ₹${totalAmount}\\n") +
+        "----------------------------------------\\n" +
+        "LocalToto Workshop Patna | Helpline: +91 78705 72429"
+      );
+      if (phone) {
+        window.open('https://wa.me/91' + phone + '?text=' + text, '_blank');
+      } else {
+        window.open('https://api.whatsapp.com/send?text=' + text, '_blank');
+      }
+    }
   </script>
 </body>
 </html>`;
@@ -6129,7 +6815,10 @@ app.get('/api/maintenance/:id/invoice', async (req, res) => {
       return res.status(404).send('<h1>Service Invoice Not Found</h1><p>Record ID ' + id + ' does not exist.</p>');
     }
 
-    const html = generateServiceInvoiceHTML(srvRes.rows[0]);
+    const upiRes = await pool.query("SELECT value FROM system_settings WHERE key = 'upi_id'").catch(() => ({ rows: [] }));
+    const upiId = upiRes.rows[0]?.value?.trim() || process.env.UPI_ID || '9113750231@oksbi';
+
+    const html = generateServiceInvoiceHTML(srvRes.rows[0], '', upiId);
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch (err) {
@@ -6398,7 +7087,7 @@ async function fulfillCashfreeOrder(orderRecord, cfData = {}) {
   }
 }
 
-// 1. Create Cashfree PG Order
+// 1. Create Cashfree PG Order (with ~1.95% PG + 18% GST platform fee to guarantee exact net settlement)
 app.post('/api/payments/cashfree/create-order', authenticateToken, async (req, res) => {
   try {
     const { amount, payment_type = 'recharge', metadata = {} } = req.body;
@@ -6408,6 +7097,12 @@ app.post('/api/payments/cashfree/create-order', authenticateToken, async (req, r
     if (isNaN(numAmount) || numAmount <= 0) {
       return res.status(400).json({ error: 'Valid payment amount is required.' });
     }
+
+    // Cashfree PG standard fee: ~1.95% + 18% GST on fee = 1.95% * 1.18 = 2.301%
+    // To ensure user receives exact net settled amount in business account:
+    const FEE_RATE = 0.02301;
+    const chargeAmount = Math.round((numAmount / (1 - FEE_RATE)) * 100) / 100;
+    const gatewayFee = Math.round((chargeAmount - numAmount) * 100) / 100;
 
     // Fetch user details for Cashfree customer_details
     const userRes = await pool.query('SELECT id, name, phone, email FROM users WHERE id = $1', [user_id]);
@@ -6423,7 +7118,7 @@ app.post('/api/payments/cashfree/create-order', authenticateToken, async (req, r
 
     const payload = {
       order_id,
-      order_amount: numAmount,
+      order_amount: chargeAmount,
       order_currency: 'INR',
       customer_details: {
         customer_id: `USR_${user_id}`,
@@ -6431,7 +7126,7 @@ app.post('/api/payments/cashfree/create-order', authenticateToken, async (req, r
         customer_name: (user.name || 'LT.ev Rider').slice(0, 50),
         customer_email: (user.email || `rider_${user_id}@ltev.in`).slice(0, 100)
       },
-      order_note: `LT.ev ${payment_type} (User ${user_id})`,
+      order_note: `LT.ev ${payment_type} (User ${user_id}) - Base ₹${numAmount} + Fee ₹${gatewayFee}`,
       order_meta: {
         return_url: `${process.env.PUBLIC_API_URL || 'https://api.ltev.in'}/api/payments/cashfree/return?order_id={order_id}`
       }
@@ -6449,20 +7144,22 @@ app.post('/api/payments/cashfree/create-order', authenticateToken, async (req, r
     const cfData = cfRes.data;
     const paymentSessionId = cfData.payment_session_id;
 
-    // Save in cashfree_orders table
+    // Save in cashfree_orders table: amount = base target amount, charge_amount = total gateway charge
     await pool.query(`
-      INSERT INTO cashfree_orders (order_id, cf_order_id, user_id, amount, payment_type, metadata, payment_session_id, order_status, cf_response)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      INSERT INTO cashfree_orders (order_id, cf_order_id, user_id, amount, payment_type, metadata, payment_session_id, order_status, cf_response, charge_amount, gateway_fee)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     `, [
       order_id,
       String(cfData.cf_order_id || ''),
       user_id,
       numAmount,
       payment_type,
-      JSON.stringify(metadata),
+      JSON.stringify({ ...metadata, base_amount: numAmount, charge_amount: chargeAmount, gateway_fee: gatewayFee }),
       paymentSessionId,
       cfData.order_status || 'ACTIVE',
-      JSON.stringify(cfData)
+      JSON.stringify(cfData),
+      chargeAmount,
+      gatewayFee
     ]);
 
     // Construct direct checkout payment URL using Cashfree JS SDK v3 launcher
@@ -6475,12 +7172,32 @@ app.post('/api/payments/cashfree/create-order', authenticateToken, async (req, r
       payment_session_id: paymentSessionId,
       payment_url: paymentUrl,
       amount: numAmount,
+      charge_amount: chargeAmount,
+      gateway_fee: gatewayFee,
       currency: 'INR'
     });
   } catch (err) {
     console.error('Cashfree Create Order Error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data?.message || err.message });
   }
+});
+
+// Helper endpoint: Get fee calculation breakdown
+app.get('/api/payments/cashfree/fee-preview', (req, res) => {
+  const baseAmount = parseFloat(req.query.amount || 0);
+  if (isNaN(baseAmount) || baseAmount <= 0) {
+    return res.status(400).json({ error: 'Valid amount query parameter is required' });
+  }
+  const FEE_RATE = 0.02301;
+  const chargeAmount = Math.round((baseAmount / (1 - FEE_RATE)) * 100) / 100;
+  const gatewayFee = Math.round((chargeAmount - baseAmount) * 100) / 100;
+
+  res.json({
+    base_amount: baseAmount,
+    charge_amount: chargeAmount,
+    gateway_fee: gatewayFee,
+    fee_rate_percent: 2.301
+  });
 });
 
 // 2. Verify Cashfree PG Order Status
@@ -7531,6 +8248,87 @@ app.delete('/api/catalog/parts/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     await pool.query(`DELETE FROM parts_catalog WHERE id = $1`, [id]);
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// WORKSHOP SERVICES CATALOG APIs
+// ==========================================
+
+app.get('/api/catalog/services', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM services_catalog ORDER BY id ASC`);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/catalog/services', authenticateToken, async (req, res) => {
+  try {
+    const { name, category, price, duration_minutes, description, status } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Service name is required' });
+    }
+    const parsedPrice = parseFloat(price) >= 0 ? parseFloat(price) : 350;
+    const duration = parseInt(duration_minutes, 10) || 30;
+
+    const result = await pool.query(
+      `INSERT INTO services_catalog (name, category, price, duration_minutes, description, status)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [
+        name.trim(),
+        category || 'General',
+        parsedPrice,
+        duration,
+        description || '',
+        status || 'active'
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/catalog/services/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, category, price, duration_minutes, description, status } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Service name is required' });
+    }
+    const parsedPrice = parseFloat(price) >= 0 ? parseFloat(price) : 350;
+    const duration = parseInt(duration_minutes, 10) || 30;
+
+    const result = await pool.query(
+      `UPDATE services_catalog
+       SET name = $1, category = $2, price = $3, duration_minutes = $4, description = $5, status = $6
+       WHERE id = $7 RETURNING *`,
+      [
+        name.trim(),
+        category || 'General',
+        parsedPrice,
+        duration,
+        description || '',
+        status || 'active',
+        id
+      ]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Service not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/catalog/services/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query(`DELETE FROM services_catalog WHERE id = $1`, [id]);
+    res.json({ success: true, message: 'Service deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

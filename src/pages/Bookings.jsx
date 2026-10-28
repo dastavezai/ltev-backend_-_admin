@@ -541,8 +541,8 @@ export default function Bookings() {
   };
 
   const totalBookings = bookings.length;
-  const preBookings = bookings.filter(b => b.status === 'pre_booking');
-  const activeSubscriptions = bookings.filter(b => b.status === 'active');
+  const preBookings = bookings.filter(b => (b.status === 'pre_booking' || !b.vehicle_id) && b.status !== 'active' && !b.vehicle_id);
+  const activeSubscriptions = bookings.filter(b => b.status === 'active' || Boolean(b.vehicle_id));
   const overdueBookings = bookings.filter(b => {
     const paid = parseFloat(b.total_cost || b.collected_amount || b.plan_price || 0);
     return (5100 - paid) > 0 || b.is_overdue || b.payment_status === 'overdue';
@@ -561,8 +561,8 @@ export default function Bookings() {
 
     if (!matchesSearch) return false;
 
-    if (filterTab === 'pre_booking') return b.status === 'pre_booking';
-    if (filterTab === 'active') return b.status === 'active';
+    if (filterTab === 'pre_booking') return (b.status === 'pre_booking' || !b.vehicle_id) && b.status !== 'active' && !b.vehicle_id;
+    if (filterTab === 'active') return b.status === 'active' || Boolean(b.vehicle_id);
     if (filterTab === 'overdue') {
       const paid = parseFloat(b.total_cost || b.collected_amount || b.plan_price || 0);
       return (5100 - paid) > 0 || b.is_overdue;
@@ -725,6 +725,9 @@ export default function Bookings() {
                   NAME {getSortIcon('name')}
                 </th>
                 <th style={{ padding: '12px 14px' }}>
+                  STATUS / EV
+                </th>
+                <th style={{ padding: '12px 14px' }}>
                   MOBILE NUMBER
                 </th>
                 <th onClick={() => handleSort('payment')} style={{ padding: '12px 14px', cursor: 'pointer', userSelect: 'none' }}>
@@ -765,6 +768,57 @@ export default function Bookings() {
                     {/* NAME */}
                     <td style={{ padding: '12px 14px', fontWeight: '600', color: '#0f172a' }}>
                       {bkg.user_name}
+                    </td>
+
+                    {/* STATUS / EV */}
+                    <td style={{ padding: '12px 14px' }}>
+                      {bkg.vehicle_id ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <span style={{
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            background: '#dcfce7',
+                            color: '#15803d',
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            width: 'fit-content'
+                          }}>
+                            ✓ Active Rental
+                          </span>
+                          <span style={{
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            background: '#e0f2fe',
+                            color: '#0369a1',
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            width: 'fit-content'
+                          }}>
+                            🛵 {bkg.vehicle_id}
+                          </span>
+                        </div>
+                      ) : (
+                        <span style={{
+                          fontSize: '11px',
+                          fontWeight: '700',
+                          background: '#fef3c7',
+                          color: '#b45309',
+                          padding: '3px 8px',
+                          borderRadius: '4px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          width: 'fit-content'
+                        }}>
+                          ⏳ Advance Booking
+                        </span>
+                      )}
                     </td>
 
                     {/* MOBILE NUMBER */}
@@ -892,13 +946,23 @@ export default function Bookings() {
                           <Edit3 size={16} />
                         </button>
 
-                        <button
-                          onClick={() => handleOpenAssignModal(bkg)}
-                          title="Assign Free EV Scooter"
-                          style={{ background: '#0284c7', color: '#ffffff', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', cursor: 'pointer', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}
-                        >
-                          <Bike size={14} /> {bkg.vehicle_id ? `EV ${bkg.vehicle_id}` : 'Assign EV'}
-                        </button>
+                        {bkg.vehicle_id ? (
+                          <button
+                            onClick={() => handleOpenAssignModal(bkg)}
+                            title={`Vehicle Assigned (${bkg.vehicle_id}) - Click to Reassign`}
+                            style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', padding: '6px 10px', borderRadius: '6px', fontSize: '12px', cursor: 'pointer', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '4px' }}
+                          >
+                            <Bike size={14} /> EV {bkg.vehicle_id}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleOpenAssignModal(bkg)}
+                            title="Assign Free EV Scooter"
+                            style={{ background: '#0284c7', color: '#ffffff', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', cursor: 'pointer', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}
+                          >
+                            <Bike size={14} /> Assign EV
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -907,7 +971,7 @@ export default function Bookings() {
 
               {sortedBookings.length === 0 && !loading && (
                 <tr>
-                  <td colSpan="9" style={{ padding: '30px', textAlign: 'center', color: '#94a3b8' }}>
+                  <td colSpan="10" style={{ padding: '30px', textAlign: 'center', color: '#94a3b8' }}>
                     No advance booking records found.
                   </td>
                 </tr>
