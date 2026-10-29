@@ -39,6 +39,7 @@ export default function Dashboard() {
     { title: 'Total Users', value: loading ? '...' : statsData.totalUsers.toLocaleString(), change: '+12.5%', isPositive: true, icon: <Users size={20} />, color: '#3b82f6', bg: '#eff6ff', path: '/users' },
     { title: 'Active Rides', value: loading ? '...' : statsData.activeRides.toLocaleString(), change: '+5.2%', isPositive: true, icon: <Activity size={20} />, color: '#8b5cf6', bg: '#f5f3ff', path: '/rentals' },
     { title: 'Advance Bookings', value: loading ? '...' : preBookingsList.length.toLocaleString(), change: `${preBookingsList.length} Active`, isPositive: true, icon: <CalendarCheck size={20} />, color: '#0284c7', bg: '#e0f2fe', path: '/bookings' },
+    { title: 'Outstanding Dues', value: loading ? '...' : `₹${parseFloat(statsData.totalDues || 0).toLocaleString('en-IN')}`, change: `${statsData.duesCount || 0} Riders`, isPositive: false, icon: <AlertTriangle size={20} />, color: '#dc2626', bg: '#fee2e2', path: '/dues' },
     { title: "Total Revenue", value: loading ? '...' : `₹${statsData.totalRevenue.toLocaleString()}`, change: '+18.4%', isPositive: true, icon: <CreditCard size={20} />, color: '#10b981', bg: '#ecfdf5', path: '/plans' },
     { title: 'Fleet Health', value: loading ? '...' : `${statsData.fleetHealth}%`, change: '+1.1%', isPositive: true, icon: <Zap size={20} />, color: '#f59e0b', bg: '#fffbeb', path: '/fleet' },
   ];
@@ -56,25 +57,48 @@ export default function Dashboard() {
           <p style={{ color: '#64748b', fontSize: '14px', margin: 0 }}>Welcome back, Admin. Live status of the Localtoto platform.</p>
         </div>
 
-        <button
-          onClick={() => navigate('/management')}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            background: 'white',
-            border: '1px solid #cbd5e1',
-            color: '#0f172a',
-            padding: '8px 14px',
-            borderRadius: '8px',
-            fontSize: '13px',
-            fontWeight: '600',
-            cursor: 'pointer'
-          }}
-        >
-          <span>Open Management Portal</span>
-          <ChevronRight size={15} color="#64748b" />
-        </button>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            onClick={() => navigate('/dues')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: '#fee2e2',
+              border: '1px solid #fecaca',
+              color: '#dc2626',
+              padding: '8px 14px',
+              borderRadius: '8px',
+              fontSize: '13px',
+              fontWeight: '800',
+              cursor: 'pointer',
+              boxShadow: '0 2px 4px rgba(220, 38, 38, 0.12)'
+            }}
+          >
+            <AlertTriangle size={15} color="#dc2626" />
+            <span>Manage Dues</span>
+          </button>
+
+          <button
+            onClick={() => navigate('/management')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: 'white',
+              border: '1px solid #cbd5e1',
+              color: '#0f172a',
+              padding: '8px 14px',
+              borderRadius: '8px',
+              fontSize: '13px',
+              fontWeight: '600',
+              cursor: 'pointer'
+            }}
+          >
+            <span>Open Management Portal</span>
+            <ChevronRight size={15} color="#64748b" />
+          </button>
+        </div>
       </div>
       
       {/* Compact Metrics Cards Grid */}
@@ -119,12 +143,20 @@ export default function Dashboard() {
             </p>
           </div>
 
-          <button 
-            onClick={() => navigate('/bookings')}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '10px', fontSize: '13px', fontWeight: '700', cursor: 'pointer' }}
-          >
-            Manage All Bookings <ChevronRight size={16} />
-          </button>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button 
+              onClick={() => navigate('/dues')}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#fee2e2', color: '#dc2626', border: '1px solid #fecaca', padding: '8px 14px', borderRadius: '10px', fontSize: '13px', fontWeight: '800', cursor: 'pointer' }}
+            >
+              <AlertTriangle size={15} /> Manage All Dues
+            </button>
+            <button 
+              onClick={() => navigate('/bookings')}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '10px', fontSize: '13px', fontWeight: '700', cursor: 'pointer' }}
+            >
+              Manage Bookings <ChevronRight size={16} />
+            </button>
+          </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>

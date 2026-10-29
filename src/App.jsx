@@ -14,6 +14,7 @@ import WalletApprovals from './pages/WalletApprovals';
 import Transactions from './pages/Transactions';
 import Plans from './pages/Plans';
 import SecurityDeposits from './pages/SecurityDeposits';
+import DuesManagement from './pages/DuesManagement';
 import VehicleServices from './pages/VehicleServices';
 import Parts from './pages/Parts';
 import Bookings from './pages/Bookings';
@@ -73,6 +74,7 @@ function App() {
           <Route path="/account-approvals" element={<ProtectedRoute><Layout><AccountApprovals /></Layout></ProtectedRoute>} />
           <Route path="/wallet-approvals" element={<ProtectedRoute><Layout><WalletApprovals /></Layout></ProtectedRoute>} />
           <Route path="/security-deposits" element={<ProtectedRoute><Layout><SecurityDeposits /></Layout></ProtectedRoute>} />
+          <Route path="/dues" element={<ProtectedRoute><Layout><DuesManagement /></Layout></ProtectedRoute>} />
           <Route path="/invoices" element={<ProtectedRoute><InvoiceTestingCenter /></ProtectedRoute>} />
           <Route path="/transactions" element={<ProtectedRoute><Layout><Transactions /></Layout></ProtectedRoute>} />
           <Route path="/plans" element={<ProtectedRoute><Layout><Plans /></Layout></ProtectedRoute>} />

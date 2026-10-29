@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Wrench, DollarSign, Calendar, CalendarPlus, CalendarCheck, Search, Plus, RefreshCw, 
   CheckCircle, Clock, Send, X, Check, ExternalLink, 
-  Bike, AlertCircle, ArrowRight, RotateCcw, User, Phone, MapPin, Trash2, FileText, ShieldCheck, CreditCard
+  Bike, AlertCircle, ArrowRight, RotateCcw, User, Phone, MapPin, Trash2, FileText, ShieldCheck, CreditCard, AlertTriangle
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useNavigate } from 'react-router-dom';
@@ -1350,6 +1350,28 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
             <span style={{ fontSize: '11px', background: '#e0f2fe', color: '#0369a1', padding: '1px 6px', borderRadius: '4px', fontWeight: '600' }}>
               {advanceBookingsQueue.length} Queued
             </span>
+          </button>
+
+          {/* Quick Hub: Dues Management */}
+          <button
+            onClick={() => navigate('/dues')}
+            className="mgmt-tab-btn"
+            style={{
+              borderLeft: '1px solid #e2e8f0',
+              borderBottom: '3px solid transparent',
+              background: '#fef2f2',
+              color: '#dc2626',
+              fontWeight: '700'
+            }}
+            title="Open Dedicated Dues Management Hub"
+          >
+            <AlertTriangle size={16} color="#dc2626" />
+            <span>Manage All Dues</span>
+            {overdueRentals.length > 0 && (
+              <span style={{ fontSize: '11px', background: '#fee2e2', color: '#b91c1c', padding: '1px 6px', borderRadius: '4px', fontWeight: '800' }}>
+                {overdueRentals.length} Action Needed
+              </span>
+            )}
           </button>
         </div>
 

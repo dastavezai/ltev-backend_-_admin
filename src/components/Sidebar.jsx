@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, ShieldCheck, Wallet, LogOut, Bike, FileText, Map, Tag, ClipboardList, ShieldAlert, Bell, Megaphone, Wrench, CalendarCheck, Briefcase, Package, QrCode, CalendarDays, Boxes } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldCheck, Wallet, LogOut, Bike, FileText, Map, Tag, ClipboardList, ShieldAlert, Bell, Megaphone, Wrench, CalendarCheck, Briefcase, Package, QrCode, CalendarDays, Boxes, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Sidebar() {
@@ -12,6 +12,7 @@ export default function Sidebar() {
     { name: 'Current Rent', path: '/current-rent', icon: <CalendarDays size={20} /> },
     { name: 'Assets', path: '/assets', icon: <Boxes size={20} /> },
     { name: 'Riders', path: '/users', icon: <Users size={20} /> },
+    { name: 'Dues Management', path: '/dues', icon: <AlertTriangle size={20} /> },
     { name: 'Bookings & Dues', path: '/bookings', icon: <CalendarCheck size={20} /> },
     { name: 'Broadcast', path: '/broadcast', icon: <Megaphone size={20} /> },
     { name: 'Vehicle Services', path: '/services', icon: <Wrench size={20} /> },

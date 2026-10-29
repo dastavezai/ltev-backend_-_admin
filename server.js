@@ -2222,6 +2222,431 @@ app.get('/api/rider-dues/my-dues', authenticateToken, async (req, res) => {
   }
 });
 
+// ==============================================================
+// GLOBAL DUES MANAGEMENT APIS
+// ==============================================================
+
+// 1. Dues Platform Overview (Aggregated Metrics)
+app.get('/api/dues/overview', authenticateToken, async (req, res) => {
+  try {
+    const configRes = await pool.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+    const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+    const usersRes = await pool.query(`
+      SELECT 
+        u.id, u.security_deposit_balance, u.security_deposit_paid,
+        r.vehicle_id, r.plan_id, p.price as plan_price, p.type as plan_type,
+        r.next_payment_date,
+        COALESCE((SELECT SUM(amount) FROM rider_dues WHERE user_id = u.id AND status = 'pending'), 0) as extra_dues_total
+      FROM users u
+      LEFT JOIN LATERAL (
+        SELECT id, vehicle_id, plan_id, next_payment_date
+        FROM rentals
+        WHERE user_id = u.id AND status IN ('active', 'in_use')
+        ORDER BY id DESC LIMIT 1
+      ) r ON true
+      LEFT JOIN plans p ON p.id = r.plan_id
+    `);
+
+    const now = new Date();
+    let totalCycleDues = 0;
+    let totalDepositDeficit = 0;
+    let totalExtraDues = 0;
+    let totalDuesAmount = 0;
+    let ridersWithDues = 0;
+    let overdueCount = 0;
+
+    for (const r of usersRes.rows) {
+      let cycleDue = 0;
+      let isOverdue = false;
+      if (r.next_payment_date) {
+        const due = new Date(r.next_payment_date);
+        if (now > due) {
+          isOverdue = true;
+          const diffMs = now.getTime() - due.getTime();
+          const price = parseFloat(r.plan_price || 0);
+          const planType = (r.plan_type || '').toLowerCase();
+          const cycleMs = planType.includes('daily') ? 86400000 : planType.includes('monthly') ? 2592000000 : 604800000;
+          const cycles = Math.floor(diffMs / cycleMs) + 1;
+          cycleDue = cycles * price;
+        }
+      }
+
+      const hasVehicle = Boolean(r.vehicle_id);
+      const depositBalance = parseFloat(r.security_deposit_balance || 0);
+      const isDepositPaid = Boolean(r.security_deposit_paid) || depositBalance >= minDeposit;
+      const depositDeficit = hasVehicle ? (isDepositPaid ? 0 : Math.max(0, minDeposit - depositBalance)) : 0;
+      const extraDues = parseFloat(r.extra_dues_total || 0);
+
+      const userTotal = cycleDue + depositDeficit + extraDues;
+      if (userTotal > 0) {
+        ridersWithDues++;
+        totalCycleDues += cycleDue;
+        totalDepositDeficit += depositDeficit;
+        totalExtraDues += extraDues;
+        totalDuesAmount += userTotal;
+      }
+      if (isOverdue || extraDues > 0) {
+        overdueCount++;
+      }
+    }
+
+    const settledRes = await pool.query(`
+      SELECT COALESCE(SUM(amount), 0) as total
+      FROM rider_dues
+      WHERE status = 'paid' AND paid_at >= (CURRENT_TIMESTAMP - INTERVAL '30 days')
+    `);
+
+    res.json({
+      total_due_amount: totalDuesAmount,
+      total_riders_with_dues: ridersWithDues,
+      cycle_dues_total: totalCycleDues,
+      deposit_deficit_total: totalDepositDeficit,
+      extra_dues_total: totalExtraDues,
+      settled_last_30_days: parseFloat(settledRes.rows[0]?.total || 0),
+      overdue_riders_count: overdueCount
+    });
+  } catch (err) {
+    console.error('Error in dues overview:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Dues Riders Ledger with Dynamic Filter & Search
+app.get('/api/dues/riders', authenticateToken, async (req, res) => {
+  try {
+    const { filter = 'with_dues', search = '' } = req.query;
+    const configRes = await pool.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+    const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+    const result = await pool.query(`
+      SELECT 
+        u.id, u.name, u.email, u.phone, u.status, u.role, u.joined_date, u.kyc_status,
+        u.security_deposit_balance, u.security_deposit_paid,
+        COALESCE(w.balance, 0) as wallet_balance,
+        r.rental_id,
+        r.vehicle_id,
+        v.model as vehicle_model,
+        COALESCE(v.registration_number, v.id) as vehicle_reg,
+        p.name as plan_name,
+        p.price as plan_price,
+        p.type as plan_type,
+        r.next_payment_date,
+        r.last_payment_date,
+        r.start_time as rental_start_time,
+        COALESCE((
+          SELECT SUM(amount) FROM rider_dues WHERE user_id = u.id AND status = 'pending'
+        ), 0) as extra_dues_total,
+        COALESCE((
+          SELECT COUNT(*) FROM rider_dues WHERE user_id = u.id AND status = 'pending'
+        ), 0) as extra_dues_count
+      FROM users u
+      LEFT JOIN wallets w ON w.user_id = u.id
+      LEFT JOIN LATERAL (
+        SELECT 
+          r_sub.id as rental_id,
+          r_sub.vehicle_id,
+          r_sub.plan_id,
+          r_sub.next_payment_date,
+          r_sub.last_payment_date,
+          r_sub.start_time
+        FROM rentals r_sub
+        WHERE r_sub.user_id = u.id AND r_sub.status IN ('active', 'in_use')
+        ORDER BY r_sub.id DESC
+        LIMIT 1
+      ) r ON true
+      LEFT JOIN vehicles v ON (v.id = r.vehicle_id OR v.model = r.vehicle_id)
+      LEFT JOIN plans p ON p.id = r.plan_id
+      ORDER BY u.id ASC
+    `);
+
+    const now = new Date();
+    let formatted = result.rows.map(r => {
+      let cycleDue = 0;
+      let overdueDays = 0;
+      let isOverdue = false;
+      if (r.next_payment_date) {
+        const due = new Date(r.next_payment_date);
+        if (now > due) {
+          isOverdue = true;
+          const diffMs = now.getTime() - due.getTime();
+          const price = parseFloat(r.plan_price || 0);
+          const planType = (r.plan_type || '').toLowerCase();
+          const cycleMs = planType.includes('daily') ? 86400000 : planType.includes('monthly') ? 2592000000 : 604800000;
+          const cycles = Math.floor(diffMs / cycleMs) + 1;
+          cycleDue = cycles * price;
+          overdueDays = Math.floor(diffMs / 86400000) + 1;
+        }
+      }
+
+      const hasVehicle = Boolean(r.rental_id || r.vehicle_id);
+      const depositBalance = parseFloat(r.security_deposit_balance || 0);
+      const isDepositPaid = Boolean(r.security_deposit_paid) || depositBalance >= minDeposit;
+      const depositDeficit = hasVehicle ? (isDepositPaid ? 0 : Math.max(0, minDeposit - depositBalance)) : 0;
+      const extraDuesTotal = parseFloat(r.extra_dues_total || 0);
+      const totalDue = cycleDue + depositDeficit + extraDuesTotal;
+
+      return {
+        ...r,
+        id: `USR-${String(r.id).padStart(3, '0')}`,
+        raw_id: r.id,
+        user_id: r.id,
+        cycle_due: cycleDue,
+        overdue_days: overdueDays,
+        is_overdue: isOverdue,
+        deposit_deficit: depositDeficit,
+        extra_dues_total: extraDuesTotal,
+        extra_dues_count: parseInt(r.extra_dues_count || 0),
+        total_due: totalDue,
+        has_due: totalDue > 0,
+        last_payment_date: r.last_payment_date,
+        assigned_vehicle: r.vehicle_id ? `${r.vehicle_model || 'LT.ev'} (${r.vehicle_reg || r.vehicle_id})` : null
+      };
+    });
+
+    if (filter === 'with_dues') {
+      formatted = formatted.filter(r => r.total_due > 0);
+    } else if (filter === 'overdue') {
+      formatted = formatted.filter(r => r.is_overdue || r.overdue_days > 0);
+    } else if (filter === 'cycle_only') {
+      formatted = formatted.filter(r => r.cycle_due > 0);
+    } else if (filter === 'deposit_deficit_only') {
+      formatted = formatted.filter(r => r.deposit_deficit > 0);
+    } else if (filter === 'extra_dues_only') {
+      formatted = formatted.filter(r => r.extra_dues_total > 0);
+    } else if (filter === 'cleared') {
+      formatted = formatted.filter(r => r.total_due === 0);
+    }
+
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      formatted = formatted.filter(r => 
+        (r.name || '').toLowerCase().includes(q) ||
+        (r.phone || '').includes(q) ||
+        (r.email || '').toLowerCase().includes(q) ||
+        (r.assigned_vehicle || '').toLowerCase().includes(q) ||
+        String(r.raw_id).includes(q)
+      );
+    }
+
+    res.json(formatted);
+  } catch (err) {
+    console.error('Error fetching dues riders:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Itemized Extra Dues Records List
+app.get('/api/dues/records', authenticateToken, async (req, res) => {
+  try {
+    const { status = 'all', search = '' } = req.query;
+
+    let query = `
+      SELECT 
+        d.id, d.user_id, d.title, d.amount, d.due_date, d.notes, d.status,
+        d.created_at, d.paid_at, d.created_by,
+        u.name as user_name, u.phone as user_phone, u.email as user_email
+      FROM rider_dues d
+      JOIN users u ON u.id = d.user_id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (status && status !== 'all') {
+      params.push(status);
+      query += ` AND d.status = $${params.length}`;
+    }
+
+    if (search && search.trim()) {
+      params.push(`%${search.trim().toLowerCase()}%`);
+      query += ` AND (LOWER(u.name) LIKE $${params.length} OR u.phone LIKE $${params.length} OR LOWER(d.title) LIKE $${params.length})`;
+    }
+
+    query += ` ORDER BY d.due_date DESC, d.id DESC`;
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching due records:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Collect / Settle Dues (Admin Collection)
+app.post('/api/dues/collect', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { 
+      user_id, 
+      amount, 
+      payment_mode = 'cash', 
+      utr = '', 
+      remarks = '',
+      target_type = 'all' // 'all' | 'cycle_due' | 'deposit_deficit' | 'extra_dues'
+    } = req.body;
+
+    const rawUserId = typeof user_id === 'string' && user_id.startsWith('USR-')
+      ? parseInt(user_id.replace('USR-', ''), 10)
+      : parseInt(user_id, 10);
+
+    const numAmount = parseFloat(amount || 0);
+    if (!rawUserId || isNaN(rawUserId)) {
+      return res.status(400).json({ error: 'Valid Rider ID is required' });
+    }
+    if (isNaN(numAmount) || numAmount <= 0) {
+      return res.status(400).json({ error: 'Please enter a valid collection amount greater than 0.' });
+    }
+
+    await client.query('BEGIN');
+
+    // Wallet balance deduction if mode is wallet_deduct
+    if (payment_mode === 'wallet_deduct') {
+      const wRes = await client.query('SELECT balance FROM wallets WHERE user_id = $1 FOR UPDATE', [rawUserId]);
+      const wBal = parseFloat(wRes.rows[0]?.balance || 0);
+      if (wBal < numAmount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Insufficient wallet balance (₹${wBal.toLocaleString('en-IN')}). Cannot deduct ₹${numAmount.toLocaleString('en-IN')}.` });
+      }
+      await client.query('UPDATE wallets SET balance = balance - $1 WHERE user_id = $2', [numAmount, rawUserId]);
+      await client.query(`
+        INSERT INTO wallet_transactions (wallet_id, amount, type, description, timestamp)
+        VALUES ((SELECT id FROM wallets WHERE user_id = $1), $2, 'debit', $3, CURRENT_TIMESTAMP)
+      `, [rawUserId, numAmount, `Dues settlement: ${remarks || 'Collected by Admin'}`]);
+    }
+
+    // Settle target or cascading dues
+    let remaining = numAmount;
+
+    // Settle Cycle Due
+    if ((target_type === 'cycle_due' || target_type === 'all') && remaining > 0) {
+      const rRes = await client.query(`
+        SELECT r.id, r.next_payment_date, p.price as plan_price, p.type as plan_type
+        FROM rentals r
+        LEFT JOIN plans p ON p.id = r.plan_id
+        WHERE r.user_id = $1 AND r.status IN ('active', 'in_use')
+        ORDER BY r.id DESC LIMIT 1
+      `, [rawUserId]);
+
+      if (rRes.rows.length > 0) {
+        const rental = rRes.rows[0];
+        const planPrice = parseFloat(rental.plan_price || 0);
+        if (planPrice > 0 && remaining >= planPrice) {
+          const cyclesToAdvance = Math.floor(remaining / planPrice);
+          const planType = (rental.plan_type || '').toLowerCase();
+          const daysToAdd = (planType.includes('daily') ? 1 : planType.includes('monthly') ? 30 : 7) * cyclesToAdvance;
+
+          const baseDate = rental.next_payment_date ? new Date(rental.next_payment_date) : new Date();
+          const newNextDue = new Date(Math.max(Date.now(), baseDate.getTime()) + daysToAdd * 86400000);
+
+          await client.query(`
+            UPDATE rentals
+            SET 
+              last_payment_date = CURRENT_TIMESTAMP,
+              next_payment_date = $1,
+              status = 'active',
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+          `, [newNextDue.toISOString().split('T')[0], rental.id]);
+
+          await client.query(`
+            INSERT INTO rent_payments (rental_id, amount, payment_mode, utr, remarks, payment_date)
+            VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+          `, [rental.id, cyclesToAdvance * planPrice, payment_mode, utr || null, remarks || 'Cycle dues collection']);
+
+          remaining -= (cyclesToAdvance * planPrice);
+        }
+      }
+    }
+
+    // Settle Deposit Deficit
+    if ((target_type === 'deposit_deficit' || target_type === 'all') && remaining > 0) {
+      const depCredit = remaining;
+      await client.query(`
+        UPDATE users 
+        SET 
+          security_deposit_balance = security_deposit_balance + $1,
+          security_deposit_paid = CASE WHEN security_deposit_balance + $1 >= 2000 THEN true ELSE security_deposit_paid END
+        WHERE id = $2
+      `, [depCredit, rawUserId]);
+
+      await client.query(`
+        INSERT INTO security_deposit_transactions (user_id, amount, type, remarks, date)
+        VALUES ($1, $2, 'deposit', $3, CURRENT_TIMESTAMP)
+      `, [rawUserId, depCredit, `Deposit shortfall cleared via dues collection (${payment_mode.toUpperCase()}${utr ? ` UTR: ${utr}` : ''})`]);
+
+      remaining = 0;
+    }
+
+    // Settle Extra Dues from rider_dues table
+    if (target_type === 'extra_dues' || target_type === 'all') {
+      await client.query(`
+        UPDATE rider_dues
+        SET status = 'paid', paid_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = $1 AND status = 'pending'
+      `, [rawUserId]);
+    }
+
+    // Create In-App Notification
+    const notifMsg = `Payment of ₹${numAmount.toLocaleString('en-IN')} has been collected and credited towards your account dues (${payment_mode.toUpperCase()}${utr ? `, UTR: ${utr}` : ''}).`;
+    await client.query(`
+      INSERT INTO broadcast_notifications (user_id, title, message, category, action_type, status, recipient_count, created_at)
+      VALUES ($1, '✅ Dues Payment Received', $2, 'due_cleared', 'none', 'sent', 1, CURRENT_TIMESTAMP)
+    `, [rawUserId, notifMsg]);
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: `Successfully collected ₹${numAmount.toLocaleString('en-IN')} for rider #${rawUserId}.` });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error collecting dues:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// 5. Send Due Reminder via Push & WhatsApp Link
+app.post('/api/dues/send-reminder', authenticateToken, async (req, res) => {
+  try {
+    const { user_id, amount, note = '' } = req.body;
+    const rawUserId = typeof user_id === 'string' && user_id.startsWith('USR-')
+      ? parseInt(user_id.replace('USR-', ''), 10)
+      : parseInt(user_id, 10);
+
+    const userRes = await pool.query('SELECT name, phone, push_token FROM users WHERE id = $1', [rawUserId]);
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Rider not found' });
+    }
+    const user = userRes.rows[0];
+
+    const title = '⚠️ Outstanding Dues Reminder: Action Required';
+    const message = `Dear ${user.name}, you have a pending due of ₹${parseFloat(amount || 0).toLocaleString('en-IN')} on your LocalToto account. ${note ? note : 'Please clear this immediately from your app or contact helpline (+91 78705 72429) to avoid vehicle deactivation.'}`;
+
+    await pool.query(`
+      INSERT INTO broadcast_notifications (user_id, title, message, category, action_type, status, recipient_count, created_at)
+      VALUES ($1, $2, $3, 'due_reminder', 'pay_now', 'sent', 1, CURRENT_TIMESTAMP)
+    `, [rawUserId, title, message]);
+
+    if (user.push_token) {
+      sendExpoPushNotifications({
+        tokens: [user.push_token],
+        title,
+        body: message,
+        data: { category: 'due_reminder', action_type: 'pay_now' }
+      });
+    }
+
+    const cleanPhone = (user.phone || '').replace(/[^0-9]/g, '');
+    const waPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+    const waText = encodeURIComponent(`*Localtoto EV - Outstanding Dues Reminder*\n\nHello ${user.name},\n\nThis is a reminder regarding pending dues on your LocalToto scooter account:\n\n*Outstanding Due Amount:* ₹${parseFloat(amount || 0).toLocaleString('en-IN')}\n\nKindly clear this payment online via the app or UPI, or visit our nearest stand to avoid service suspension.\n\nHelpline: +91 78705 72429\nLocalToto Mobility`);
+    const waLink = `https://wa.me/${waPhone}?text=${waText}`;
+
+    res.json({ success: true, message: 'Reminder sent to rider.', whatsapp_link: waLink });
+  } catch (err) {
+    console.error('Error sending due reminder:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Security Deposits API
 app.get('/api/security-deposits', authenticateToken, async (req, res) => {
   try {
@@ -7639,11 +8064,70 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     const availableVehicles = parseInt(fleetStatus.rows[0].available) || 0;
     const fleetHealth = Math.round((availableVehicles / totalVehicles) * 100);
 
+    // Calculate Platform Total Dues
+    const configRes = await pool.query("SELECT value FROM system_settings WHERE key = 'min_security_deposit'");
+    const minDeposit = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].value) : 2000;
+
+    const duesQuery = await pool.query(`
+      SELECT 
+        u.id, u.security_deposit_balance, u.security_deposit_paid,
+        r.vehicle_id, r.next_payment_date, p.price as plan_price, p.type as plan_type,
+        COALESCE((SELECT SUM(amount) FROM rider_dues WHERE user_id = u.id AND status = 'pending'), 0) as extra_dues_total
+      FROM users u
+      LEFT JOIN LATERAL (
+        SELECT id, vehicle_id, plan_id, next_payment_date
+        FROM rentals
+        WHERE user_id = u.id AND status IN ('active', 'in_use')
+        ORDER BY id DESC LIMIT 1
+      ) r ON true
+      LEFT JOIN plans p ON p.id = r.plan_id
+    `);
+
+    const now = new Date();
+    let totalDues = 0;
+    let duesCount = 0;
+    let overdueCount = 0;
+
+    for (const r of duesQuery.rows) {
+      let cycleDue = 0;
+      let isOverdue = false;
+      if (r.next_payment_date) {
+        const due = new Date(r.next_payment_date);
+        if (now > due) {
+          isOverdue = true;
+          const diffMs = now.getTime() - due.getTime();
+          const price = parseFloat(r.plan_price || 0);
+          const planType = (r.plan_type || '').toLowerCase();
+          const cycleMs = planType.includes('daily') ? 86400000 : planType.includes('monthly') ? 2592000000 : 604800000;
+          const cycles = Math.floor(diffMs / cycleMs) + 1;
+          cycleDue = cycles * price;
+        }
+      }
+
+      const hasVehicle = Boolean(r.vehicle_id);
+      const depositBalance = parseFloat(r.security_deposit_balance || 0);
+      const isDepositPaid = Boolean(r.security_deposit_paid) || depositBalance >= minDeposit;
+      const depositDeficit = hasVehicle ? (isDepositPaid ? 0 : Math.max(0, minDeposit - depositBalance)) : 0;
+      const extraDues = parseFloat(r.extra_dues_total || 0);
+      const userTotal = cycleDue + depositDeficit + extraDues;
+
+      if (userTotal > 0) {
+        duesCount++;
+        totalDues += userTotal;
+      }
+      if (isOverdue || extraDues > 0) {
+        overdueCount++;
+      }
+    }
+
     res.json({
       totalUsers: parseInt(usersCount.rows[0].count),
       activeRides: parseInt(activeRides.rows[0].count),
       totalRevenue: parseFloat(revenue.rows[0].total),
-      fleetHealth: fleetHealth
+      fleetHealth: fleetHealth,
+      totalDues: totalDues,
+      duesCount: duesCount,
+      overdueCount: overdueCount
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
