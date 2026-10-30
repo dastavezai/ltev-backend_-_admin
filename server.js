@@ -189,6 +189,12 @@ async function initDatabase() {
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS payment_remarks TEXT`);
     await pool.query(`ALTER TABLE maintenance_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`);
     await pool.query(`ALTER TABLE maintenance_logs ALTER COLUMN date_reported TYPE TIMESTAMP WITH TIME ZONE USING date_reported::timestamp with time zone`);
+    try {
+      await pool.query(`ALTER TABLE maintenance_logs DROP CONSTRAINT IF EXISTS maintenance_logs_vehicle_id_fkey`);
+      await pool.query(`ALTER TABLE maintenance_logs ALTER COLUMN vehicle_id TYPE VARCHAR(100)`);
+    } catch (e) {
+      console.log('maintenance_logs fkey alter note:', e.message);
+    }
 
     // Services Catalog Table
     await pool.query(`
@@ -1077,7 +1083,7 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       }
     }
 
-    // Ensure resolvedVehicleId actually exists in vehicles table
+    // Ensure resolvedVehicleId actually exists in vehicles table, or auto-register if custom/manual
     const existsCheck = await client.query('SELECT id FROM vehicles WHERE id = $1 LIMIT 1', [resolvedVehicleId]);
     if (existsCheck.rows.length === 0) {
       const looseMatch = await client.query(
@@ -1087,8 +1093,16 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       if (looseMatch.rows.length > 0) {
         resolvedVehicleId = looseMatch.rows[0].id;
       } else {
-        try { await client.query('ROLLBACK'); } catch (_) {}
-        return res.status(400).json({ error: `Vehicle "${vehicle_id}" not found in system. Please select a valid vehicle from the list.` });
+        // Auto-register manual / external vehicle into vehicles table so foreign queries or reports don't fail
+        try {
+          await client.query(`
+            INSERT INTO vehicles (id, model, type, status, registration_number)
+            VALUES ($1, $2, 'scooter', 'available', $1)
+            ON CONFLICT (id) DO UPDATE SET registration_number = EXCLUDED.registration_number
+          `, [resolvedVehicleId, `Manual / ${resolvedVehicleId}`]);
+        } catch (vErr) {
+          console.warn('Manual vehicle auto-register note:', vErr.message);
+        }
       }
     }
 
@@ -1215,6 +1229,16 @@ app.put('/api/maintenance/:id', authenticateToken, async (req, res) => {
           if (vById.rows.length > 0) resolvedVehicleIdPut = numericId;
         }
       }
+    }
+
+    if (resolvedVehicleIdPut) {
+      try {
+        await client.query(`
+          INSERT INTO vehicles (id, model, type, status, registration_number)
+          VALUES ($1, $2, 'scooter', 'available', $1)
+          ON CONFLICT (id) DO NOTHING
+        `, [String(resolvedVehicleIdPut), `Manual / ${resolvedVehicleIdPut}`]);
+      } catch (_) {}
     }
 
     const finalUserId = user_id !== undefined ? (user_id ? (typeof user_id === 'string' && user_id.toUpperCase().startsWith('USR-') ? parseInt(user_id.replace(/^USR-/i, ''), 10) : parseInt(user_id, 10)) : null) : existing.user_id;
@@ -1565,6 +1589,9 @@ app.get('/api/users', authenticateToken, async (req, res) => {
         r.vehicle_id,
         v.model as vehicle_model,
         COALESCE(v.registration_number, v.id) as vehicle_reg,
+        COALESCE(r.vehicle_id, r_last.hist_vehicle_id, r_noc.noc_vehicle_id) as last_used_vehicle_id,
+        COALESCE(v.model, r_last.hist_vehicle_model, r_noc.noc_vehicle_model, 'LT.ev') as last_used_vehicle_model,
+        COALESCE(v.registration_number, v.id, r_last.hist_vehicle_reg, r_noc.noc_vehicle_reg) as last_used_vehicle_reg,
         p.name as plan_name,
         p.price as plan_price,
         p.type as plan_type,
@@ -1590,6 +1617,27 @@ app.get('/api/users', authenticateToken, async (req, res) => {
         LIMIT 1
       ) r ON true
       LEFT JOIN vehicles v ON (v.id = r.vehicle_id OR v.model = r.vehicle_id)
+      LEFT JOIN LATERAL (
+        SELECT 
+          r_hist.vehicle_id as hist_vehicle_id,
+          v_hist.model as hist_vehicle_model,
+          COALESCE(v_hist.registration_number, v_hist.id, r_hist.vehicle_id) as hist_vehicle_reg
+        FROM rentals r_hist
+        LEFT JOIN vehicles v_hist ON (v_hist.id = r_hist.vehicle_id OR v_hist.model = r_hist.vehicle_id)
+        WHERE r_hist.user_id = u.id AND r_hist.vehicle_id IS NOT NULL
+        ORDER BY r_hist.id DESC
+        LIMIT 1
+      ) r_last ON true
+      LEFT JOIN LATERAL (
+        SELECT 
+          noc.vehicle_id as noc_vehicle_id,
+          noc.vehicle_model as noc_vehicle_model,
+          COALESCE(noc.vehicle_reg, noc.vehicle_id) as noc_vehicle_reg
+        FROM noc_records noc
+        WHERE noc.user_id = u.id AND noc.vehicle_id IS NOT NULL
+        ORDER BY noc.closure_date DESC NULLS LAST, noc.id DESC
+        LIMIT 1
+      ) r_noc ON true
       LEFT JOIN plans p ON p.id = r.plan_id
       ORDER BY u.id ASC
     `);
@@ -1636,12 +1684,109 @@ app.get('/api/users', authenticateToken, async (req, res) => {
         total_due: totalDue,
         has_due: totalDue > 0,
         last_payment_date: r.last_payment_date,
-        assigned_vehicle: r.vehicle_id ? `${r.vehicle_model || 'LT.ev'} (${r.vehicle_reg || r.vehicle_id})` : null,
+        assigned_vehicle: r.vehicle_id 
+          ? `${r.vehicle_model || 'LT.ev'} (${r.vehicle_reg || r.vehicle_id})` 
+          : (r.last_used_vehicle_id ? `${r.last_used_vehicle_model || 'LT.ev'} (${r.last_used_vehicle_reg || r.last_used_vehicle_id}) [Past]` : null),
+        assigned_vehicle_id: r.vehicle_id || r.last_used_vehicle_id || null,
+        last_used_vehicle_id: r.last_used_vehicle_id || null,
+        last_used_vehicle_reg: r.last_used_vehicle_reg || null,
+        last_used_vehicle_model: r.last_used_vehicle_model || null,
+        last_used_vehicle_display: r.last_used_vehicle_id ? `${r.last_used_vehicle_model || 'LT Scooter'} (${r.last_used_vehicle_reg || r.last_used_vehicle_id})` : null,
         joined: new Date(r.joined_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })
       };
     });
     res.json(formatted);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch all vehicles used by a specific rider (active, past rentals, NOC records, service logs)
+app.get('/api/riders/:id/used-vehicles', authenticateToken, async (req, res) => {
+  try {
+    let rawId = req.params.id;
+    if (typeof rawId === 'string' && rawId.toUpperCase().startsWith('USR-')) {
+      rawId = parseInt(rawId.replace(/^USR-/i, ''), 10);
+    } else {
+      rawId = parseInt(rawId, 10);
+    }
+
+    if (isNaN(rawId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    // 1. Check active rental
+    const activeRentalRes = await pool.query(`
+      SELECT 
+        r.vehicle_id, 
+        v.model, 
+        COALESCE(v.registration_number, v.id, r.vehicle_id) as registration_number,
+        'active_rental' as source,
+        r.start_time
+      FROM rentals r
+      LEFT JOIN vehicles v ON (v.id = r.vehicle_id OR v.model = r.vehicle_id)
+      WHERE r.user_id = $1 AND r.status IN ('active', 'in_use')
+      ORDER BY r.id DESC
+      LIMIT 1
+    `, [rawId]);
+
+    // 2. Fetch all past vehicles from rentals, noc_records, maintenance_logs
+    const allVehiclesRes = await pool.query(`
+      SELECT DISTINCT ON (vehicle_id)
+        vehicle_id,
+        model,
+        registration_number,
+        source,
+        last_date
+      FROM (
+        SELECT 
+          r.vehicle_id,
+          COALESCE(v.model, 'LT.ev') as model,
+          COALESCE(v.registration_number, v.id, r.vehicle_id) as registration_number,
+          'rental' as source,
+          COALESCE(r.end_time, r.start_time, NOW()) as last_date
+        FROM rentals r
+        LEFT JOIN vehicles v ON (v.id = r.vehicle_id OR v.model = r.vehicle_id)
+        WHERE r.user_id = $1 AND r.vehicle_id IS NOT NULL
+
+        UNION ALL
+
+        SELECT 
+          n.vehicle_id,
+          COALESCE(n.vehicle_model, v.model, 'LT.ev') as model,
+          COALESCE(n.vehicle_reg, v.registration_number, v.id, n.vehicle_id) as registration_number,
+          'noc_record' as source,
+          COALESCE(n.vehicle_returned_at, n.closure_date, NOW()) as last_date
+        FROM noc_records n
+        LEFT JOIN vehicles v ON (v.id = n.vehicle_id OR v.model = n.vehicle_id)
+        WHERE n.user_id = $1 AND n.vehicle_id IS NOT NULL
+
+        UNION ALL
+
+        SELECT 
+          m.vehicle_id,
+          COALESCE(v.model, 'LT.ev') as model,
+          COALESCE(v.registration_number, v.id, m.vehicle_id) as registration_number,
+          'service_history' as source,
+          COALESCE(m.date_reported, NOW()) as last_date
+        FROM maintenance_logs m
+        LEFT JOIN vehicles v ON (v.id = m.vehicle_id OR v.model = m.vehicle_id)
+        WHERE m.user_id = $1 AND m.vehicle_id IS NOT NULL
+      ) combined
+      ORDER BY vehicle_id, last_date DESC
+    `, [rawId]);
+
+    const list = allVehiclesRes.rows.sort((a, b) => new Date(b.last_date) - new Date(a.last_date));
+    const activeVehicle = activeRentalRes.rows[0] || null;
+    const lastUsedVehicle = activeVehicle || list[0] || null;
+
+    res.json({
+      active_vehicle: activeVehicle,
+      last_used_vehicle: lastUsedVehicle,
+      vehicles: list
+    });
+  } catch (err) {
+    console.error('Error fetching rider used vehicles:', err);
     res.status(500).json({ error: err.message });
   }
 });

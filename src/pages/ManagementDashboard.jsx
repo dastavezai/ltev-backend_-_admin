@@ -81,6 +81,9 @@ export default function ManagementDashboard() {
   const [selectedServiceRider, setSelectedServiceRider] = useState(null); // manually picked old or active rider
   const [serviceRiderSearch, setServiceRiderSearch] = useState('');
   const [serviceRiderDropdownOpen, setServiceRiderDropdownOpen] = useState(false);
+  const [isManualVehicle, setIsManualVehicle] = useState(false);
+  const [riderUsedVehicles, setRiderUsedVehicles] = useState([]);
+  const [loadingRiderVehicles, setLoadingRiderVehicles] = useState(false);
   const [systemUpiId, setSystemUpiId] = useState('9113750231@oksbi');
   const [submittingService, setSubmittingService] = useState(false);
   const [serviceRecordsFilter, setServiceRecordsFilter] = useState('all'); // 'all' | 'reported' | 'in_progress' | 'completed'
@@ -293,17 +296,70 @@ export default function ManagementDashboard() {
     }).slice(0, 10);
   }, [users, serviceRiderSearch]);
 
-  const handleSelectServiceRider = (u) => {
+  const applyVehicleToServiceForm = (targetVehId) => {
+    if (!targetVehId) return;
+    const cleanTarget = String(targetVehId).trim();
+    const matched = vehicles.find(v => {
+      const code = getVehicleCode(v).toLowerCase();
+      return code === cleanTarget.toLowerCase() || 
+             String(v.id).toLowerCase() === cleanTarget.toLowerCase() || 
+             (v.model && v.model.toLowerCase() === cleanTarget.toLowerCase()) ||
+             (v.registration_number && v.registration_number.toLowerCase() === cleanTarget.toLowerCase());
+    });
+
+    if (matched) {
+      const code = getVehicleCode(matched);
+      setSelectedServiceVehicle(matched);
+      setServiceSearchPlate(code);
+      setVehicleSearchQuery(`${code} • ${matched.model || 'LT Scooter'} (${matched.registration_number || matched.id})`);
+      setServiceForm(prev => ({ ...prev, vehicle_id: code }));
+    } else {
+      setSelectedServiceVehicle(null);
+      setServiceSearchPlate(cleanTarget.toUpperCase());
+      setVehicleSearchQuery(cleanTarget.toUpperCase());
+      setServiceForm(prev => ({ ...prev, vehicle_id: cleanTarget.toUpperCase() }));
+    }
+  };
+
+  const handleSelectServiceRider = async (u) => {
     setSelectedServiceRider(u);
     setServiceRiderSearch(`${u.name} (${u.phone || 'No phone'})`);
     setServiceRiderDropdownOpen(false);
     setServiceForm(prev => ({ ...prev, billed_to: 'rider' }));
+
+    // Auto-populate vehicle from rider's current or last used vehicle
+    const initialVehId = u.assigned_vehicle_id || u.last_used_vehicle_id || u.vehicle_id;
+    if (initialVehId) {
+      applyVehicleToServiceForm(initialVehId);
+    }
+
+    // Fetch full vehicle history for this rider to show suggestions
+    const rawNumId = u.raw_id || (typeof u.id === 'string' ? u.id.replace(/^USR-/i, '') : u.id);
+    if (rawNumId) {
+      setLoadingRiderVehicles(true);
+      try {
+        const res = await axios.get(`${API_BASE}/api/riders/${rawNumId}/used-vehicles`, authHeaders);
+        if (res.data) {
+          const list = res.data.vehicles || [];
+          setRiderUsedVehicles(list);
+          const chosen = res.data.active_vehicle?.vehicle_id || res.data.last_used_vehicle?.vehicle_id || initialVehId;
+          if (chosen) {
+            applyVehicleToServiceForm(chosen);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching used vehicles for rider:', err);
+      } finally {
+        setLoadingRiderVehicles(false);
+      }
+    }
   };
 
   const handleClearServiceRider = () => {
     setSelectedServiceRider(null);
     setServiceRiderSearch('');
     setServiceRiderDropdownOpen(false);
+    setRiderUsedVehicles([]);
     if (!selectedServiceVehicle?.renter) {
       setServiceForm(prev => ({ ...prev, billed_to: 'company' }));
     }
@@ -523,7 +579,9 @@ export default function ManagementDashboard() {
         });
       });
 
-      const targetVehicleId = selectedServiceVehicle?.id || serviceForm.vehicle_id;
+      const targetVehicleId = isManualVehicle 
+        ? serviceForm.vehicle_id 
+        : (selectedServiceVehicle?.id || serviceForm.vehicle_id);
       const finalIssueDesc = serviceForm.issue_description.trim() || serviceForm.service_type || 'General Workshop Service';
 
       const res = await axios.post(`${API_BASE}/api/maintenance`, {
@@ -576,6 +634,8 @@ export default function ManagementDashboard() {
       setSelectedParts([]);
       setSelectedServiceVehicle(null);
       setSelectedServiceRider(null);
+      setRiderUsedVehicles([]);
+      setIsManualVehicle(false);
       setServiceSearchPlate('');
       setVehicleSearchQuery('');
       setServiceRiderSearch('');
@@ -1466,38 +1526,92 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
 
             <form onSubmit={handleSubmitServiceBilling}>
               
-              {/* Single Searchable Vehicle Input with Dropdown */}
+              {/* Single Searchable Vehicle Input with Dropdown OR Manual Vehicle Entry */}
               <div style={{ position: 'relative', marginBottom: '14px' }}>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
-                  Search & Select Vehicle / Driver
-                </label>
-                <div style={{ position: 'relative' }}>
-                  <Search size={14} color="#94a3b8" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
-                  <input
-                    type="text"
-                    placeholder="Type vehicle number (e.g. LT001, LT005, Ajeet, 9128)..."
-                    value={vehicleSearchQuery}
-                    onFocus={() => setVehicleDropdownOpen(true)}
-                    onChange={(e) => {
-                      setVehicleSearchQuery(e.target.value);
-                      handleServicePlateInputChange(e.target.value);
-                      setVehicleDropdownOpen(true);
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', margin: 0 }}>
+                    {isManualVehicle ? 'Enter Vehicle Number Manually' : 'Search & Select Vehicle / Driver'}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsManualVehicle(!isManualVehicle);
+                      setVehicleDropdownOpen(false);
                     }}
                     style={{
-                      width: '100%',
-                      padding: '8px 10px 8px 30px',
+                      background: isManualVehicle ? '#e0f2fe' : '#f8fafc',
+                      color: isManualVehicle ? '#0284c7' : '#475569',
+                      border: '1px solid ' + (isManualVehicle ? '#0284c7' : '#cbd5e1'),
                       borderRadius: '6px',
-                      border: '1px solid #cbd5e1',
-                      fontSize: '13px',
-                      fontWeight: '600',
-                      boxSizing: 'border-box'
+                      padding: '3px 8px',
+                      fontSize: '11px',
+                      fontWeight: '700',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px'
                     }}
-                    required
-                  />
+                  >
+                    {isManualVehicle ? '📋 Select from Fleet' : '✏️ Enter Manually'}
+                  </button>
                 </div>
 
+                {isManualVehicle ? (
+                  <div>
+                    <input
+                      type="text"
+                      placeholder="Type any vehicle # (e.g. LT016, DL01AB1234, Custom Bike)..."
+                      value={serviceForm.vehicle_id}
+                      onChange={(e) => {
+                        const val = e.target.value.toUpperCase();
+                        setServiceForm(prev => ({ ...prev, vehicle_id: val }));
+                        setVehicleSearchQuery(val);
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1.5px solid #0284c7',
+                        background: '#f0f9ff',
+                        fontSize: '13px',
+                        fontWeight: '700',
+                        boxSizing: 'border-box'
+                      }}
+                      required
+                    />
+                    <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                      ✏️ Manual entry mode: Any custom or unregistered vehicle number will be saved.
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ position: 'relative' }}>
+                    <Search size={14} color="#94a3b8" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
+                    <input
+                      type="text"
+                      placeholder="Type vehicle number (e.g. LT001, LT005, Ajeet, 9128)..."
+                      value={vehicleSearchQuery}
+                      onFocus={() => setVehicleDropdownOpen(true)}
+                      onChange={(e) => {
+                        setVehicleSearchQuery(e.target.value);
+                        handleServicePlateInputChange(e.target.value);
+                        setVehicleDropdownOpen(true);
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px 8px 30px',
+                        borderRadius: '6px',
+                        border: '1px solid #cbd5e1',
+                        fontSize: '13px',
+                        fontWeight: '600',
+                        boxSizing: 'border-box'
+                      }}
+                      required
+                    />
+                  </div>
+                )}
+
                 {/* Floating Search Dropdown */}
-                {vehicleDropdownOpen && matchingSearchVehicles.length > 0 && (
+                {!isManualVehicle && vehicleDropdownOpen && matchingSearchVehicles.length > 0 && (
                   <div style={{
                     position: 'absolute',
                     top: '100%',
@@ -1549,6 +1663,49 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                         </div>
                       );
                     })}
+                  </div>
+                )}
+
+                {/* Auto-fetched Vehicle / Past Vehicles for Selected Rider */}
+                {selectedServiceRider && riderUsedVehicles.length > 0 && (
+                  <div style={{ marginTop: '8px', padding: '8px 10px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '11px', fontWeight: '700', color: '#166534' }}>
+                        🛵 Vehicles used by {selectedServiceRider.name}:
+                      </span>
+                      <span style={{ fontSize: '10px', color: '#15803d' }}>
+                        Click to apply
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                      {riderUsedVehicles.map((uv, idx) => {
+                        const isSelected = serviceForm.vehicle_id === uv.vehicle_id;
+                        return (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => applyVehicleToServiceForm(uv.vehicle_id)}
+                            style={{
+                              background: isSelected ? '#15803d' : 'white',
+                              color: isSelected ? 'white' : '#166534',
+                              border: '1px solid #86efac',
+                              borderRadius: '4px',
+                              padding: '3px 8px',
+                              fontSize: '11px',
+                              fontWeight: isSelected ? '700' : '500',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            <span>{uv.vehicle_id}</span>
+                            <span style={{ opacity: 0.85, fontSize: '10px' }}>({uv.model || 'LT.ev'})</span>
+                            {uv.source === 'active_rental' && <span style={{ fontSize: '9px', background: '#22c55e', color: 'white', borderRadius: '3px', padding: '0 3px' }}>Active</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </div>

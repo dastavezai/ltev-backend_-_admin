@@ -80,6 +80,10 @@ export default function VehicleServices() {
     image_url: ''
   });
 
+  const [isManualVehicle, setIsManualVehicle] = useState(false);
+  const [riderUsedVehicles, setRiderUsedVehicles] = useState([]);
+  const [loadingRiderVehicles, setLoadingRiderVehicles] = useState(false);
+
   const [modalRiderSearch, setModalRiderSearch] = useState('');
   const [systemUpiId, setSystemUpiId] = useState('9113750231@oksbi');
 
@@ -134,6 +138,9 @@ export default function VehicleServices() {
       if (uObj) linkedUserId = String(uObj.raw_id || uObj.id);
     }
 
+    setRiderUsedVehicles([]);
+    setIsManualVehicle(false);
+
     setFormData({
       vehicle_id: vId,
       service_type: 'General Periodic Service & Tuning',
@@ -154,6 +161,13 @@ export default function VehicleServices() {
 
   // Open Edit Modal
   const handleOpenEditModal = (srv) => {
+    setRiderUsedVehicles([]);
+    if (srv.vehicle_id && !vehicles.some(v => v.id === srv.vehicle_id)) {
+      setIsManualVehicle(true);
+    } else {
+      setIsManualVehicle(false);
+    }
+
     setFormData({
       vehicle_id: srv.vehicle_id || '',
       service_type: srv.service_type || 'General Service',
@@ -170,6 +184,10 @@ export default function VehicleServices() {
     setModalMode('edit');
     setEditingId(srv.id);
     setModalOpen(true);
+
+    if (srv.user_id) {
+      handleRiderChange(String(srv.user_id));
+    }
   };
 
   const handlePhotoUpload = async (e) => {
@@ -208,6 +226,57 @@ export default function VehicleServices() {
       user_id: linkedUserId,
       billed_to: linkedUserId ? 'rider' : prev.billed_to
     }));
+  };
+
+  const handleRiderChange = async (userId) => {
+    const cleanId = userId;
+    setFormData(prev => ({ 
+      ...prev, 
+      user_id: cleanId,
+      billed_to: cleanId ? 'rider' : prev.billed_to,
+      payment_status: cleanId ? 'pending' : prev.payment_status
+    }));
+
+    if (!cleanId) {
+      setRiderUsedVehicles([]);
+      return;
+    }
+
+    const u = users.find(usr => String(usr.raw_id || usr.user_id || usr.id) === String(cleanId) || usr.id === cleanId);
+    const initialVehId = u?.assigned_vehicle_id || u?.last_used_vehicle_id || u?.vehicle_id;
+    if (initialVehId) {
+      setFormData(prev => ({
+        ...prev,
+        vehicle_id: String(initialVehId)
+      }));
+    }
+
+    // Fetch full vehicle history for this rider to show suggestions
+    const rawNumId = u?.raw_id || (typeof cleanId === 'string' ? cleanId.replace(/^USR-/i, '') : cleanId);
+    if (rawNumId) {
+      setLoadingRiderVehicles(true);
+      try {
+        const res = await axios.get(
+          `${import.meta.env.VITE_API_URL || ''}/api/riders/${rawNumId}/used-vehicles`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (res.data) {
+          const list = res.data.vehicles || [];
+          setRiderUsedVehicles(list);
+          const chosen = res.data.active_vehicle?.vehicle_id || res.data.last_used_vehicle?.vehicle_id || initialVehId;
+          if (chosen) {
+            setFormData(prev => ({
+              ...prev,
+              vehicle_id: String(chosen)
+            }));
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching used vehicles for rider:', err);
+      } finally {
+        setLoadingRiderVehicles(false);
+      }
+    }
   };
 
   // Save Service Record
@@ -993,24 +1062,105 @@ _Support: +91 78705 72429 | https://ltev.in_`;
             </div>
 
             <form onSubmit={handleSave} style={{ display: 'grid', gap: '16px' }}>
-              {/* Bike Selector */}
+              {/* Bike Selector with Fleet Dropdown OR Manual Vehicle Entry */}
               <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                  Vehicle / Bike Number *
-                </label>
-                <select
-                  required
-                  value={formData.vehicle_id}
-                  onChange={(e) => handleVehicleChange(e.target.value)}
-                  style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', background: '#f8fafc', color: '#0f172a', outline: 'none' }}
-                >
-                  <option value="">-- Select Bike --</option>
-                  {vehicles.map(v => (
-                    <option key={v.id} value={v.id}>
-                      {v.id} — {v.model} ({v.renter ? `Rented to ${v.renter}` : v.status.toUpperCase()})
-                    </option>
-                  ))}
-                </select>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '13px', fontWeight: '700', color: '#334155', margin: 0 }}>
+                    {isManualVehicle ? 'Enter Vehicle Number Manually *' : 'Vehicle / Bike Number *'}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setIsManualVehicle(!isManualVehicle)}
+                    style={{
+                      background: isManualVehicle ? '#e0f2fe' : '#f1f5f9',
+                      color: isManualVehicle ? '#0284c7' : '#475569',
+                      border: '1px solid ' + (isManualVehicle ? '#bae6fd' : '#cbd5e1'),
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: '700',
+                      padding: '3px 8px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {isManualVehicle ? '📋 Select from Fleet Dropdown' : '✏️ Enter Vehicle Manually'}
+                  </button>
+                </div>
+
+                {isManualVehicle ? (
+                  <div>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Type vehicle number (e.g. LT016, DL01AB1234, Custom Bike)..."
+                      value={formData.vehicle_id}
+                      onChange={(e) => setFormData(prev => ({ ...prev, vehicle_id: e.target.value.toUpperCase() }))}
+                      style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1.5px solid #0284c7', fontSize: '14px', background: '#f0f9ff', color: '#0f172a', fontWeight: '700', boxSizing: 'border-box' }}
+                    />
+                    <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                      ✏️ Manual entry mode: Any custom or old vehicle number will be saved.
+                    </div>
+                  </div>
+                ) : (
+                  <select
+                    required
+                    value={formData.vehicle_id}
+                    onChange={(e) => handleVehicleChange(e.target.value)}
+                    style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', background: '#f8fafc', color: '#0f172a', outline: 'none' }}
+                  >
+                    <option value="">-- Select Bike --</option>
+                    {formData.vehicle_id && !vehicles.some(v => v.id === formData.vehicle_id) && (
+                      <option value={formData.vehicle_id}>
+                        {formData.vehicle_id} (Past / Custom Vehicle)
+                      </option>
+                    )}
+                    {vehicles.map(v => (
+                      <option key={v.id} value={v.id}>
+                        {v.id} — {v.model} ({v.renter ? `Rented to ${v.renter}` : v.status.toUpperCase()})
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {/* Auto-fetched Vehicle / Past Vehicles for Selected Rider */}
+                {formData.user_id && riderUsedVehicles.length > 0 && (
+                  <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '8px 12px', marginTop: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '11px', fontWeight: '700', color: '#166534' }}>
+                        🛵 Vehicles used by this rider ({riderUsedVehicles.length}):
+                      </span>
+                      <span style={{ fontSize: '10px', color: '#15803d' }}>Click to apply</span>
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                      {riderUsedVehicles.map((uv, idx) => {
+                        const isSelected = formData.vehicle_id === uv.vehicle_id;
+                        return (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => setFormData(prev => ({ ...prev, vehicle_id: uv.vehicle_id }))}
+                            style={{
+                              background: isSelected ? '#15803d' : 'white',
+                              color: isSelected ? 'white' : '#166534',
+                              border: '1px solid #86efac',
+                              borderRadius: '6px',
+                              padding: '3px 8px',
+                              fontSize: '11px',
+                              fontWeight: isSelected ? '700' : '500',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            <span>{uv.vehicle_id}</span>
+                            <span style={{ opacity: 0.85, fontSize: '10px' }}>({uv.model || 'LT.ev'})</span>
+                            {uv.source === 'active_rental' && <span style={{ fontSize: '9px', background: '#22c55e', color: 'white', borderRadius: '3px', padding: '0 3px' }}>Active</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Service Type Preset */}
@@ -1261,12 +1411,7 @@ _Support: +91 78705 72429 | https://ltev.in_`;
 
                   <select
                     value={formData.user_id}
-                    onChange={(e) => setFormData({ 
-                      ...formData, 
-                      user_id: e.target.value,
-                      billed_to: e.target.value ? 'rider' : formData.billed_to,
-                      payment_status: e.target.value ? 'pending' : formData.payment_status
-                    })}
+                    onChange={(e) => handleRiderChange(e.target.value)}
                     style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#f8fafc', color: '#0f172a', outline: 'none' }}
                   >
                     <option value="">-- Select Rider (Current or Old Rider) --</option>
