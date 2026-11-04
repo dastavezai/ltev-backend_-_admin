@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Wrench, DollarSign, Calendar, CalendarPlus, CalendarCheck, Search, Plus, RefreshCw, 
   CheckCircle, Clock, Send, X, Check, ExternalLink, 
-  Bike, AlertCircle, ArrowRight, RotateCcw, User, Phone, MapPin, Trash2, FileText, ShieldCheck, CreditCard, AlertTriangle
+  Bike, AlertCircle, ArrowRight, RotateCcw, User, Phone, MapPin, Trash2, FileText, ShieldCheck, CreditCard, AlertTriangle,
+  Package, Upload, Image as ImageIcon, Tag
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useNavigate } from 'react-router-dom';
@@ -87,6 +88,40 @@ export default function ManagementDashboard() {
   const [systemUpiId, setSystemUpiId] = useState('9113750231@oksbi');
   const [submittingService, setSubmittingService] = useState(false);
   const [serviceRecordsFilter, setServiceRecordsFilter] = useState('all'); // 'all' | 'reported' | 'in_progress' | 'completed'
+
+  // Direct Add Product / Spare Part Modal & Filter State
+  const [addProductModalOpen, setAddProductModalOpen] = useState(false);
+  const [productModalTab, setProductModalTab] = useState('catalog'); // 'catalog' | 'adhoc'
+  const [productForm, setProductForm] = useState({
+    name: '',
+    part_number: '',
+    category: 'Brakes & Cables',
+    mrp: '',
+    price: '',
+    stock_quantity: '50',
+    image_url: '',
+    description: '',
+    status: 'active',
+    also_add_to_bill: true
+  });
+  const [savingProduct, setSavingProduct] = useState(false);
+  const [uploadingProductImage, setUploadingProductImage] = useState(false);
+  const [partSearchQuery, setPartSearchQuery] = useState('');
+
+  // Inline Quick Add Product State (No modal needed)
+  const [inlineAddOpen, setInlineAddOpen] = useState(false);
+  const [inlinePartForm, setInlinePartForm] = useState({
+    name: '',
+    category: 'General & Consumables',
+    selling_price: '',
+    stock_quantity: '50',
+    image_url: '',
+    description: '',
+    showMore: false
+  });
+  const [inlineSaving, setInlineSaving] = useState(false);
+  const [inlineUploadingImage, setInlineUploadingImage] = useState(false);
+  const [inlineSuccessMsg, setInlineSuccessMsg] = useState('');
 
   // Service Payment Update Modal
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
@@ -490,6 +525,245 @@ export default function ManagementDashboard() {
     }
     setSelectedParts(updated);
     recalculateServiceCost(selectedServicesList, updated, waiveServiceCharge);
+  };
+
+  // Filtered spare parts / products for Service Billing
+  const filteredCatalogParts = useMemo(() => {
+    if (!partSearchQuery || !partSearchQuery.trim()) return catalogParts;
+    const q = partSearchQuery.toLowerCase().trim();
+    return catalogParts.filter(p => 
+      (p.name || '').toLowerCase().includes(q) ||
+      (p.category || '').toLowerCase().includes(q) ||
+      (p.part_number || '').toLowerCase().includes(q)
+    );
+  }, [catalogParts, partSearchQuery]);
+
+  // Open Direct Add Product Modal
+  const handleOpenAddProductModal = (prefillName = '', mode = 'catalog') => {
+    setProductModalTab(mode);
+    setProductForm({
+      name: prefillName,
+      part_number: `PRT-${Math.floor(1000 + Math.random() * 9000)}`,
+      category: 'Brakes & Cables',
+      mrp: '',
+      price: '',
+      stock_quantity: '50',
+      image_url: '',
+      description: '',
+      status: 'active',
+      also_add_to_bill: activeTab === 'service'
+    });
+    setAddProductModalOpen(true);
+  };
+
+  // Upload Product Photo to Server
+  const handleProductImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file (PNG, JPG, WEBP).');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('image', file);
+
+    setUploadingProductImage(true);
+    try {
+      const res = await axios.post(`${API_BASE}/api/upload/part-image`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+        }
+      });
+      if (res.data?.imageUrl) {
+        setProductForm(prev => ({ ...prev, image_url: res.data.imageUrl }));
+      }
+    } catch (err) {
+      console.error('Error uploading product image:', err);
+      alert('Failed to upload image. You can also paste an image URL directly.');
+    } finally {
+      setUploadingProductImage(false);
+    }
+  };
+
+  // Save Product Directly to Database Catalog & Inventory
+  const handleSaveProductDirectly = async (e) => {
+    e.preventDefault();
+    if (!productForm.name || !productForm.name.trim()) {
+      alert('Please enter a product / spare part name.');
+      return;
+    }
+
+    const parsedPrice = parseFloat(productForm.price) || parseFloat(productForm.mrp) || 0;
+    const parsedMrp = parseFloat(productForm.mrp) || parsedPrice;
+
+    if (parsedMrp <= 0 && parsedPrice <= 0) {
+      alert('Please enter a valid price / MRP for this product.');
+      return;
+    }
+
+    setSavingProduct(true);
+    try {
+      const payload = {
+        name: productForm.name.trim(),
+        part_number: (productForm.part_number && productForm.part_number.trim()) || `PRT-${Math.floor(1000 + Math.random() * 9000)}`,
+        category: productForm.category || 'General & Consumables',
+        mrp: parsedMrp,
+        price: parsedPrice || parsedMrp,
+        stock_quantity: parseInt(productForm.stock_quantity, 10) >= 0 ? parseInt(productForm.stock_quantity, 10) : 50,
+        image_url: productForm.image_url || '',
+        description: (productForm.description || '').trim(),
+        status: productForm.status || 'active'
+      };
+
+      const res = await axios.post(`${API_BASE}/api/catalog/parts`, payload, authHeaders);
+      const createdProduct = res.data;
+
+      // Update catalog parts in state immediately
+      setCatalogParts(prev => [createdProduct, ...prev]);
+
+      // If also_add_to_bill is true, automatically append to selectedParts and update bill total
+      if (productForm.also_add_to_bill) {
+        const updatedParts = [...selectedParts, createdProduct];
+        setSelectedParts(updatedParts);
+        recalculateServiceCost(selectedServicesList, updatedParts, waiveServiceCharge);
+      }
+
+      setAddProductModalOpen(false);
+      setPartSearchQuery('');
+      alert(`Product "${createdProduct.name}" added to catalog successfully!${productForm.also_add_to_bill ? ' Added to current service bill.' : ''}`);
+    } catch (err) {
+      console.error('Error creating product:', err);
+      alert('Error creating product: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSavingProduct(false);
+    }
+  };
+
+  // Add One-Off Ad-Hoc Item directly to Service Bill without saving to Inventory
+  const handleAddAdhocProductToBill = (e) => {
+    e.preventDefault();
+    if (!productForm.name || !productForm.name.trim()) {
+      alert('Please enter a product / item name.');
+      return;
+    }
+    const parsedPrice = parseFloat(productForm.mrp) || parseFloat(productForm.price) || 0;
+    if (parsedPrice <= 0) {
+      alert('Please enter a valid price for this item.');
+      return;
+    }
+
+    const adhocProduct = {
+      id: `adhoc-${Date.now()}`,
+      name: productForm.name.trim(),
+      mrp: parsedPrice,
+      price: parsedPrice,
+      is_adhoc: true
+    };
+
+    const updatedParts = [...selectedParts, adhocProduct];
+    setSelectedParts(updatedParts);
+    recalculateServiceCost(selectedServicesList, updatedParts, waiveServiceCharge);
+    setAddProductModalOpen(false);
+    alert(`Item "${adhocProduct.name}" (₹${parsedPrice}) added to current service bill!`);
+  };
+
+  // Handle Inline Product Image Upload
+  const handleInlineProductImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file (PNG, JPG, WEBP).');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('image', file);
+
+    setInlineUploadingImage(true);
+    try {
+      const res = await axios.post(`${API_BASE}/api/upload/part-image`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+        }
+      });
+      if (res.data?.imageUrl) {
+        setInlinePartForm(prev => ({ ...prev, image_url: res.data.imageUrl }));
+      }
+    } catch (err) {
+      console.error('Error uploading inline product image:', err);
+      alert('Failed to upload image. You can also paste an image URL directly.');
+    } finally {
+      setInlineUploadingImage(false);
+    }
+  };
+
+  // Save Product Directly from Inline Form (No Dedicated Modal Needed!)
+  const handleSaveInlineProduct = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const finalName = (inlinePartForm.name || partSearchQuery || '').trim();
+    if (!finalName) {
+      alert('Please enter a product / spare part name.');
+      return;
+    }
+
+    const price = parseFloat(inlinePartForm.selling_price) || 0;
+    if (price <= 0) {
+      alert('Please enter a valid selling price (₹) for this product.');
+      return;
+    }
+
+    setInlineSaving(true);
+    try {
+      const payload = {
+        name: finalName,
+        part_number: `PRT-${Math.floor(1000 + Math.random() * 9000)}`,
+        category: inlinePartForm.category || 'General & Consumables',
+        mrp: price,
+        price: price,
+        stock_quantity: parseInt(inlinePartForm.stock_quantity, 10) >= 0 ? parseInt(inlinePartForm.stock_quantity, 10) : 50,
+        image_url: inlinePartForm.image_url || '',
+        description: (inlinePartForm.description || '').trim(),
+        status: 'active'
+      };
+
+      const res = await axios.post(`${API_BASE}/api/catalog/parts`, payload, authHeaders);
+      const createdProduct = res.data;
+
+      // Update catalog parts in state immediately
+      setCatalogParts(prev => [createdProduct, ...prev]);
+
+      // Automatically select this new product for the active service bill & update total
+      const updatedParts = [...selectedParts, createdProduct];
+      setSelectedParts(updatedParts);
+      recalculateServiceCost(selectedServicesList, updatedParts, waiveServiceCharge);
+
+      // Reset inline form & search
+      setInlinePartForm({
+        name: '',
+        category: 'General & Consumables',
+        selling_price: '',
+        stock_quantity: '50',
+        image_url: '',
+        description: '',
+        showMore: false
+      });
+      setPartSearchQuery('');
+      setInlineAddOpen(false);
+
+      // Show inline success message
+      setInlineSuccessMsg(`✓ Product "${createdProduct.name}" (₹${price}) added to inventory and selected for this bill!`);
+      setTimeout(() => setInlineSuccessMsg(''), 5000);
+    } catch (err) {
+      console.error('Error creating inline product:', err);
+      alert('Error creating product: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setInlineSaving(false);
+    }
   };
 
   // Open Official Service & Parts Invoice
@@ -1435,15 +1709,43 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
           </button>
         </div>
 
-        {/* Refresh Button */}
-        <button
-          onClick={fetchOperationsData}
-          disabled={loading}
-          className="mgmt-sync-btn"
-        >
-          <RefreshCw size={14} />
-          <span>{loading ? 'Refreshing...' : 'Sync Fleet'}</span>
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {/* Direct Add Product Button */}
+          <button
+            onClick={() => handleOpenAddProductModal('', 'catalog')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              padding: '12px 16px',
+              background: '#0284c7',
+              border: 'none',
+              borderRadius: '10px',
+              fontSize: '13px',
+              fontWeight: '700',
+              color: 'white',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              boxShadow: '0 2px 6px rgba(2, 132, 199, 0.25)',
+              transition: 'all 0.15s ease'
+            }}
+            title="Directly add a new product or spare part to inventory"
+          >
+            <Plus size={15} />
+            <span>Add Product</span>
+          </button>
+
+          {/* Refresh Button */}
+          <button
+            onClick={fetchOperationsData}
+            disabled={loading}
+            className="mgmt-sync-btn"
+          >
+            <RefreshCw size={14} />
+            <span>{loading ? 'Refreshing...' : 'Sync Fleet'}</span>
+          </button>
+        </div>
       </div>
 
       {/* ============================================================ */}
@@ -1949,13 +2251,357 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                 </div>
               </div>
 
-              {/* Spare Parts Replaced Multi-Select from Catalog */}
+              {/* Spare Parts / Products Replaced Multi-Select from Catalog */}
               <div style={{ marginBottom: '14px' }}>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
-                  Spare Parts Replaced (Auto-Calculates Bill)
-                </label>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', maxHeight: '130px', overflowY: 'auto', padding: '10px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                  {catalogParts.map(part => {
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', margin: 0 }}>
+                    Spare Parts / Products Replaced (Auto-Calculates Bill)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInlineAddOpen(!inlineAddOpen);
+                      if (!inlineAddOpen) {
+                        setInlinePartForm(prev => ({ ...prev, name: partSearchQuery.trim() }));
+                      }
+                    }}
+                    style={{
+                      background: inlineAddOpen ? '#dcfce7' : '#ecfdf5',
+                      border: '1px solid #10b981',
+                      color: '#047857',
+                      borderRadius: '6px',
+                      padding: '3px 9px',
+                      fontSize: '11px',
+                      fontWeight: '700',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      transition: 'all 0.15s ease'
+                    }}
+                    title="Quickly add a new product directly in this section"
+                  >
+                    <Plus size={12} />
+                    <span>{inlineAddOpen ? 'Close Quick Add' : '+ Add New Product'}</span>
+                  </button>
+                </div>
+
+                {/* Inline Success Notice */}
+                {inlineSuccessMsg && (
+                  <div style={{
+                    background: '#f0fdf4',
+                    border: '1px solid #86efac',
+                    borderRadius: '6px',
+                    padding: '6px 10px',
+                    marginBottom: '8px',
+                    fontSize: '11px',
+                    color: '#15803d',
+                    fontWeight: '700',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}>
+                    <span>{inlineSuccessMsg}</span>
+                    <button
+                      type="button"
+                      onClick={() => setInlineSuccessMsg('')}
+                      style={{ background: 'none', border: 'none', color: '#15803d', cursor: 'pointer', fontSize: '12px', padding: 0 }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
+                {/* Quick Search & Filter for Parts */}
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                  <div style={{ position: 'relative', flex: 1 }}>
+                    <Search size={12} color="#94a3b8" style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)' }} />
+                    <input
+                      type="text"
+                      placeholder="Type part name to search or auto-add if not in catalog..."
+                      value={partSearchQuery}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPartSearchQuery(val);
+                        setInlinePartForm(prev => ({ ...prev, name: val }));
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '6px 8px 6px 26px',
+                        borderRadius: '6px',
+                        border: '1px solid #cbd5e1',
+                        fontSize: '11px',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+                  {partSearchQuery.trim() && !inlineAddOpen && filteredCatalogParts.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInlinePartForm(prev => ({ ...prev, name: partSearchQuery.trim() }));
+                        setInlineAddOpen(true);
+                      }}
+                      style={{
+                        background: '#f0f9ff',
+                        border: '1px solid #bae6fd',
+                        color: '#0369a1',
+                        borderRadius: '6px',
+                        padding: '4px 9px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      <Plus size={11} />
+                      <span>Add as New Product</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* AUTO-SHOW INLINE PRODUCT CREATION BOX (No dedicated card/modal needed!) */}
+                {(inlineAddOpen || (partSearchQuery.trim().length > 0 && filteredCatalogParts.length === 0)) && (
+                  <div style={{
+                    background: '#f0fdf4',
+                    border: '1.5px solid #86efac',
+                    borderRadius: '10px',
+                    padding: '12px 14px',
+                    marginBottom: '10px',
+                    boxShadow: '0 2px 6px rgba(22, 163, 74, 0.08)'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontSize: '13px' }}>✨</span>
+                        <span style={{ fontSize: '12px', fontWeight: '800', color: '#166534' }}>
+                          {filteredCatalogParts.length === 0 && partSearchQuery.trim() 
+                            ? `Part not found in catalog. Add "${partSearchQuery.trim()}" directly below:` 
+                            : 'Directly Add New Product to Catalog & Bill:'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInlineAddOpen(false);
+                          setPartSearchQuery('');
+                        }}
+                        style={{ background: 'none', border: 'none', color: '#166534', cursor: 'pointer', fontSize: '11px', fontWeight: '600' }}
+                      >
+                        ✕ Close
+                      </button>
+                    </div>
+
+                    {/* Inline Fields Row: Name, Category, Price, Qty */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px', marginBottom: '8px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#166534', marginBottom: '3px' }}>
+                          Part Name *
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Brake Lever, Rear Bulb"
+                          value={inlinePartForm.name || partSearchQuery}
+                          onChange={(e) => {
+                            setInlinePartForm(prev => ({ ...prev, name: e.target.value }));
+                            setPartSearchQuery(e.target.value);
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            border: '1px solid #86efac',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            background: 'white',
+                            boxSizing: 'border-box'
+                          }}
+                        />
+                      </div>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#166534', marginBottom: '3px' }}>
+                          Category
+                        </label>
+                        <select
+                          value={inlinePartForm.category}
+                          onChange={(e) => setInlinePartForm(prev => ({ ...prev, category: e.target.value }))}
+                          style={{
+                            width: '100%',
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            border: '1px solid #86efac',
+                            fontSize: '11px',
+                            background: 'white',
+                            boxSizing: 'border-box'
+                          }}
+                        >
+                          <option value="Brakes & Cables">Brakes & Cables</option>
+                          <option value="Tyres & Wheels">Tyres & Wheels</option>
+                          <option value="Electrical & Lights">Electrical & Lights</option>
+                          <option value="Battery & Charger">Battery & Charger</option>
+                          <option value="Body & Fiber Guards">Body & Fiber Guards</option>
+                          <option value="Motor & Suspension">Motor & Suspension</option>
+                          <option value="General & Consumables">General & Consumables</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#166534', marginBottom: '3px' }}>
+                          Selling Price (₹) *
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="e.g. 250"
+                          value={inlinePartForm.selling_price}
+                          onChange={(e) => setInlinePartForm(prev => ({ ...prev, selling_price: e.target.value }))}
+                          style={{
+                            width: '100%',
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            border: '1.5px solid #16a34a',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            color: '#15803d',
+                            background: 'white',
+                            boxSizing: 'border-box'
+                          }}
+                        />
+                      </div>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#166534', marginBottom: '3px' }}>
+                          Initial Qty
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="50"
+                          value={inlinePartForm.stock_quantity}
+                          onChange={(e) => setInlinePartForm(prev => ({ ...prev, stock_quantity: e.target.value }))}
+                          style={{
+                            width: '100%',
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            border: '1px solid #86efac',
+                            fontSize: '11px',
+                            background: 'white',
+                            boxSizing: 'border-box'
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Optional "More" Dropdown Toggle */}
+                    <div style={{ marginBottom: '8px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setInlinePartForm(prev => ({ ...prev, showMore: !prev.showMore }))}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#047857',
+                          fontSize: '11px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                          padding: '2px 0',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        <span>{inlinePartForm.showMore ? '▲ Hide Optional Details' : '▼ More Optional Details (Image & Description)'}</span>
+                      </button>
+
+                      {inlinePartForm.showMore && (
+                        <div style={{ marginTop: '6px', padding: '8px', background: 'white', borderRadius: '6px', border: '1px solid #d1fae5', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          <div>
+                            <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#334155', marginBottom: '3px' }}>
+                              Photo (Upload or URL)
+                            </label>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                              <label style={{
+                                background: '#f8fafc',
+                                border: '1px solid #cbd5e1',
+                                padding: '4px 8px',
+                                borderRadius: '4px',
+                                fontSize: '10px',
+                                fontWeight: '600',
+                                cursor: inlineUploadingImage ? 'not-allowed' : 'pointer',
+                                whiteSpace: 'nowrap'
+                              }}>
+                                <Upload size={10} style={{ display: 'inline', marginRight: '3px' }} />
+                                {inlineUploadingImage ? 'Uploading...' : 'Upload'}
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  style={{ display: 'none' }}
+                                  onChange={handleInlineProductImageUpload}
+                                  disabled={inlineUploadingImage}
+                                />
+                              </label>
+                              <input
+                                type="text"
+                                placeholder="Or paste image URL"
+                                value={inlinePartForm.image_url}
+                                onChange={(e) => setInlinePartForm(prev => ({ ...prev, image_url: e.target.value }))}
+                                style={{ flex: 1, padding: '4px 6px', borderRadius: '4px', border: '1px solid #cbd5e1', fontSize: '10px' }}
+                              />
+                            </div>
+                            {inlinePartForm.image_url && (
+                              <div style={{ marginTop: '4px', fontSize: '10px', color: '#16a34a' }}>✓ Image attached</div>
+                            )}
+                          </div>
+
+                          <div>
+                            <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#334155', marginBottom: '3px' }}>
+                              Description / Notes
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="e.g. LocalToto EV 2.0 compatible"
+                              value={inlinePartForm.description}
+                              onChange={(e) => setInlinePartForm(prev => ({ ...prev, description: e.target.value }))}
+                              style={{ width: '100%', padding: '4px 6px', borderRadius: '4px', border: '1px solid #cbd5e1', fontSize: '10px', boxSizing: 'border-box' }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Submit Button */}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                      <button
+                        type="button"
+                        disabled={inlineSaving}
+                        onClick={handleSaveInlineProduct}
+                        style={{
+                          background: '#15803d',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          padding: '6px 14px',
+                          fontSize: '11px',
+                          fontWeight: '700',
+                          cursor: inlineSaving ? 'not-allowed' : 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          boxShadow: '0 2px 4px rgba(21, 128, 61, 0.25)'
+                        }}
+                      >
+                        <Plus size={13} />
+                        <span>{inlineSaving ? 'Adding...' : 'Add Product & Select'}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', maxHeight: '140px', overflowY: 'auto', padding: '10px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                  {filteredCatalogParts.map(part => {
                     const isSelected = selectedParts.some(p => p.id === part.id);
                     const mrp = parseFloat(part.mrp || part.price || 0);
                     return (
@@ -2005,8 +2651,8 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                       </button>
                     );
                   })}
-                  {catalogParts.length === 0 && (
-                    <div style={{ fontSize: '11px', color: '#64748b' }}>No spare parts in catalog.</div>
+                  {filteredCatalogParts.length === 0 && !inlineAddOpen && !partSearchQuery.trim() && (
+                    <div style={{ fontSize: '11px', color: '#64748b', padding: '4px' }}>No spare parts in catalog.</div>
                   )}
                 </div>
               </div>
@@ -4163,6 +4809,403 @@ Helpline: +91 78705 7249`);
 
             </form>
 
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* DIRECT ADD PRODUCT / SPARE PART MODAL */}
+      {/* ============================================================ */}
+      {addProductModalOpen && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(15, 23, 42, 0.65)',
+          backdropFilter: 'blur(3px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 130,
+          padding: '16px'
+        }}>
+          <div style={{
+            background: 'white',
+            width: '100%',
+            maxWidth: '520px',
+            maxHeight: '90vh',
+            borderRadius: '16px',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+            overflowY: 'auto',
+            border: '1px solid #e2e8f0',
+            display: 'flex',
+            flexDirection: 'column'
+          }}>
+            {/* Modal Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid #e2e8f0',
+              background: '#f8fafc',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ width: '34px', height: '34px', borderRadius: '8px', background: '#e0f2fe', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Package size={18} color="#0284c7" />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '800', color: '#0f172a' }}>
+                    Add Product / Spare Part
+                  </h3>
+                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '1px' }}>
+                    Directly add a component to LocalToto parts catalog & inventory
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAddProductModalOpen(false)}
+                style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b', cursor: 'pointer' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Mode Tabs: Catalog Item vs One-Off Item */}
+            <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', background: '#ffffff', padding: '0 20px' }}>
+              <button
+                type="button"
+                onClick={() => setProductModalTab('catalog')}
+                style={{
+                  padding: '10px 14px',
+                  border: 'none',
+                  borderBottom: productModalTab === 'catalog' ? '2.5px solid #0284c7' : '2.5px solid transparent',
+                  background: 'none',
+                  fontSize: '12px',
+                  fontWeight: productModalTab === 'catalog' ? '700' : '500',
+                  color: productModalTab === 'catalog' ? '#0284c7' : '#64748b',
+                  cursor: 'pointer'
+                }}
+              >
+                📦 Save to Catalog & Inventory
+              </button>
+              <button
+                type="button"
+                onClick={() => setProductModalTab('adhoc')}
+                style={{
+                  padding: '10px 14px',
+                  border: 'none',
+                  borderBottom: productModalTab === 'adhoc' ? '2.5px solid #0284c7' : '2.5px solid transparent',
+                  background: 'none',
+                  fontSize: '12px',
+                  fontWeight: productModalTab === 'adhoc' ? '700' : '500',
+                  color: productModalTab === 'adhoc' ? '#0284c7' : '#64748b',
+                  cursor: 'pointer'
+                }}
+              >
+                ⚡ Quick Ad-Hoc Item (This Bill Only)
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form onSubmit={productModalTab === 'catalog' ? handleSaveProductDirectly : handleAddAdhocProductToBill} style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              
+              {/* Product Name */}
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '5px' }}>
+                  Product / Spare Part Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Front Disc Brake Pad, 90/100-10 Tyre Tube, LED Headlight"
+                  value={productForm.name}
+                  onChange={(e) => setProductForm(prev => ({ ...prev, name: e.target.value }))}
+                  style={{
+                    width: '100%',
+                    padding: '9px 12px',
+                    borderRadius: '8px',
+                    border: '1.5px solid #cbd5e1',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              {productModalTab === 'catalog' && (
+                <>
+                  {/* Category & SKU */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '5px' }}>
+                        Category
+                      </label>
+                      <select
+                        value={productForm.category}
+                        onChange={(e) => setProductForm(prev => ({ ...prev, category: e.target.value }))}
+                        style={{
+                          width: '100%',
+                          padding: '9px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12px',
+                          background: '#f8fafc',
+                          boxSizing: 'border-box'
+                        }}
+                      >
+                        <option value="Brakes & Cables">Brakes & Cables</option>
+                        <option value="Tyres & Wheels">Tyres & Wheels</option>
+                        <option value="Electrical & Lights">Electrical & Lights</option>
+                        <option value="Battery & Charger">Battery & Charger</option>
+                        <option value="Body & Fiber Guards">Body & Fiber Guards</option>
+                        <option value="Motor & Suspension">Motor & Suspension</option>
+                        <option value="General & Consumables">General & Consumables</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '5px' }}>
+                        Part / SKU Code
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. PRT-5012"
+                        value={productForm.part_number}
+                        onChange={(e) => setProductForm(prev => ({ ...prev, part_number: e.target.value }))}
+                        style={{
+                          width: '100%',
+                          padding: '9px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12px',
+                          boxSizing: 'border-box'
+                        }}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Pricing & Stock */}
+              <div style={{ display: 'grid', gridTemplateColumns: productModalTab === 'catalog' ? '1fr 1fr 1fr' : '1fr 1fr', gap: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '5px' }}>
+                    Selling Price / MRP (₹) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="0"
+                    step="1"
+                    placeholder="e.g. 350"
+                    value={productForm.mrp}
+                    onChange={(e) => setProductForm(prev => ({ ...prev, mrp: e.target.value, price: e.target.value }))}
+                    style={{
+                      width: '100%',
+                      padding: '9px 12px',
+                      borderRadius: '8px',
+                      border: '1.5px solid #0284c7',
+                      fontSize: '13px',
+                      fontWeight: '700',
+                      color: '#0369a1',
+                      boxSizing: 'border-box'
+                    }}
+                  />
+                </div>
+
+                {productModalTab === 'catalog' && (
+                  <div>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '5px' }}>
+                      Purchase Cost (₹)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="Optional"
+                      value={productForm.price}
+                      onChange={(e) => setProductForm(prev => ({ ...prev, price: e.target.value }))}
+                      style={{
+                        width: '100%',
+                        padding: '9px 12px',
+                        borderRadius: '8px',
+                        border: '1px solid #cbd5e1',
+                        fontSize: '13px',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+                )}
+
+                {productModalTab === 'catalog' && (
+                  <div>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '5px' }}>
+                      Initial Stock Qty
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="50"
+                      value={productForm.stock_quantity}
+                      onChange={(e) => setProductForm(prev => ({ ...prev, stock_quantity: e.target.value }))}
+                      style={{
+                        width: '100%',
+                        padding: '9px 12px',
+                        borderRadius: '8px',
+                        border: '1px solid #cbd5e1',
+                        fontSize: '13px',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Product Image (Upload or URL) */}
+              {productModalTab === 'catalog' && (
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '5px' }}>
+                    Product Photo (Optional)
+                  </label>
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                    {productForm.image_url ? (
+                      <div style={{ position: 'relative', width: '48px', height: '48px', borderRadius: '8px', overflow: 'hidden', border: '1.5px solid #0284c7', flexShrink: 0 }}>
+                        <img
+                          src={productForm.image_url.startsWith('http') || productForm.image_url.startsWith('/') ? productForm.image_url : `/${productForm.image_url}`}
+                          alt="Product"
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setProductForm(prev => ({ ...prev, image_url: '' }))}
+                          style={{ position: 'absolute', top: 2, right: 2, background: 'rgba(0,0,0,0.6)', border: 'none', color: 'white', borderRadius: '50%', width: '16px', height: '16px', fontSize: '10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ width: '48px', height: '48px', borderRadius: '8px', background: '#f1f5f9', border: '1px dashed #cbd5e1', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <ImageIcon size={20} color="#94a3b8" />
+                      </div>
+                    )}
+
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <label style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        background: '#f8fafc',
+                        border: '1px solid #cbd5e1',
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontWeight: '600',
+                        color: '#475569',
+                        cursor: uploadingProductImage ? 'not-allowed' : 'pointer',
+                        width: 'fit-content'
+                      }}>
+                        <Upload size={12} />
+                        <span>{uploadingProductImage ? 'Uploading image...' : 'Upload Image File'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          style={{ display: 'none' }}
+                          onChange={handleProductImageUpload}
+                          disabled={uploadingProductImage}
+                        />
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Or paste image URL (e.g. https://...)..."
+                        value={productForm.image_url}
+                        onChange={(e) => setProductForm(prev => ({ ...prev, image_url: e.target.value }))}
+                        style={{ width: '100%', padding: '5px 8px', borderRadius: '6px', border: '1px solid #e2e8f0', fontSize: '11px', boxSizing: 'border-box' }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Description / Notes */}
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '5px' }}>
+                  Description / Specifications (Optional)
+                </label>
+                <textarea
+                  rows="2"
+                  placeholder="e.g. Compatible with LocalToto EV 2.0 and Gen1 scooters."
+                  value={productForm.description}
+                  onChange={(e) => setProductForm(prev => ({ ...prev, description: e.target.value }))}
+                  style={{
+                    width: '100%',
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    border: '1px solid #cbd5e1',
+                    fontSize: '12px',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              {/* Checkbox: Also add to active service bill */}
+              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <input
+                  type="checkbox"
+                  id="also_add_to_bill"
+                  checked={productForm.also_add_to_bill}
+                  onChange={(e) => setProductForm(prev => ({ ...prev, also_add_to_bill: e.target.checked }))}
+                  style={{ width: '16px', height: '16px', accentColor: '#16a34a', cursor: 'pointer' }}
+                />
+                <label htmlFor="also_add_to_bill" style={{ fontSize: '12px', fontWeight: '700', color: '#166534', cursor: 'pointer', margin: 0 }}>
+                  Add this product to the current service bill right now
+                  <div style={{ fontSize: '11px', fontWeight: '400', color: '#15803d' }}>
+                    The bill cost will automatically recalculate with this product's price (₹{parseFloat(productForm.mrp || 0)}).
+                  </div>
+                </label>
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => setAddProductModalOpen(false)}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    border: '1px solid #cbd5e1',
+                    background: 'white',
+                    color: '#64748b',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingProduct}
+                  style={{
+                    padding: '8px 20px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    background: '#0284c7',
+                    color: 'white',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    cursor: savingProduct ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 2px 6px rgba(2, 132, 199, 0.3)'
+                  }}
+                >
+                  <Plus size={14} />
+                  <span>{savingProduct ? 'Saving Product...' : (productModalTab === 'catalog' ? 'Save & Add Product' : 'Add to Bill')}</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

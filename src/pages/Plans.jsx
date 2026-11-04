@@ -1,8 +1,25 @@
-import { useState, useEffect, useRef } from 'react';
-import { Plus, X, Tag, QrCode, Upload, Trash2, Check, RefreshCw, AlertCircle, Save } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  Plus, X, Tag, QrCode, Upload, Trash2, Check, RefreshCw, AlertCircle, Save,
+  BatteryCharging, Zap, Settings, Search, Sliders, Edit2, Bike, User, Phone,
+  ShieldCheck, AlertTriangle
+} from 'lucide-react';
 import axios from 'axios';
+import {
+  getSwapSettings,
+  saveSwapSettings,
+  getAllVehicleSwaps,
+  updateVehicleSwaps,
+  calculateSwapMetrics,
+  getCurrentMonthKey,
+  getMonthDisplayName,
+  DEFAULT_SWAP_SETTINGS
+} from '../utils/batterySwapService';
 
 export default function Plans() {
+  // Navigation / Tabs state: 'all' | 'swap' | 'payment' | 'plans'
+  const [activeTab, setActiveTab] = useState('all');
+
   // Subscription Plans state
   const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -25,6 +42,25 @@ export default function Plans() {
   const [paymentSaveMsg, setPaymentSaveMsg] = useState(null);
   const fileInputRef = useRef(null);
 
+  // Battery Swap Settings & Manual Tracking state
+  const [swapSettings, setSwapSettings] = useState(getSwapSettings());
+  const [savingSwapSettings, setSavingSwapSettings] = useState(false);
+  const [swapSaveMsg, setSwapSaveMsg] = useState(null);
+  const [vehicles, setVehicles] = useState([]);
+  const [loadingVehicles, setLoadingVehicles] = useState(false);
+  const [monthKey, setMonthKey] = useState(getCurrentMonthKey());
+  const [vehicleSwaps, setVehicleSwaps] = useState({});
+  const [swapSearchQuery, setSwapSearchQuery] = useState('');
+  const [quickUpdateModal, setQuickUpdateModal] = useState({
+    open: false,
+    vehicleId: '',
+    vehicleCode: '',
+    count: 0,
+    riderName: '',
+    riderPhone: '',
+    note: ''
+  });
+
   const fetchPlans = async () => {
     try {
       const response = await axios.get('/api/plans', {
@@ -36,6 +72,24 @@ export default function Plans() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchVehicles = async () => {
+    try {
+      setLoadingVehicles(true);
+      const res = await axios.get('/api/vehicles', {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+      });
+      if (res.data) setVehicles(res.data);
+    } catch (err) {
+      console.error('Error fetching vehicles for swap tracker:', err);
+    } finally {
+      setLoadingVehicles(false);
+    }
+  };
+
+  const reloadSwaps = () => {
+    setVehicleSwaps(getAllVehicleSwaps(monthKey));
   };
 
   const fetchPaymentSettings = async () => {
@@ -61,7 +115,74 @@ export default function Plans() {
   useEffect(() => {
     fetchPlans();
     fetchPaymentSettings();
-  }, []);
+    fetchVehicles();
+    reloadSwaps();
+
+    const handleSwapUpdate = () => reloadSwaps();
+    const handleSettingsUpdate = (e) => {
+      if (e.detail) setSwapSettings(e.detail);
+    };
+
+    window.addEventListener('lt_battery_swaps_updated', handleSwapUpdate);
+    window.addEventListener('lt_battery_swap_settings_changed', handleSettingsUpdate);
+
+    return () => {
+      window.removeEventListener('lt_battery_swaps_updated', handleSwapUpdate);
+      window.removeEventListener('lt_battery_swap_settings_changed', handleSettingsUpdate);
+    };
+  }, [monthKey]);
+
+  const handleSaveSwapSettings = (e) => {
+    if (e) e.preventDefault();
+    setSavingSwapSettings(true);
+    setSwapSaveMsg(null);
+
+    const saved = saveSwapSettings(swapSettings);
+    if (saved) {
+      setSwapSaveMsg({
+        type: 'success',
+        text: `Battery swap settings saved! Monthly quota set to ${saved.monthly_free_swaps} free swaps (Max limit: ${saved.monthly_max_swaps} swaps).`
+      });
+      setTimeout(() => setSwapSaveMsg(null), 5000);
+    } else {
+      setSwapSaveMsg({
+        type: 'error',
+        text: 'Failed to save battery swap settings.'
+      });
+    }
+    setSavingSwapSettings(false);
+  };
+
+  const handleOpenQuickSwapUpdate = (veh) => {
+    const vId = veh.id;
+    const vCode = veh.model || veh.id;
+    const existing = vehicleSwaps[vId] || {};
+    setQuickUpdateModal({
+      open: true,
+      vehicleId: vId,
+      vehicleCode: vCode,
+      count: existing.count ?? 0,
+      riderName: existing.rider_name || veh.renter || '',
+      riderPhone: existing.rider_phone || veh.renter_phone || '',
+      note: ''
+    });
+  };
+
+  const handleSaveQuickSwapUpdate = (e) => {
+    e.preventDefault();
+    if (!quickUpdateModal.vehicleId) return;
+
+    updateVehicleSwaps(quickUpdateModal.vehicleId, quickUpdateModal.count, {
+      vehicleCode: quickUpdateModal.vehicleCode,
+      riderName: quickUpdateModal.riderName,
+      riderPhone: quickUpdateModal.riderPhone,
+      note: quickUpdateModal.note || 'Manual swap count update from Settings',
+      action: 'admin_manual_update'
+    });
+
+    setQuickUpdateModal({ open: false, vehicleId: '', vehicleCode: '', count: 0, riderName: '', riderPhone: '', note: '' });
+    reloadSwaps();
+  };
 
   const handleSavePaymentSettings = async (e) => {
     if (e) e.preventDefault();

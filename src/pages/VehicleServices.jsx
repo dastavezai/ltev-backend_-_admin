@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { 
   Wrench, Bike, User, DollarSign, Calendar, Clock, Plus, Search, 
   Filter, CheckCircle2, AlertTriangle, Share2, Printer, Edit3, 
@@ -86,6 +86,21 @@ export default function VehicleServices() {
 
   const [modalRiderSearch, setModalRiderSearch] = useState('');
   const [systemUpiId, setSystemUpiId] = useState('9113750231@oksbi');
+
+  // Inline Quick Add Product State (No modal needed)
+  const [partFilterQuery, setPartFilterQuery] = useState('');
+  const [inlineAddPartOpen, setInlineAddPartOpen] = useState(false);
+  const [inlinePartData, setInlinePartData] = useState({
+    name: '',
+    category: 'General & Consumables',
+    price: '',
+    stock: '50',
+    showMore: false,
+    description: '',
+    image_url: ''
+  });
+  const [inlineSavingPart, setInlineSavingPart] = useState(false);
+  const [inlinePartSuccessMsg, setInlinePartSuccessMsg] = useState('');
 
   const fetchData = async () => {
     if (!token) return;
@@ -276,6 +291,83 @@ export default function VehicleServices() {
       } finally {
         setLoadingRiderVehicles(false);
       }
+    }
+  };
+
+  // Filtered parts for quick selection
+  const filteredCatalogParts = useMemo(() => {
+    if (!partFilterQuery || !partFilterQuery.trim()) return catalogParts;
+    const q = partFilterQuery.toLowerCase().trim();
+    return catalogParts.filter(p => 
+      (p.name || '').toLowerCase().includes(q) ||
+      (p.category || '').toLowerCase().includes(q) ||
+      (p.part_number || '').toLowerCase().includes(q)
+    );
+  }, [catalogParts, partFilterQuery]);
+
+  // Save Product Directly from Inline Form (No Modal / Card Needed!)
+  const handleSaveInlinePart = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const finalName = (inlinePartData.name || partFilterQuery || '').trim();
+    if (!finalName) {
+      alert('Please enter a product / spare part name.');
+      return;
+    }
+    const price = parseFloat(inlinePartData.price) || 0;
+    if (price <= 0) {
+      alert('Please enter a valid price (₹) for this product.');
+      return;
+    }
+
+    setInlineSavingPart(true);
+    try {
+      const res = await axios.post(
+        `${import.meta.env.VITE_API_URL || ''}/api/catalog/parts`,
+        {
+          name: finalName,
+          part_number: `PRT-${Math.floor(1000 + Math.random() * 9000)}`,
+          mrp: price,
+          price: price,
+          stock_quantity: parseInt(inlinePartData.stock, 10) || 50,
+          category: inlinePartData.category || 'General & Consumables',
+          description: (inlinePartData.description || '').trim(),
+          image_url: inlinePartData.image_url || '',
+          status: 'active'
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const newPart = res.data;
+      setCatalogParts(prev => [newPart, ...prev]);
+
+      // Automatically attach to this service
+      const partTag = `${newPart.name} (₹${price})`;
+      const currentParts = formData.parts_replaced ? formData.parts_replaced.split(', ').filter(Boolean) : [];
+      currentParts.push(partTag);
+      const updatedParts = currentParts.join(', ');
+      const newCost = (parseFloat(formData.cost) || 0) + price;
+      setFormData(prev => ({
+        ...prev,
+        parts_replaced: updatedParts,
+        cost: String(newCost)
+      }));
+
+      setPartFilterQuery('');
+      setInlineAddPartOpen(false);
+      setInlinePartData({
+        name: '',
+        category: 'General & Consumables',
+        price: '',
+        stock: '50',
+        showMore: false,
+        description: '',
+        image_url: ''
+      });
+      setInlinePartSuccessMsg(`✓ Product "${newPart.name}" added to inventory and selected!`);
+      setTimeout(() => setInlinePartSuccessMsg(''), 5000);
+    } catch (err) {
+      alert('Error creating product: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setInlineSavingPart(false);
     }
   };
 
@@ -1252,13 +1344,250 @@ _Support: +91 78705 72429 | https://ltev.in_`;
                   <label style={{ fontSize: '13px', fontWeight: '700', color: '#334155' }}>
                     Parts / Components Replaced
                   </label>
-                  <span style={{ fontSize: '11px', color: '#64748b' }}>Select from catalog below to add</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInlineAddPartOpen(!inlineAddPartOpen);
+                      if (!inlineAddPartOpen) {
+                        setInlinePartData(prev => ({ ...prev, name: partFilterQuery.trim() }));
+                      }
+                    }}
+                    style={{
+                      background: inlineAddPartOpen ? '#dcfce7' : '#ecfdf5',
+                      border: '1px solid #10b981',
+                      color: '#047857',
+                      borderRadius: '6px',
+                      padding: '2px 8px',
+                      fontSize: '11px',
+                      fontWeight: '700',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                    title="Directly add a new product / part to catalog and this service"
+                  >
+                    <Plus size={11} />
+                    <span>{inlineAddPartOpen ? 'Close Quick Add' : '+ Add Product'}</span>
+                  </button>
                 </div>
 
+                {/* Inline Success Notice */}
+                {inlinePartSuccessMsg && (
+                  <div style={{
+                    background: '#f0fdf4',
+                    border: '1px solid #86efac',
+                    borderRadius: '6px',
+                    padding: '6px 10px',
+                    marginBottom: '8px',
+                    fontSize: '11px',
+                    color: '#15803d',
+                    fontWeight: '700',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}>
+                    <span>{inlinePartSuccessMsg}</span>
+                    <button
+                      type="button"
+                      onClick={() => setInlinePartSuccessMsg('')}
+                      style={{ background: 'none', border: 'none', color: '#15803d', cursor: 'pointer', fontSize: '12px', padding: 0 }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
+                {/* Search / Filter for parts */}
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                  <div style={{ position: 'relative', flex: 1 }}>
+                    <Search size={12} color="#94a3b8" style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)' }} />
+                    <input
+                      type="text"
+                      placeholder="Type part name to search or auto-add..."
+                      value={partFilterQuery}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPartFilterQuery(val);
+                        setInlinePartData(prev => ({ ...prev, name: val }));
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '6px 8px 6px 26px',
+                        borderRadius: '6px',
+                        border: '1px solid #cbd5e1',
+                        fontSize: '11px',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+                  {partFilterQuery.trim() && !inlineAddPartOpen && filteredCatalogParts.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInlinePartData(prev => ({ ...prev, name: partFilterQuery.trim() }));
+                        setInlineAddPartOpen(true);
+                      }}
+                      style={{
+                        background: '#f0f9ff',
+                        border: '1px solid #bae6fd',
+                        color: '#0369a1',
+                        borderRadius: '6px',
+                        padding: '4px 8px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '3px'
+                      }}
+                    >
+                      <Plus size={11} />
+                      <span>Add as New</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* AUTO-SHOW INLINE PRODUCT CREATION BOX */}
+                {(inlineAddPartOpen || (partFilterQuery.trim().length > 0 && filteredCatalogParts.length === 0)) && (
+                  <div style={{
+                    background: '#f0fdf4',
+                    border: '1.5px solid #86efac',
+                    borderRadius: '8px',
+                    padding: '10px 12px',
+                    marginBottom: '10px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '11px', fontWeight: '800', color: '#166534' }}>
+                        {filteredCatalogParts.length === 0 && partFilterQuery.trim()
+                          ? `Part not in catalog. Add "${partFilterQuery.trim()}" directly below:`
+                          : 'Quick Add Product to Catalog & Service:'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInlineAddPartOpen(false);
+                          setPartFilterQuery('');
+                        }}
+                        style={{ background: 'none', border: 'none', color: '#166534', cursor: 'pointer', fontSize: '11px', fontWeight: '600' }}
+                      >
+                        ✕ Close
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '6px', marginBottom: '6px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#166534', marginBottom: '2px' }}>Name *</label>
+                        <input
+                          type="text"
+                          placeholder="Part Name"
+                          value={inlinePartData.name || partFilterQuery}
+                          onChange={(e) => {
+                            setInlinePartData(prev => ({ ...prev, name: e.target.value }));
+                            setPartFilterQuery(e.target.value);
+                          }}
+                          style={{ width: '100%', padding: '5px 7px', borderRadius: '5px', border: '1px solid #86efac', fontSize: '11px', background: 'white', boxSizing: 'border-box' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#166534', marginBottom: '2px' }}>Category</label>
+                        <select
+                          value={inlinePartData.category}
+                          onChange={(e) => setInlinePartData(prev => ({ ...prev, category: e.target.value }))}
+                          style={{ width: '100%', padding: '5px 7px', borderRadius: '5px', border: '1px solid #86efac', fontSize: '11px', background: 'white', boxSizing: 'border-box' }}
+                        >
+                          <option value="Brakes & Cables">Brakes & Cables</option>
+                          <option value="Tyres & Wheels">Tyres & Wheels</option>
+                          <option value="Electrical & Lights">Electrical & Lights</option>
+                          <option value="Battery & Charger">Battery & Charger</option>
+                          <option value="Body & Fiber Guards">Body & Fiber Guards</option>
+                          <option value="Motor & Suspension">Motor & Suspension</option>
+                          <option value="General & Consumables">General & Consumables</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#166534', marginBottom: '2px' }}>Price (₹) *</label>
+                        <input
+                          type="number"
+                          placeholder="e.g. 250"
+                          value={inlinePartData.price}
+                          onChange={(e) => setInlinePartData(prev => ({ ...prev, price: e.target.value }))}
+                          style={{ width: '100%', padding: '5px 7px', borderRadius: '5px', border: '1.5px solid #16a34a', fontSize: '11px', fontWeight: '700', color: '#15803d', background: 'white', boxSizing: 'border-box' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#166534', marginBottom: '2px' }}>Qty</label>
+                        <input
+                          type="number"
+                          placeholder="50"
+                          value={inlinePartData.stock}
+                          onChange={(e) => setInlinePartData(prev => ({ ...prev, stock: e.target.value }))}
+                          style={{ width: '100%', padding: '5px 7px', borderRadius: '5px', border: '1px solid #86efac', fontSize: '11px', background: 'white', boxSizing: 'border-box' }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* More Details Toggle */}
+                    <div style={{ marginBottom: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setInlinePartData(prev => ({ ...prev, showMore: !prev.showMore }))}
+                        style={{ background: 'none', border: 'none', color: '#047857', fontSize: '10px', fontWeight: '700', cursor: 'pointer', padding: 0 }}
+                      >
+                        {inlinePartData.showMore ? '▲ Hide Optional Details' : '▼ More Optional Details (Description & Image)'}
+                      </button>
+
+                      {inlinePartData.showMore && (
+                        <div style={{ marginTop: '4px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                          <input
+                            type="text"
+                            placeholder="Image URL (optional)"
+                            value={inlinePartData.image_url}
+                            onChange={(e) => setInlinePartData(prev => ({ ...prev, image_url: e.target.value }))}
+                            style={{ padding: '4px 6px', borderRadius: '4px', border: '1px solid #cbd5e1', fontSize: '10px', boxSizing: 'border-box' }}
+                          />
+                          <input
+                            type="text"
+                            placeholder="Description / Notes (optional)"
+                            value={inlinePartData.description}
+                            onChange={(e) => setInlinePartData(prev => ({ ...prev, description: e.target.value }))}
+                            style={{ padding: '4px 6px', borderRadius: '4px', border: '1px solid #cbd5e1', fontSize: '10px', boxSizing: 'border-box' }}
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
+                      <button
+                        type="button"
+                        disabled={inlineSavingPart}
+                        onClick={handleSaveInlinePart}
+                        style={{
+                          background: '#15803d',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          padding: '5px 12px',
+                          fontSize: '11px',
+                          fontWeight: '700',
+                          cursor: inlineSavingPart ? 'not-allowed' : 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        <Plus size={12} />
+                        <span>{inlineSavingPart ? 'Adding...' : 'Add Product & Select'}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* Quick Catalog Chips */}
-                {catalogParts.length > 0 && (
+                {filteredCatalogParts.length > 0 && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '10px', maxHeight: '120px', overflowY: 'auto', padding: '8px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                    {catalogParts.map(p => {
+                    {filteredCatalogParts.map(p => {
                       const mrp = parseFloat(p.mrp || p.price) || 0;
                       return (
                         <button
@@ -1317,6 +1646,9 @@ _Support: +91 78705 72429 | https://ltev.in_`;
                       );
                     })}
                   </div>
+                )}
+                {filteredCatalogParts.length === 0 && !inlineAddPartOpen && !partFilterQuery.trim() && (
+                  <div style={{ fontSize: '11px', color: '#64748b', padding: '4px' }}>No spare parts in catalog.</div>
                 )}
 
                 <input

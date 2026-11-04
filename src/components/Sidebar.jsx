@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, ShieldCheck, Wallet, LogOut, Bike, FileText, Map, Tag, ClipboardList, ShieldAlert, Bell, Megaphone, Wrench, CalendarCheck, Briefcase, Package, QrCode, CalendarDays, Boxes, AlertTriangle } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldCheck, Wallet, LogOut, Bike, FileText, Map, Tag, ClipboardList, ShieldAlert, Bell, Megaphone, Wrench, CalendarCheck, Briefcase, Package, QrCode, CalendarDays, Boxes, AlertTriangle, Settings } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Sidebar() {
@@ -22,7 +22,7 @@ export default function Sidebar() {
     { name: 'Wallet Approvals', path: '/wallet-approvals', icon: <Wallet size={20} /> },
     { name: 'Security Deposits', path: '/security-deposits', icon: <ShieldAlert size={20} /> },
     { name: 'Transactions', path: '/transactions', icon: <Wallet size={20} /> },
-    { name: 'Payment Settings', path: '/plans', icon: <QrCode size={20} /> },
+    { name: 'Settings', path: '/plans', icon: <Settings size={20} /> },
   ];
 
   return (
