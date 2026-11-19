@@ -10,6 +10,12 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { handleOpenInvoiceWindow, getShortBookingId } from '../utils/invoice';
+import { 
+  recordAssignmentSwaps, 
+  getVehicleSwapCount, 
+  getSwapSettings, 
+  getMonthDisplayName 
+} from '../utils/batterySwapService';
 
 const SERVICE_PRESETS = [
   'General Periodic Service & Tuning',
@@ -163,7 +169,8 @@ export default function ManagementDashboard() {
   const [assignSlotForm, setAssignSlotForm] = useState({
     vehicle_id: '',
     remarks: '',
-    assignment_date: getLocalDatetimeString()
+    assignment_date: getLocalDatetimeString(),
+    initial_swaps: 0
   });
   const [assignSlotPaymentRows, setAssignSlotPaymentRows] = useState([
     { mode: 'cash', amount: '3600', remarks: '' }
@@ -537,6 +544,42 @@ export default function ManagementDashboard() {
       (p.part_number || '').toLowerCase().includes(q)
     );
   }, [catalogParts, partSearchQuery]);
+
+  // Live Price Estimate Totals for Service Billing (Used for sticky mobile summary & cards)
+  const liveEstimateTotals = useMemo(() => {
+    const selectedSvcTotal = selectedServicesList.reduce((sum, s) => {
+      const isW = waiveServiceCharge || Boolean(s.waived);
+      return sum + (isW ? 0 : (parseFloat(s.price) || 0));
+    }, 0);
+
+    let singleSvcTotal = 0;
+    if (selectedServicesList.length === 0 && serviceForm.service_type) {
+      const sObj = catalogServices.find(s => s.name === serviceForm.service_type);
+      const orig = sObj ? parseFloat(sObj.price || 0) : 350;
+      singleSvcTotal = waiveServiceCharge ? 0 : orig;
+    }
+
+    const laborTotal = selectedServicesList.length > 0 ? selectedSvcTotal : singleSvcTotal;
+    const partsTotal = selectedParts.reduce((sum, p) => sum + (parseFloat(p.mrp || p.price || 0)), 0);
+    const total = laborTotal + partsTotal;
+
+    return {
+      laborTotal,
+      partsTotal,
+      total,
+      itemCount: (selectedServicesList.length || (serviceForm.service_type ? 1 : 0)) + selectedParts.length
+    };
+  }, [selectedServicesList, serviceForm.service_type, waiveServiceCharge, catalogServices, selectedParts]);
+
+  // Filtered maintenance logs for both desktop table and mobile touch cards
+  const filteredMaintenanceLogs = useMemo(() => {
+    return maintenanceLogs.filter(log => {
+      if (serviceRecordsFilter === 'reported') return log.status === 'reported';
+      if (serviceRecordsFilter === 'in_progress') return log.status === 'in_progress';
+      if (serviceRecordsFilter === 'completed') return log.status === 'completed';
+      return true;
+    });
+  }, [maintenanceLogs, serviceRecordsFilter]);
 
   // Open Direct Add Product Modal
   const handleOpenAddProductModal = (prefillName = '', mode = 'catalog') => {
@@ -1268,10 +1311,12 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
     const paid = parseFloat(booking.total_cost || booking.collected_amount || 0);
     const due = Math.max(0, 5100 - paid);
 
+    const defaultVehId = availableVehicles[0]?.id || '';
     setAssignSlotForm({
-      vehicle_id: availableVehicles[0]?.id || '',
+      vehicle_id: defaultVehId,
       remarks: 'Handover balance collected',
-      assignment_date: getLocalDatetimeString()
+      assignment_date: getLocalDatetimeString(),
+      initial_swaps: defaultVehId ? getVehicleSwapCount(defaultVehId) : 0
     });
     setAssignSlotPaymentRows([
       { mode: 'cash', amount: String(due), remarks: '' }
@@ -1355,6 +1400,16 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
         advance_booking_id: selectedBookingForSlot.id,
         handover_id: selectedBookingForSlot.handover_id || (`HND-${(selectedBookingForSlot.id || '').replace(/\D/g, '') || Date.now().toString().slice(-6)}`)
       };
+
+      // Record battery swaps for this vehicle assignment in local monthly swap registry
+      recordAssignmentSwaps({
+        vehicleId: assignSlotForm.vehicle_id,
+        vehicleCode: getVehicleCode(assignSlotForm.vehicle_id),
+        riderName: selectedBookingForSlot.user_name || '',
+        riderPhone: selectedBookingForSlot.user_phone || '',
+        swapsCount: assignSlotForm.initial_swaps !== undefined ? assignSlotForm.initial_swaps : 0,
+        note: `Vehicle assigned to ${selectedBookingForSlot.user_name || 'Rider'} (Booking #${getShortBookingId(selectedBookingForSlot.id)})`
+      });
 
       setAssignSlotModalOpen(false);
       fetchOperationsData();
@@ -1709,7 +1764,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
           </button>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div className="mgmt-tabs-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {/* Direct Add Product Button */}
           <button
             onClick={() => handleOpenAddProductModal('', 'catalog')}
@@ -1759,10 +1814,10 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
           <div className="mgmt-service-grid">
 
           {/* LEFT: Service & Billing Entry Form */}
-          <div style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '10px', padding: '24px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
+          <div className="mgmt-service-card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
               <div>
-                <h3 style={{ fontSize: '16px', fontWeight: '700', color: '#0f172a', margin: '0 0 4px 0' }}>
+                <h3 style={{ fontSize: '16px', fontWeight: '800', color: '#0f172a', margin: '0 0 4px 0' }}>
                   Service Billing & Time Estimation
                 </h3>
                 <p style={{ fontSize: '13px', color: '#64748b', margin: 0 }}>
@@ -1778,11 +1833,12 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                     setServiceForm(prev => ({ ...prev, vehicle_id: '', billed_to: 'company' }));
                   }}
                   style={{
-                    background: 'none',
+                    background: '#f1f5f9',
                     border: '1px solid #cbd5e1',
-                    borderRadius: '4px',
-                    padding: '3px 8px',
+                    borderRadius: '6px',
+                    padding: '4px 9px',
                     fontSize: '11px',
+                    fontWeight: '700',
                     color: '#64748b',
                     cursor: 'pointer'
                   }}
@@ -1795,16 +1851,16 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
             {/* Selected Vehicle & Driver Summary Banner */}
             {selectedServiceVehicle ? (
               <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '8px', padding: '12px 14px', marginBottom: '16px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <div className="mgmt-tabs-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <span style={{ fontSize: '16px', fontWeight: '800', color: '#0369a1' }}>{getVehicleCode(selectedServiceVehicle)}</span>
-                    <span style={{ fontSize: '11px', background: '#e0f2fe', color: '#0284c7', padding: '1px 8px', borderRadius: '4px', fontWeight: '600' }}>
+                    <span style={{ fontSize: '11px', background: '#e0f2fe', color: '#0284c7', padding: '2px 8px', borderRadius: '4px', fontWeight: '700' }}>
                       EV Scooter
                     </span>
                   </div>
                   <span style={{
                     fontSize: '11px',
-                    fontWeight: '600',
+                    fontWeight: '700',
                     padding: '2px 8px',
                     borderRadius: '4px',
                     background: selectedServiceVehicle.status === 'maintenance' ? '#fef3c7' : '#dcfce7',
@@ -1813,7 +1869,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                     {selectedServiceVehicle.status === 'maintenance' ? 'In Service' : 'On Road'}
                   </span>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '12px', color: '#334155', background: 'white', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e0f2fe' }}>
+                <div className="mgmt-vehicle-summary-grid">
                   <div>Driver / Rider: <strong style={{ color: '#0f172a' }}>{selectedServiceVehicle.renter || 'Fleet (Unassigned)'}</strong></div>
                   <div>Driver Mobile: <strong style={{ color: '#0f172a' }}>{selectedServiceVehicle.renter_phone || 'N/A'}</strong></div>
                   <div>Station Location: <strong>{selectedServiceVehicle.location || 'Rukanpura Stand'}</strong></div>
@@ -1887,7 +1943,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                   </div>
                 ) : (
                   <div style={{ position: 'relative' }}>
-                    <Search size={14} color="#94a3b8" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
+                    <Search size={15} color="#94a3b8" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
                     <input
                       type="text"
                       placeholder="Type vehicle number (e.g. LT001, LT005, Ajeet, 9128)..."
@@ -1900,15 +1956,30 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                       }}
                       style={{
                         width: '100%',
-                        padding: '8px 10px 8px 30px',
+                        padding: '9px 34px 9px 32px',
                         borderRadius: '6px',
                         border: '1px solid #cbd5e1',
-                        fontSize: '13px',
+                        fontSize: '14px',
                         fontWeight: '600',
-                        boxSizing: 'border-box'
+                        boxSizing: 'border-box',
+                        minHeight: '42px'
                       }}
                       required
                     />
+                    {vehicleSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVehicleSearchQuery('');
+                          setServiceSearchPlate('');
+                          setVehicleDropdownOpen(false);
+                        }}
+                        style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '4px', fontSize: '13px', fontWeight: '700' }}
+                        title="Clear vehicle input"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -2030,7 +2101,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                 </div>
 
                 <div style={{ position: 'relative' }}>
-                  <User size={14} color="#94a3b8" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
+                  <User size={15} color="#94a3b8" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
                   <input
                     type="text"
                     placeholder="Search rider by name, phone or email (e.g. Roushan, 74849...)"
@@ -2042,15 +2113,29 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                     }}
                     style={{
                       width: '100%',
-                      padding: '8px 10px 8px 30px',
+                      padding: '9px 34px 9px 32px',
                       borderRadius: '6px',
                       border: selectedServiceRider ? '1.5px solid #0284c7' : '1px solid #cbd5e1',
                       background: selectedServiceRider ? '#f0f9ff' : 'white',
-                      fontSize: '13px',
+                      fontSize: '14px',
                       fontWeight: selectedServiceRider ? '700' : 'normal',
-                      boxSizing: 'border-box'
+                      boxSizing: 'border-box',
+                      minHeight: '42px'
                     }}
                   />
+                  {serviceRiderSearch && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setServiceRiderSearch('');
+                        setServiceRiderDropdownOpen(false);
+                      }}
+                      style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '4px', fontSize: '13px', fontWeight: '700' }}
+                      title="Clear rider search"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
 
                 {serviceRiderDropdownOpen && matchingSearchRiders.length > 0 && (
@@ -2395,7 +2480,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                     </div>
 
                     {/* Inline Fields Row: Name, Category, Price, Qty */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px', marginBottom: '8px' }}>
+                    <div className="mgmt-inline-add-grid">
                       <div>
                         <label style={{ display: 'block', fontSize: '10px', fontWeight: '700', color: '#166534', marginBottom: '3px' }}>
                           Part Name *
@@ -2710,46 +2795,68 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                 </div>
               </div>
 
-              {/* Status Radio: In Progress vs Completed */}
+              {/* Status Selector: Touch-Friendly Segmented Buttons */}
               <div style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
                   Work Status
                 </label>
-                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="serviceStatus"
-                      checked={serviceForm.status === 'in_progress'}
-                      onChange={() => setServiceForm(prev => ({ ...prev, status: 'in_progress', payment_status: 'pending' }))}
-                    />
-                    <span style={{ fontWeight: serviceForm.status === 'in_progress' ? '700' : '500', color: serviceForm.status === 'in_progress' ? '#b45309' : '#334155' }}>
-                      In Progress (Under Maintenance)
-                    </span>
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="serviceStatus"
-                      checked={serviceForm.status === 'completed'}
-                      onChange={() => setServiceForm(prev => ({ ...prev, status: 'completed' }))}
-                    />
-                    <span style={{ fontWeight: serviceForm.status === 'completed' ? '700' : '500', color: serviceForm.status === 'completed' ? '#16a34a' : '#334155' }}>
-                      Completed (Vehicle Ready)
-                    </span>
-                  </label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setServiceForm(prev => ({ ...prev, status: 'in_progress', payment_status: 'pending' }))}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      border: serviceForm.status === 'in_progress' ? '2px solid #d97706' : '1px solid #cbd5e1',
+                      background: serviceForm.status === 'in_progress' ? '#fef3c7' : '#ffffff',
+                      color: serviceForm.status === 'in_progress' ? '#b45309' : '#475569',
+                      cursor: 'pointer',
+                      fontWeight: '700',
+                      fontSize: '12.5px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      transition: 'all 0.15s ease',
+                      minHeight: '42px'
+                    }}
+                  >
+                    <span>🔧 In Progress</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setServiceForm(prev => ({ ...prev, status: 'completed' }))}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      border: serviceForm.status === 'completed' ? '2px solid #16a34a' : '1px solid #cbd5e1',
+                      background: serviceForm.status === 'completed' ? '#dcfce7' : '#ffffff',
+                      color: serviceForm.status === 'completed' ? '#15803d' : '#475569',
+                      cursor: 'pointer',
+                      fontWeight: '700',
+                      fontSize: '12.5px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      transition: 'all 0.15s ease',
+                      minHeight: '42px'
+                    }}
+                  >
+                    <span>✅ Completed</span>
+                  </button>
                 </div>
               </div>
 
               {/* Initial Payment Status Selector */}
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
                   Initial Payment Status
                 </label>
                 <select
                   value={serviceForm.payment_status}
                   onChange={(e) => setServiceForm(prev => ({ ...prev, payment_status: e.target.value }))}
-                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box', fontWeight: '700', color: serviceForm.payment_status === 'paid' ? '#16a34a' : '#ea580c' }}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13.5px', boxSizing: 'border-box', fontWeight: '700', color: serviceForm.payment_status === 'paid' ? '#16a34a' : '#ea580c', minHeight: '42px' }}
                 >
                   <option value="pending">⚠️ Payment Pending / Due (Update Payment Later)</option>
                   <option value="paid">✓ Paid & Settled Now</option>
@@ -2765,23 +2872,26 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                 disabled={submittingService}
                 style={{
                   width: '100%',
-                  padding: '10px',
-                  borderRadius: '6px',
+                  padding: '12px 16px',
+                  borderRadius: '8px',
                   border: 'none',
                   background: '#0284c7',
                   color: 'white',
-                  fontWeight: '600',
-                  fontSize: '13px',
-                  cursor: 'pointer'
+                  fontWeight: '700',
+                  fontSize: '14px',
+                  cursor: submittingService ? 'not-allowed' : 'pointer',
+                  minHeight: '46px',
+                  boxShadow: '0 2px 8px rgba(2, 132, 199, 0.3)',
+                  transition: 'all 0.15s ease'
                 }}
               >
-                {submittingService ? 'Saving...' : 'Save Service Bill & Update Vehicle'}
+                {submittingService ? 'Saving Service Bill...' : 'Save Service Bill & Update Vehicle →'}
               </button>
             </form>
           </div>
 
           {/* RIGHT: Live Pricing Panel */}
-          <div style={{ position: 'sticky', top: '20px' }}>
+          <div id="mgmt-price-estimate-panel" className="mgmt-pricing-panel" style={{ position: 'sticky', top: '20px' }}>
             {/* Summary Card */}
             <div style={{
               background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
@@ -2998,7 +3108,65 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
 
           </div>{/* end two-column grid */}
 
-          {/* Bottom Table: Active / Recent Service Records & Rider Issue Reports */}
+          {/* Mobile Sticky Bottom Summary & Quick Save Bar */}
+          <div className="mgmt-mobile-sticky-bar">
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <div style={{ fontSize: '11px', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span>Live Estimate</span>
+                {liveEstimateTotals.itemCount > 0 && (
+                  <span style={{ background: 'rgba(255,255,255,0.15)', padding: '0 5px', borderRadius: '4px', fontSize: '10px' }}>
+                    {liveEstimateTotals.itemCount} items
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: '18px', fontWeight: '900', color: '#38bdf8' }}>
+                ₹{liveEstimateTotals.total.toLocaleString('en-IN')}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  const el = document.getElementById('mgmt-price-estimate-panel');
+                  if (el) el.scrollIntoView({ behavior: 'smooth' });
+                }}
+                style={{
+                  background: 'rgba(255,255,255,0.1)',
+                  color: '#e2e8f0',
+                  border: '1px solid rgba(255,255,255,0.2)',
+                  padding: '7px 11px',
+                  borderRadius: '8px',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                Breakdown ▾
+              </button>
+
+              <button
+                type="button"
+                disabled={submittingService}
+                onClick={handleSubmitServiceBilling}
+                style={{
+                  background: '#0284c7',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '8px 14px',
+                  borderRadius: '8px',
+                  fontSize: '12px',
+                  fontWeight: '700',
+                  cursor: submittingService ? 'not-allowed' : 'pointer',
+                  boxShadow: '0 2px 8px rgba(2, 132, 199, 0.4)'
+                }}
+              >
+                {submittingService ? 'Saving...' : 'Save Bill →'}
+              </button>
+            </div>
+          </div>
+
+          {/* Bottom Table & Mobile Cards: Active / Recent Service Records & Rider Issue Reports */}
           <div style={{ gridColumn: '1 / -1', background: 'white', border: '1px solid #e2e8f0', borderRadius: '10px', overflow: 'hidden' }}>
             <div style={{ padding: '14px 18px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -3037,7 +3205,8 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
               </div>
             </div>
 
-            <div className="mgmt-table-scroll">
+            {/* Desktop Table View */}
+            <div className="mgmt-service-records-table-wrapper mgmt-table-scroll">
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px', minWidth: '620px' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontSize: '12px', fontWeight: '600' }}>
@@ -3051,27 +3220,16 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                 </tr>
               </thead>
               <tbody>
-                {(() => {
-                  const filteredLogs = maintenanceLogs.filter(log => {
-                    if (serviceRecordsFilter === 'reported') return log.status === 'reported';
-                    if (serviceRecordsFilter === 'in_progress') return log.status === 'in_progress';
-                    if (serviceRecordsFilter === 'completed') return log.status === 'completed';
-                    return true;
-                  });
-
-                  if (filteredLogs.length === 0) {
-                    return (
-                      <tr>
-                        <td colSpan={6} style={{ textAlign: 'center', padding: '36px 16px', color: '#94a3b8' }}>
-                          <Wrench size={32} color="#cbd5e1" style={{ marginBottom: '8px' }} />
-                          <div style={{ fontWeight: '700', color: '#475569' }}>No service or maintenance records found</div>
-                          <div style={{ fontSize: '12px' }}>Filter: {serviceRecordsFilter}</div>
-                        </td>
-                      </tr>
-                    );
-                  }
-
-                  return filteredLogs.slice(0, 25).map(log => {
+                {filteredMaintenanceLogs.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} style={{ textAlign: 'center', padding: '36px 16px', color: '#94a3b8' }}>
+                      <Wrench size={32} color="#cbd5e1" style={{ marginBottom: '8px' }} />
+                      <div style={{ fontWeight: '700', color: '#475569' }}>No service or maintenance records found</div>
+                      <div style={{ fontSize: '12px' }}>Filter: {serviceRecordsFilter}</div>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredMaintenanceLogs.slice(0, 25).map(log => {
                     const isReported = log.status === 'reported';
                     const hasPhoto = Boolean(log.image_url || (Array.isArray(log.images) && log.images.length > 0));
                     return (
@@ -3227,10 +3385,244 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                         </td>
                       </tr>
                     );
-                  });
-                })()}
+                  })
+                )}
               </tbody>
               </table>
+            </div>
+
+            {/* Mobile Touch Cards View */}
+            <div className="mgmt-service-records-mobile-cards">
+              {filteredMaintenanceLogs.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '32px 16px', color: '#94a3b8', background: '#f8fafc', borderRadius: '10px' }}>
+                  <Wrench size={30} color="#cbd5e1" style={{ marginBottom: '6px' }} />
+                  <div style={{ fontWeight: '700', color: '#475569', fontSize: '13px' }}>No service records found</div>
+                  <div style={{ fontSize: '11px', marginTop: '2px' }}>Filter: {serviceRecordsFilter}</div>
+                </div>
+              ) : (
+                filteredMaintenanceLogs.slice(0, 30).map(log => {
+                  const isReported = log.status === 'reported';
+                  const isPaid = (log.payment_status === 'paid' || log.payment_status === 'deducted_from_deposit') && log.status !== 'in_progress';
+                  const modeLabel = log.payment_status === 'deducted_from_deposit' ? 'Deposit' : (log.payment_mode || 'Cash');
+                  const hasPhoto = Boolean(log.image_url || (Array.isArray(log.images) && log.images.length > 0));
+
+                  return (
+                    <div
+                      key={log.id}
+                      className="mgmt-mobile-service-card"
+                      style={{
+                        borderLeft: isReported ? '4px solid #dc2626' : (log.status === 'in_progress' ? '4px solid #f59e0b' : '4px solid #10b981')
+                      }}
+                    >
+                      {/* Top: EV Number, Job #, Status, Payment */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span style={{ fontSize: '15px', fontWeight: '900', color: '#0369a1' }}>
+                              {getVehicleCode(log.vehicle_id)}
+                            </span>
+                            <span style={{ fontSize: '10px', background: '#e0f2fe', color: '#0284c7', padding: '1px 6px', borderRadius: '4px', fontWeight: '700' }}>
+                              #{log.id}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '13px', fontWeight: '800', color: '#0f172a', marginTop: '3px' }}>
+                            {log.service_type || 'General Service'}
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                          {isReported ? (
+                            <span style={{ background: '#fee2e2', color: '#dc2626', border: '1px solid #fecaca', padding: '2px 7px', borderRadius: '4px', fontSize: '10.5px', fontWeight: '800' }}>
+                              🚨 REPORTED
+                            </span>
+                          ) : log.status === 'in_progress' ? (
+                            <span style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', padding: '2px 7px', borderRadius: '4px', fontSize: '10.5px', fontWeight: '700' }}>
+                              🔧 In Progress
+                            </span>
+                          ) : (
+                            <span style={{ background: '#dcfce7', color: '#16a34a', border: '1px solid #bbf7d0', padding: '2px 7px', borderRadius: '4px', fontSize: '10.5px', fontWeight: '700' }}>
+                              ✓ Ready
+                            </span>
+                          )}
+
+                          {isPaid ? (
+                            <span style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '2px 7px', borderRadius: '4px', fontSize: '10.5px', fontWeight: '700' }}>
+                              Paid ({modeLabel})
+                            </span>
+                          ) : (
+                            <span style={{ background: '#fff7ed', color: '#c2410c', border: '1px solid #fed7aa', padding: '2px 7px', borderRadius: '4px', fontSize: '10.5px', fontWeight: '800' }}>
+                              Due: ₹{parseFloat(log.cost || 0).toLocaleString('en-IN')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Rider Info if available */}
+                      {log.user_name && (
+                        <div style={{ fontSize: '12px', color: '#334155', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: '700', color: '#0f172a' }}>👤 {log.user_name}</span>
+                          {log.user_phone && (
+                            <a
+                              href={`tel:${log.user_phone}`}
+                              style={{ color: '#0284c7', textDecoration: 'none', fontSize: '11px', fontWeight: '700', background: '#f0f9ff', padding: '2px 7px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+                            >
+                              📞 {log.user_phone}
+                            </a>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Description & Photo */}
+                      {log.issue_description && (
+                        <div style={{ fontSize: '12px', color: isReported ? '#b45309' : '#64748b', background: '#f8fafc', padding: '6px 8px', borderRadius: '6px', marginBottom: '6px' }}>
+                          {log.issue_description}
+                        </div>
+                      )}
+
+                      {hasPhoto && (
+                        <div style={{ marginBottom: '6px' }}>
+                          <a
+                            href={log.image_url || log.images[0]}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#d97706', fontWeight: '700', textDecoration: 'none', background: '#fffbeb', border: '1px solid #fde68a', padding: '2px 8px', borderRadius: '4px' }}
+                          >
+                            📷 View Issue Photo
+                          </a>
+                        </div>
+                      )}
+
+                      {/* Price & Billed To Row */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderTop: '1px dashed #e2e8f0', marginTop: '6px' }}>
+                        <span style={{ fontSize: '11.5px', color: '#64748b' }}>
+                          Billed To: <strong style={{ textTransform: 'capitalize', color: '#0f172a' }}>{log.billed_to}</strong>
+                        </span>
+                        <span style={{ fontSize: '16px', fontWeight: '900', color: '#0f172a' }}>
+                          ₹{parseFloat(log.cost || 0).toLocaleString('en-IN')}
+                        </span>
+                      </div>
+
+                      {/* Touch Action Buttons Grid */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(78px, 1fr))', gap: '6px', marginTop: '8px' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenServiceInvoice(log)}
+                          style={{
+                            background: '#f0f9ff',
+                            color: '#0284c7',
+                            border: '1px solid #bae6fd',
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            fontSize: '11.5px',
+                            fontWeight: '700',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '4px',
+                            minHeight: '34px'
+                          }}
+                        >
+                          <FileText size={12} />
+                          <span>Invoice</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleSendServiceWhatsApp(log)}
+                          style={{
+                            background: '#ecfdf5',
+                            color: '#059669',
+                            border: '1px solid #a7f3d0',
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            fontSize: '11.5px',
+                            fontWeight: '700',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '4px',
+                            minHeight: '34px'
+                          }}
+                        >
+                          <Send size={12} />
+                          <span>WhatsApp</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleOpenUpdatePaymentModal(log)}
+                          style={{
+                            background: '#f8fafc',
+                            color: '#0f172a',
+                            border: '1px solid #cbd5e1',
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            fontSize: '11.5px',
+                            fontWeight: '700',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '4px',
+                            minHeight: '34px'
+                          }}
+                        >
+                          <CreditCard size={12} />
+                          <span>Payment</span>
+                        </button>
+
+                        {isReported && (
+                          <button
+                            type="button"
+                            onClick={() => navigate('/services')}
+                            style={{
+                              background: '#dc2626',
+                              color: 'white',
+                              border: 'none',
+                              padding: '6px 8px',
+                              borderRadius: '6px',
+                              fontSize: '11.5px',
+                              fontWeight: '700',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              minHeight: '34px'
+                            }}
+                          >
+                            Resolve
+                          </button>
+                        )}
+
+                        {log.status === 'in_progress' && (
+                          <button
+                            type="button"
+                            onClick={() => handleMarkServiceCompleted(log.id, log.vehicle_id)}
+                            style={{
+                              background: '#0f172a',
+                              color: 'white',
+                              border: 'none',
+                              padding: '6px 8px',
+                              borderRadius: '6px',
+                              fontSize: '11.5px',
+                              fontWeight: '700',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              minHeight: '34px'
+                            }}
+                          >
+                            Mark Ready
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
 
@@ -3417,7 +3809,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                 </div>
               </div>
               
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div className="mgmt-tabs-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <div style={{ position: 'relative', width: '180px' }}>
                   <Search size={13} color="#94a3b8" style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)' }} />
                   <input
@@ -4091,7 +4483,11 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                             return (
                               <tr
                                 key={v.id}
-                                onClick={() => setAssignSlotForm(prev => ({ ...prev, vehicle_id: v.id }))}
+                                onClick={() => setAssignSlotForm(prev => ({ 
+                                  ...prev, 
+                                  vehicle_id: v.id,
+                                  initial_swaps: getVehicleSwapCount(v.id)
+                                }))}
                                 style={{
                                   borderBottom: '1px solid #f1f5f9',
                                   cursor: 'pointer',
@@ -4103,7 +4499,11 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                                     type="radio"
                                     name="selected_slot_ev"
                                     checked={isSelected}
-                                    onChange={() => setAssignSlotForm(prev => ({ ...prev, vehicle_id: v.id }))}
+                                    onChange={() => setAssignSlotForm(prev => ({ 
+                                      ...prev, 
+                                      vehicle_id: v.id,
+                                      initial_swaps: getVehicleSwapCount(v.id)
+                                    }))}
                                     style={{ cursor: 'pointer' }}
                                   />
                                 </td>
@@ -4143,10 +4543,51 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                       </table>
                     </div>
 
-                    {/* Selected EV Notice */}
+                    {/* Selected EV Notice & Battery Swap Tracker */}
                     {assignSlotForm.vehicle_id && (
-                      <div style={{ background: '#f8fafc', padding: '10px 14px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
-                        Selected EV: <strong style={{ color: '#0284c7' }}>{getVehicleCode(assignSlotForm.vehicle_id)}</strong>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <div style={{ background: '#f8fafc', padding: '10px 14px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
+                          Selected EV: <strong style={{ color: '#0284c7' }}>{getVehicleCode(assignSlotForm.vehicle_id)}</strong>
+                        </div>
+
+                        {/* Battery Swap Quota & Manual Allocation */}
+                        <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                            <span style={{ fontSize: '13px', fontWeight: '700', color: '#166534', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              🔋 Monthly Battery Swap Status ({getMonthDisplayName()})
+                            </span>
+                            <span style={{ fontSize: '11px', fontWeight: '600', color: '#15803d', background: '#dcfce7', padding: '2px 8px', borderRadius: '10px' }}>
+                              Free: {getSwapSettings().monthly_free_swaps} / Max: {getSwapSettings().monthly_max_swaps}
+                            </span>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                            <label style={{ fontSize: '12.5px', color: '#374151', fontWeight: '600', flex: 1, minWidth: '200px' }}>
+                              Swaps Already Done This Month:
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              max="200"
+                              value={assignSlotForm.initial_swaps !== undefined ? assignSlotForm.initial_swaps : 0}
+                              onChange={(e) => setAssignSlotForm(prev => ({ ...prev, initial_swaps: Math.max(0, parseInt(e.target.value, 10) || 0) }))}
+                              style={{
+                                width: '80px',
+                                padding: '6px 10px',
+                                borderRadius: '6px',
+                                border: '1px solid #86efac',
+                                background: '#ffffff',
+                                fontWeight: '700',
+                                fontSize: '14px',
+                                textAlign: 'center',
+                                color: '#15803d'
+                              }}
+                            />
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#15803d', opacity: 0.85 }}>
+                            Keep 0 if fresh monthly assignment. If vehicle already swapped batteries this month, enter the count here.
+                          </p>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -4182,7 +4623,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                       ← Back to Payment
                     </button>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div className="mgmt-tabs-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <button
                         type="button"
                         disabled={!assignSlotForm.vehicle_id}

@@ -1118,16 +1118,17 @@ _Support: +91 78705 72429 | https://ltev.in_`;
           alignItems: 'center',
           justifyContent: 'center',
           zIndex: 1000,
-          padding: '20px'
+          padding: 'clamp(8px, 3vw, 20px)'
         }}>
           <div style={{
             background: 'white',
-            borderRadius: '24px',
+            borderRadius: 'clamp(14px, 3vw, 24px)',
             width: '100%',
             maxWidth: '620px',
-            maxHeight: '90vh',
+            maxHeight: '92vh',
+            maxHeight: '92dvh',
             overflowY: 'auto',
-            padding: '32px',
+            padding: 'clamp(16px, 4vw, 32px)',
             boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
             position: 'relative'
           }}>

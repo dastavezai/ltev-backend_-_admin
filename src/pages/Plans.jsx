@@ -316,23 +316,503 @@ export default function Plans() {
   return (
     <div style={{ animation: 'fadeIn 0.4s ease' }}>
       {/* Page Header */}
-      <div style={{ marginBottom: '28px' }}>
+      <div style={{ marginBottom: '24px' }}>
         <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#0f172a', margin: '0 0 6px 0' }}>
-          Payment Settings
+          Settings
         </h1>
         <p style={{ margin: 0, color: '#64748b', fontSize: '14px' }}>
-          Configure UPI payment details, QR code, and manage subscription rental plans.
+          Configure monthly battery swap limits, UPI payment details & QR code, and manage subscription rental plans.
         </p>
       </div>
 
+      {/* Navigation Tabs */}
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          onClick={() => setActiveTab('all')}
+          style={{
+            padding: '8px 16px',
+            borderRadius: '10px',
+            border: 'none',
+            fontSize: '13px',
+            fontWeight: '700',
+            cursor: 'pointer',
+            background: activeTab === 'all' ? '#0f172a' : '#f1f5f9',
+            color: activeTab === 'all' ? 'white' : '#475569',
+            transition: 'all 0.15s ease'
+          }}
+        >
+          All Settings
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('swap')}
+          style={{
+            padding: '8px 16px',
+            borderRadius: '10px',
+            border: 'none',
+            fontSize: '13px',
+            fontWeight: '700',
+            cursor: 'pointer',
+            background: activeTab === 'swap' ? '#0284c7' : '#f1f5f9',
+            color: activeTab === 'swap' ? 'white' : '#475569',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            transition: 'all 0.15s ease'
+          }}
+        >
+          <BatteryCharging size={16} /> Battery Swap Settings
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('payment')}
+          style={{
+            padding: '8px 16px',
+            borderRadius: '10px',
+            border: 'none',
+            fontSize: '13px',
+            fontWeight: '700',
+            cursor: 'pointer',
+            background: activeTab === 'payment' ? '#059669' : '#f1f5f9',
+            color: activeTab === 'payment' ? 'white' : '#475569',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            transition: 'all 0.15s ease'
+          }}
+        >
+          <QrCode size={16} /> UPI & QR Code
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('plans')}
+          style={{
+            padding: '8px 16px',
+            borderRadius: '10px',
+            border: 'none',
+            fontSize: '13px',
+            fontWeight: '700',
+            cursor: 'pointer',
+            background: activeTab === 'plans' ? '#7c3aed' : '#f1f5f9',
+            color: activeTab === 'plans' ? 'white' : '#475569',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            transition: 'all 0.15s ease'
+          }}
+        >
+          <Tag size={16} /> Subscription Plans
+        </button>
+      </div>
+
+      {/* Battery Swap Settings Card */}
+      {(activeTab === 'all' || activeTab === 'swap') && (
+        <div
+          style={{
+            background: 'white',
+            borderRadius: '20px',
+            boxShadow: '0 10px 25px -5px rgba(0,0,0,0.03)',
+            border: '1px solid #e2e8f0',
+            padding: 'clamp(16px, 4vw, 28px)',
+            marginBottom: '32px'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div
+                style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: '12px',
+                  background: '#f0f9ff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: '1px solid #bae6fd'
+                }}
+              >
+                <BatteryCharging size={22} color="#0284c7" />
+              </div>
+              <div>
+                <h2 style={{ fontSize: '18px', fontWeight: '800', color: '#0f172a', margin: 0 }}>
+                  Battery Swap Management & Monthly Limits
+                </h2>
+                <p style={{ margin: '2px 0 0 0', fontSize: '13px', color: '#64748b' }}>
+                  Set monthly free swaps included with rental subscriptions, max allowable swaps in a month, and extra swap rates.
+                </p>
+              </div>
+            </div>
+
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 12px',
+                borderRadius: '20px',
+                background: '#f0fdf4',
+                color: '#16a34a',
+                fontSize: '12px',
+                fontWeight: '700',
+                border: '1px solid #bbf7d0'
+              }}
+            >
+              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#16a34a' }} />
+              Active Tracker ({getMonthDisplayName(monthKey)})
+            </span>
+          </div>
+
+          {swapSaveMsg && (
+            <div
+              style={{
+                padding: '12px 16px',
+                borderRadius: '10px',
+                marginBottom: '20px',
+                fontSize: '13px',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                background: swapSaveMsg.type === 'error' ? '#fee2e2' : '#dcfce7',
+                color: swapSaveMsg.type === 'error' ? '#dc2626' : '#15803d',
+                border: `1px solid ${swapSaveMsg.type === 'error' ? '#fecaca' : '#bbf7d0'}`
+              }}
+            >
+              {swapSaveMsg.type === 'error' ? <AlertCircle size={16} /> : <Check size={16} />}
+              <span>{swapSaveMsg.text}</span>
+            </div>
+          )}
+
+          {/* Swap Configuration Form */}
+          <form onSubmit={handleSaveSwapSettings} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '24px' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px', textTransform: 'uppercase' }}>
+                Monthly Free Battery Swaps *
+              </label>
+              <input
+                required
+                type="number"
+                min="0"
+                value={swapSettings.monthly_free_swaps}
+                onChange={(e) => setSwapSettings(prev => ({ ...prev, monthly_free_swaps: e.target.value }))}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '14px', fontWeight: '700', color: '#0369a1', boxSizing: 'border-box' }}
+              />
+              <span style={{ fontSize: '11px', color: '#64748b', marginTop: '4px', display: 'block' }}>
+                Swaps included free per month in rental plan (default: 30)
+              </span>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px', textTransform: 'uppercase' }}>
+                Max Swaps Limit in a Month *
+              </label>
+              <input
+                required
+                type="number"
+                min="0"
+                value={swapSettings.monthly_max_swaps}
+                onChange={(e) => setSwapSettings(prev => ({ ...prev, monthly_max_swaps: e.target.value }))}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '14px', fontWeight: '700', color: '#0f172a', boxSizing: 'border-box' }}
+              />
+              <span style={{ fontSize: '11px', color: '#64748b', marginTop: '4px', display: 'block' }}>
+                Total swaps allowed in a month per vehicle/rider (default: 60)
+              </span>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px', textTransform: 'uppercase' }}>
+                Extra Swap Charge (₹ / swap)
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={swapSettings.extra_swap_charge}
+                onChange={(e) => setSwapSettings(prev => ({ ...prev, extra_swap_charge: e.target.value }))}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '14px', fontWeight: '700', color: '#16a34a', boxSizing: 'border-box' }}
+              />
+              <span style={{ fontSize: '11px', color: '#64748b', marginTop: '4px', display: 'block' }}>
+                Charge applied when free quota is exceeded (default: ₹50)
+              </span>
+            </div>
+
+            <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
+              <button
+                type="submit"
+                disabled={savingSwapSettings}
+                style={{
+                  background: '#0284c7',
+                  color: 'white',
+                  border: 'none',
+                  padding: '11px 22px',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  fontWeight: '700',
+                  cursor: savingSwapSettings ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: '0 2px 8px rgba(2, 132, 199, 0.25)'
+                }}
+              >
+                <Save size={15} />
+                <span>{savingSwapSettings ? 'Saving...' : 'Save Battery Swap Settings'}</span>
+              </button>
+            </div>
+          </form>
+
+          {/* Quick Metrics Banner */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0', marginBottom: '24px' }}>
+            <div>
+              <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '700', textTransform: 'uppercase' }}>Monthly Free Quota</div>
+              <div style={{ fontSize: '20px', fontWeight: '800', color: '#0284c7', marginTop: '4px' }}>
+                {swapSettings.monthly_free_swaps} Swaps / Mo
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '700', textTransform: 'uppercase' }}>Monthly Max Cap</div>
+              <div style={{ fontSize: '20px', fontWeight: '800', color: '#0f172a', marginTop: '4px' }}>
+                {swapSettings.monthly_max_swaps} Swaps Max
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '700', textTransform: 'uppercase' }}>Extra Swap Rate</div>
+              <div style={{ fontSize: '20px', fontWeight: '800', color: '#16a34a', marginTop: '4px' }}>
+                ₹{swapSettings.extra_swap_charge} / swap
+              </div>
+            </div>
+          </div>
+
+          {/* Fleet Monthly Battery Swaps Overview Table */}
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+              <div>
+                <h3 style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a', margin: 0 }}>
+                  Fleet Vehicle Battery Swaps ({getMonthDisplayName(monthKey)})
+                </h3>
+                <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: '#64748b' }}>
+                  Live overview of battery swaps performed by each vehicle & rider this month.
+                </p>
+              </div>
+
+              <div style={{ position: 'relative', minWidth: '220px' }}>
+                <Search size={14} color="#94a3b8" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
+                <input
+                  type="text"
+                  placeholder="Search EV or Rider..."
+                  value={swapSearchQuery}
+                  onChange={(e) => setSwapSearchQuery(e.target.value)}
+                  style={{ width: '100%', padding: '6px 10px 6px 30px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', boxSizing: 'border-box' }}
+                />
+              </div>
+            </div>
+
+            <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: '10px' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12.5px', minWidth: '600px' }}>
+                <thead style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', color: '#64748b', fontSize: '11.5px', textTransform: 'uppercase' }}>
+                  <tr>
+                    <th style={{ padding: '10px 14px' }}>Vehicle</th>
+                    <th style={{ padding: '10px 14px' }}>Current Rider</th>
+                    <th style={{ padding: '10px 14px' }}>Swaps This Month</th>
+                    <th style={{ padding: '10px 14px' }}>Free Quota Status</th>
+                    <th style={{ padding: '10px 14px', textAlign: 'right' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {vehicles
+                    .filter(v => {
+                      if (!swapSearchQuery) return true;
+                      const q = swapSearchQuery.toLowerCase();
+                      const vCode = (v.model || v.id || '').toLowerCase();
+                      const rName = (v.renter || '').toLowerCase();
+                      return vCode.includes(q) || rName.includes(q);
+                    })
+                    .slice(0, 30)
+                    .map(v => {
+                      const vId = v.id;
+                      const vCode = v.model || v.id;
+                      const sData = vehicleSwaps[vId] || {};
+                      const count = Number(sData.count) || 0;
+                      const metrics = calculateSwapMetrics(count, swapSettings);
+                      const rider = sData.rider_name || v.renter || 'Idle at Stand';
+
+                      return (
+                        <tr key={v.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                          <td style={{ padding: '12px 14px', fontWeight: '800', color: '#0369a1' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <Bike size={15} color="#0284c7" />
+                              <span>{vCode}</span>
+                            </div>
+                          </td>
+                          <td style={{ padding: '12px 14px', color: '#334155' }}>
+                            <div style={{ fontWeight: rider !== 'Idle at Stand' ? '700' : 'normal', color: rider !== 'Idle at Stand' ? '#0f172a' : '#64748b' }}>
+                              {rider}
+                            </div>
+                            {(sData.rider_phone || v.renter_phone) && (
+                              <div style={{ fontSize: '11px', color: '#64748b' }}>
+                                📞 {sData.rider_phone || v.renter_phone}
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ padding: '12px 14px' }}>
+                            <div style={{ fontWeight: '800', fontSize: '13px', color: count > swapSettings.monthly_free_swaps ? '#d97706' : '#0f172a' }}>
+                              {count} Swaps
+                            </div>
+                            <div style={{ width: '100px', height: '5px', background: '#e2e8f0', borderRadius: '3px', marginTop: '4px', overflow: 'hidden' }}>
+                              <div
+                                style={{
+                                  width: `${Math.min(100, (count / (swapSettings.monthly_free_swaps || 30)) * 100)}%`,
+                                  height: '100%',
+                                  background: count > swapSettings.monthly_free_swaps ? '#f59e0b' : '#10b981'
+                                }}
+                              />
+                            </div>
+                          </td>
+                          <td style={{ padding: '12px 14px' }}>
+                            {count <= swapSettings.monthly_free_swaps ? (
+                              <span style={{ background: '#dcfce7', color: '#16a34a', border: '1px solid #bbf7d0', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '700' }}>
+                                ✓ {metrics.remainingFree} Free Remaining
+                              </span>
+                            ) : (
+                              <span style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '700' }}>
+                                +{metrics.extraSwaps} Extra (₹{metrics.extraCost})
+                              </span>
+                            )}
+                          </td>
+                          <td style={{ padding: '12px 14px', textAlign: 'right' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenQuickSwapUpdate(v)}
+                              style={{
+                                background: '#f0f9ff',
+                                color: '#0284c7',
+                                border: '1px solid #bae6fd',
+                                padding: '5px 10px',
+                                borderRadius: '6px',
+                                fontSize: '11.5px',
+                                fontWeight: '700',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px'
+                              }}
+                            >
+                              <Edit2 size={12} />
+                              <span>Update Swaps</span>
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  {vehicles.length === 0 && (
+                    <tr>
+                      <td colSpan={5} style={{ padding: '24px', textAlign: 'center', color: '#94a3b8' }}>
+                        Loading vehicles...
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Update Swaps Modal */}
+      {quickUpdateModal.open && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.6)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 110, padding: '16px' }}>
+          <div style={{ background: 'white', width: '100%', maxWidth: '420px', borderRadius: '14px', padding: '20px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '800', color: '#0f172a' }}>
+                  Update Battery Swaps
+                </h3>
+                <span style={{ fontSize: '12px', color: '#0284c7', fontWeight: '700' }}>
+                  EV {quickUpdateModal.vehicleCode} • {getMonthDisplayName(monthKey)}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setQuickUpdateModal(prev => ({ ...prev, open: false }))}
+                style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveQuickSwapUpdate} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '4px' }}>
+                  Number of Battery Swaps Already Done This Month
+                </label>
+                <input
+                  required
+                  type="number"
+                  min="0"
+                  value={quickUpdateModal.count}
+                  onChange={(e) => setQuickUpdateModal(prev => ({ ...prev, count: e.target.value }))}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #0284c7', fontSize: '15px', fontWeight: '800', color: '#0369a1', boxSizing: 'border-box' }}
+                />
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                  Free limit: {swapSettings.monthly_free_swaps} swaps. Current status: {calculateSwapMetrics(quickUpdateModal.count, swapSettings).statusText}
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '4px' }}>
+                  Rider Name (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Rahul Kumar"
+                  value={quickUpdateModal.riderName}
+                  onChange={(e) => setQuickUpdateModal(prev => ({ ...prev, riderName: e.target.value }))}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '4px' }}>
+                  Note / Reason
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Manual count update at stand"
+                  value={quickUpdateModal.note}
+                  onChange={(e) => setQuickUpdateModal(prev => ({ ...prev, note: e.target.value }))}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setQuickUpdateModal(prev => ({ ...prev, open: false }))}
+                  style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #cbd5e1', padding: '8px 14px', borderRadius: '6px', fontSize: '12px', fontWeight: '600', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  style={{ background: '#0284c7', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '6px', fontSize: '12px', fontWeight: '700', cursor: 'pointer' }}
+                >
+                  Save Swaps Count
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Payment Configuration Card (UPI ID & QR Code) */}
+      {(activeTab === 'all' || activeTab === 'payment') && (
       <div
         style={{
           background: 'white',
           borderRadius: '20px',
           boxShadow: '0 10px 25px -5px rgba(0,0,0,0.03)',
           border: '1px solid #e2e8f0',
-          padding: '28px',
+          padding: 'clamp(16px, 4vw, 28px)',
           marginBottom: '36px',
         }}
       >
@@ -634,8 +1114,11 @@ export default function Plans() {
           </div>
         </div>
       </div>
+      )}
 
       {/* Subscription Plans Section */}
+      {(activeTab === 'all' || activeTab === 'plans') && (
+      <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <div>
           <h2 style={{ fontSize: '22px', fontWeight: 'bold', color: '#0f172a', margin: '0 0 4px 0' }}>
@@ -715,6 +1198,8 @@ export default function Plans() {
           </tbody>
         </table>
       </div>
+      </div>
+      )}
 
       {/* Add Plan Modal */}
       {showAddModal && (

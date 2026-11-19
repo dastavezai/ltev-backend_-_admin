@@ -6,6 +6,12 @@ import {
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { handleOpenInvoiceWindow, getShortBookingId } from '../utils/invoice';
+import { 
+  recordAssignmentSwaps, 
+  getVehicleSwapCount, 
+  getSwapSettings, 
+  getMonthDisplayName 
+} from '../utils/batterySwapService';
 
 // Helper to format local Date for datetime-local input
 const getLocalDatetimeString = (dateObj = new Date()) => {
@@ -73,7 +79,8 @@ export default function Bookings() {
     additional_payment: '',
     payment_mode: 'cash',
     remarks: '',
-    assignment_date: getLocalDatetimeString()
+    assignment_date: getLocalDatetimeString(),
+    initial_swaps: 0
   });
   const [submittingAssign, setSubmittingAssign] = useState(false);
 
@@ -423,12 +430,14 @@ export default function Bookings() {
     const paid = parseFloat(booking.total_cost || booking.collected_amount || booking.plan_price || 0);
     const due = Math.max(0, 5100 - paid);
 
+    const targetVehId = booking.vehicle_id || '';
     setAssignForm({
-      vehicle_id: booking.vehicle_id || '',
+      vehicle_id: targetVehId,
       additional_payment: String(due),
       payment_mode: booking.payment_mode || 'cash',
       remarks: '',
-      assignment_date: getLocalDatetimeString()
+      assignment_date: getLocalDatetimeString(),
+      initial_swaps: targetVehId ? getVehicleSwapCount(targetVehId) : 0
     });
     setAssignPaymentRows([
       { mode: 'cash', amount: String(due), remarks: '' }
@@ -514,6 +523,16 @@ export default function Bookings() {
         advance_booking_id: assigningBooking.id,
         handover_id: assigningBooking.handover_id || (`HND-${(assigningBooking.id || '').replace(/\D/g, '') || Date.now().toString().slice(-6)}`)
       };
+
+      // Record manual battery swaps for assigned EV in monthly registry
+      recordAssignmentSwaps({
+        vehicleId: assignForm.vehicle_id,
+        vehicleCode: selectedVeh?.vehicle_id || selectedVeh?.id || assignForm.vehicle_id,
+        riderName: assigningBooking.user_name || assigningBooking.customer_name || '',
+        riderPhone: assigningBooking.user_phone || assigningBooking.customer_phone || '',
+        swapsCount: assignForm.initial_swaps !== undefined ? assignForm.initial_swaps : 0,
+        note: `Vehicle assigned to ${assigningBooking.user_name || 'Rider'} (Booking #${getShortBookingId(assigningBooking.id)})`
+      });
 
       setAssignModalOpen(false);
       fetchData();
@@ -1675,7 +1694,11 @@ export default function Bookings() {
                               return (
                                 <tr 
                                   key={v.id} 
-                                  onClick={() => setAssignForm({ ...assignForm, vehicle_id: v.id })}
+                                  onClick={() => setAssignForm({ 
+                                    ...assignForm, 
+                                    vehicle_id: v.id,
+                                    initial_swaps: getVehicleSwapCount(v.id)
+                                  })}
                                   style={{ 
                                     borderBottom: '1px solid #f1f5f9', 
                                     cursor: 'pointer',
@@ -1687,7 +1710,11 @@ export default function Bookings() {
                                       type="radio"
                                       name="selected_ev"
                                       checked={isSelected}
-                                      onChange={() => setAssignForm({ ...assignForm, vehicle_id: v.id })}
+                                      onChange={() => setAssignForm({ 
+                                        ...assignForm, 
+                                        vehicle_id: v.id,
+                                        initial_swaps: getVehicleSwapCount(v.id)
+                                      })}
                                       style={{ cursor: 'pointer' }}
                                     />
                                   </td>
@@ -1728,13 +1755,54 @@ export default function Bookings() {
                         </table>
                       </div>
 
-                      {/* Selected EV Notice */}
+                      {/* Selected EV Notice & Battery Swap Tracker */}
                       {assignForm.vehicle_id && (
-                        <div style={{ background: '#f8fafc', padding: '10px 14px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
-                          Selected EV: <strong style={{ color: '#0284c7' }}>{selectedVehicleObj?.id?.toUpperCase().startsWith('LT') ? selectedVehicleObj.id : `EV ${assignForm.vehicle_id}`}</strong>
-                          {selectedVehicleObj && (
-                            <span style={{ color: '#64748b', marginLeft: '6px' }}>({selectedVehicleObj.model})</span>
-                          )}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <div style={{ background: '#f8fafc', padding: '10px 14px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
+                            Selected EV: <strong style={{ color: '#0284c7' }}>{selectedVehicleObj?.id?.toUpperCase().startsWith('LT') ? selectedVehicleObj.id : `EV ${assignForm.vehicle_id}`}</strong>
+                            {selectedVehicleObj && (
+                              <span style={{ color: '#64748b', marginLeft: '6px' }}>({selectedVehicleObj.model})</span>
+                            )}
+                          </div>
+
+                          {/* Battery Swap Quota & Manual Allocation */}
+                          <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                              <span style={{ fontSize: '13px', fontWeight: '700', color: '#166534', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                🔋 Monthly Battery Swap Status ({getMonthDisplayName()})
+                              </span>
+                              <span style={{ fontSize: '11px', fontWeight: '600', color: '#15803d', background: '#dcfce7', padding: '2px 8px', borderRadius: '10px' }}>
+                                Free: {getSwapSettings().monthly_free_swaps} / Max: {getSwapSettings().monthly_max_swaps}
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                              <label style={{ fontSize: '12.5px', color: '#374151', fontWeight: '600', flex: 1, minWidth: '200px' }}>
+                                Swaps Already Done This Month:
+                              </label>
+                              <input
+                                type="number"
+                                min="0"
+                                max="200"
+                                value={assignForm.initial_swaps !== undefined ? assignForm.initial_swaps : 0}
+                                onChange={(e) => setAssignForm(prev => ({ ...prev, initial_swaps: Math.max(0, parseInt(e.target.value, 10) || 0) }))}
+                                style={{
+                                  width: '80px',
+                                  padding: '6px 10px',
+                                  borderRadius: '6px',
+                                  border: '1px solid #86efac',
+                                  background: '#ffffff',
+                                  fontWeight: '700',
+                                  fontSize: '14px',
+                                  textAlign: 'center',
+                                  color: '#15803d'
+                                }}
+                              />
+                            </div>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#15803d', opacity: 0.85 }}>
+                              Keep 0 if fresh monthly assignment. If vehicle already swapped batteries this month, enter the count here.
+                            </p>
+                          </div>
                         </div>
                       )}
 

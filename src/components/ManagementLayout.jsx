@@ -34,14 +34,15 @@ export default function ManagementLayout({ children }) {
 
           <div className="mgmt-header-divider" />
 
-          <div style={{ fontSize: '13px', fontWeight: '700', color: '#0369a1', background: '#e0f2fe', padding: '3px 8px', borderRadius: '6px', whiteSpace: 'nowrap' }}>
+          <div style={{ fontSize: '12px', fontWeight: '700', color: '#0369a1', background: '#e0f2fe', padding: '3px 8px', borderRadius: '6px', whiteSpace: 'nowrap' }}>
             Station Operations Desk
           </div>
 
           <div className="mgmt-header-divider" />
 
-          <div style={{ fontSize: '12px', color: '#64748b', whiteSpace: 'nowrap' }}>
-            Station: <strong style={{ color: '#0f172a' }}>Rukanpura Main Stand</strong>
+          <div style={{ fontSize: '12px', color: '#64748b', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <span>Station:</span>
+            <strong style={{ color: '#0f172a' }}>Rukanpura Stand</strong>
           </div>
         </div>
 
@@ -54,13 +55,13 @@ export default function ManagementLayout({ children }) {
                 display: 'flex',
                 alignItems: 'center',
                 gap: '4px',
-                background: 'transparent',
-                border: '1px solid #e2e8f0',
-                padding: '6px 10px',
+                background: '#ffffff',
+                border: '1px solid #cbd5e1',
+                padding: '5px 10px',
                 borderRadius: '6px',
-                fontSize: '12px',
-                fontWeight: '600',
-                color: '#475569',
+                fontSize: '11.5px',
+                fontWeight: '700',
+                color: '#0284c7',
                 cursor: 'pointer',
                 whiteSpace: 'nowrap'
               }}
@@ -70,8 +71,8 @@ export default function ManagementLayout({ children }) {
             </button>
           )}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
-            <span style={{ fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', background: '#f1f5f9', color: '#475569', padding: '2px 8px', borderRadius: '4px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
+            <span style={{ fontSize: '10.5px', fontWeight: '800', textTransform: 'uppercase', background: '#f1f5f9', color: '#475569', padding: '2px 7px', borderRadius: '4px' }}>
               {role}
             </span>
             <span style={{ fontWeight: '600', color: '#1e293b' }}>{username}</span>
@@ -80,20 +81,21 @@ export default function ManagementLayout({ children }) {
           <button
             onClick={handleLogout}
             style={{
-              background: 'transparent',
-              border: 'none',
-              padding: '6px 10px',
+              background: '#fef2f2',
+              border: '1px solid #fecaca',
+              padding: '5px 9px',
               borderRadius: '6px',
-              fontSize: '12px',
-              fontWeight: '600',
-              color: '#ef4444',
+              fontSize: '11.5px',
+              fontWeight: '700',
+              color: '#dc2626',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: '6px'
+              gap: '4px'
             }}
+            title="Log out from Management Portal"
           >
-            <LogOut size={14} />
+            <LogOut size={13} />
             <span>Logout</span>
           </button>
         </div>
