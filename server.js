@@ -153,6 +153,8 @@ async function initDatabase() {
     await pool.query(`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS next_payment_date TIMESTAMP`);
     await pool.query(`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS last_payment_date TIMESTAMP`);
     await pool.query(`ALTER TABLE wallet_approvals ADD COLUMN IF NOT EXISTS proof_image TEXT`);
+    await pool.query(`CREATE SEQUENCE IF NOT EXISTS account_approvals_seq;`);
+    await pool.query(`ALTER TABLE account_approvals ALTER COLUMN id SET DEFAULT ('AAP-' || nextval('account_approvals_seq'));`).catch(() => {});
     await pool.query(`
       CREATE TABLE IF NOT EXISTS security_deposit_transactions (
         id SERIAL PRIMARY KEY,
@@ -718,9 +720,17 @@ app.post('/api/kyc/upload', authenticateToken, upload.any(), async (req, res) =>
 
     // Record submission into account_approvals
     await pool.query(`
-      INSERT INTO account_approvals (user_id, document_type, document_number, status, date)
-      VALUES ($1, 'Aadhaar & PAN Verification', 'KYC Online Submission', 'pending', CURRENT_TIMESTAMP)
-    `).catch(() => {});
+      INSERT INTO account_approvals (id, user_id, document_type, document_number, status, date)
+      VALUES (
+        ('AAP-' || nextval('account_approvals_seq')),
+        $1, 'Aadhaar & PAN Verification', 'KYC Online Submission', 'pending', CURRENT_DATE
+      )
+    `).catch(async () => {
+      await pool.query(`
+        INSERT INTO account_approvals (user_id, document_type, document_number, status, date)
+        VALUES ($1, 'Aadhaar & PAN Verification', 'KYC Online Submission', 'pending', CURRENT_DATE)
+      `).catch((e) => console.warn('Could not record account approval:', e.message));
+    });
 
     res.json({ success: true, user: result.rows[0] });
   } catch (err) {
@@ -5647,10 +5657,39 @@ app.get('/api/account_approvals', authenticateToken, async (req, res) => {
 app.post('/api/account_approvals/:id/approve', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.query("UPDATE users SET kyc_status = 'verified' WHERE id = $1", [id]);
-    await pool.query("UPDATE account_approvals SET status = 'approved' WHERE id = $1 OR user_id = $1", [id]);
+    const cleanId = String(id || '').trim();
+
+    let targetUserId = null;
+    let targetApprovalId = null;
+
+    if (/^\d+$/.test(cleanId)) {
+      targetUserId = parseInt(cleanId, 10);
+    } else {
+      targetApprovalId = cleanId;
+      const appCheck = await pool.query("SELECT user_id FROM account_approvals WHERE id = $1", [cleanId]);
+      if (appCheck.rows.length > 0 && appCheck.rows[0].user_id) {
+        targetUserId = appCheck.rows[0].user_id;
+      }
+    }
+
+    if (targetUserId) {
+      await pool.query("UPDATE users SET kyc_status = 'verified' WHERE id = $1", [targetUserId]);
+      await pool.query(
+        "UPDATE account_approvals SET status = 'approved' WHERE user_id = $1 OR id = $2",
+        [targetUserId, cleanId]
+      );
+    } else if (targetApprovalId) {
+      await pool.query(
+        "UPDATE account_approvals SET status = 'approved' WHERE id = $1",
+        [targetApprovalId]
+      );
+    } else {
+      return res.status(400).json({ error: 'Invalid user or approval ID provided' });
+    }
+
     res.json({ success: true, message: 'KYC verified successfully' });
   } catch (err) {
+    console.error('Error approving KYC:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -5658,10 +5697,39 @@ app.post('/api/account_approvals/:id/approve', authenticateToken, async (req, re
 app.post('/api/account_approvals/:id/reject', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.query("UPDATE users SET kyc_status = 'failed' WHERE id = $1", [id]);
-    await pool.query("UPDATE account_approvals SET status = 'rejected' WHERE id = $1 OR user_id = $1", [id]);
+    const cleanId = String(id || '').trim();
+
+    let targetUserId = null;
+    let targetApprovalId = null;
+
+    if (/^\d+$/.test(cleanId)) {
+      targetUserId = parseInt(cleanId, 10);
+    } else {
+      targetApprovalId = cleanId;
+      const appCheck = await pool.query("SELECT user_id FROM account_approvals WHERE id = $1", [cleanId]);
+      if (appCheck.rows.length > 0 && appCheck.rows[0].user_id) {
+        targetUserId = appCheck.rows[0].user_id;
+      }
+    }
+
+    if (targetUserId) {
+      await pool.query("UPDATE users SET kyc_status = 'failed' WHERE id = $1", [targetUserId]);
+      await pool.query(
+        "UPDATE account_approvals SET status = 'rejected' WHERE user_id = $1 OR id = $2",
+        [targetUserId, cleanId]
+      );
+    } else if (targetApprovalId) {
+      await pool.query(
+        "UPDATE account_approvals SET status = 'rejected' WHERE id = $1",
+        [targetApprovalId]
+      );
+    } else {
+      return res.status(400).json({ error: 'Invalid user or approval ID provided' });
+    }
+
     res.json({ success: true, message: 'KYC rejected' });
   } catch (err) {
+    console.error('Error rejecting KYC:', err);
     res.status(500).json({ error: err.message });
   }
 });
