@@ -5380,7 +5380,19 @@ app.post('/api/rentals/record', authenticateToken, async (req, res) => {
       ? parseInt(user_id.replace(/^USR-/i, ''), 10)
       : parseInt(user_id, 10);
 
-    const cleanPlanId = plan_id ? parseInt(plan_id, 10) : null;
+    let cleanPlanId = null;
+    if (plan_id !== null && plan_id !== undefined && String(plan_id).trim() !== '') {
+      const parsedPlan = parseInt(String(plan_id).replace(/^PLAN-/i, ''), 10);
+      if (!isNaN(parsedPlan)) {
+        const planCheck = await client.query('SELECT id FROM plans WHERE id = $1', [parsedPlan]);
+        if (planCheck.rows.length > 0) {
+          cleanPlanId = planCheck.rows[0].id;
+        } else {
+          const fallbackPlan = await client.query('SELECT id FROM plans ORDER BY id ASC LIMIT 1');
+          cleanPlanId = fallbackPlan.rows.length > 0 ? fallbackPlan.rows[0].id : null;
+        }
+      }
+    }
     const cleanVehicleId = vehicle_id ? String(vehicle_id).trim() : null;
 
     if (isNaN(cleanUserId)) {
@@ -5473,7 +5485,25 @@ app.put(['/api/rentals/:id', '/api/bookings/:id'], authenticateToken, async (req
       ? (typeof user_id === 'string' && user_id.toUpperCase().startsWith('USR-') ? parseInt(user_id.replace(/^USR-/i, ''), 10) : parseInt(user_id, 10))
       : prevRental.user_id;
 
-    const cleanPlanId = plan_id !== undefined ? (plan_id ? parseInt(plan_id, 10) : null) : prevRental.plan_id;
+    let cleanPlanId = prevRental.plan_id;
+    if (plan_id !== undefined) {
+      if (plan_id === null || String(plan_id).trim() === '') {
+        cleanPlanId = null;
+      } else {
+        const parsedPlan = parseInt(String(plan_id).replace(/^PLAN-/i, ''), 10);
+        if (!isNaN(parsedPlan)) {
+          const planCheck = await client.query('SELECT id FROM plans WHERE id = $1', [parsedPlan]);
+          if (planCheck.rows.length > 0) {
+            cleanPlanId = planCheck.rows[0].id;
+          } else {
+            const fallbackPlan = await client.query('SELECT id FROM plans ORDER BY id ASC LIMIT 1');
+            cleanPlanId = fallbackPlan.rows.length > 0 ? fallbackPlan.rows[0].id : null;
+          }
+        } else {
+          cleanPlanId = null;
+        }
+      }
+    }
     const newVehicleId = vehicle_id !== undefined ? (vehicle_id ? String(vehicle_id).trim() : null) : prevRental.vehicle_id;
 
     const finalStartTime = start_time !== undefined ? (start_time ? new Date(start_time) : null) : prevRental.start_time;

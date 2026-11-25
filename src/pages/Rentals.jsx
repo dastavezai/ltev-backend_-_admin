@@ -36,7 +36,7 @@ export default function Rentals() {
   const [formData, setFormData] = useState({
     user_id: '',
     vehicle_id: '',
-    plan_id: '1',
+    plan_id: '',
     start_time: '',
     end_time: '',
     total_cost: '230.00',
@@ -133,7 +133,7 @@ export default function Rentals() {
     setFormData({
       user_id: users.length > 0 ? String(users[0].raw_id || users[0].user_id || users[0].id) : '',
       vehicle_id: vehicles.length > 0 ? vehicles[0].id : '',
-      plan_id: plans.length > 0 ? String(plans[0].id) : '1',
+      plan_id: plans.length > 0 ? String(plans[0].id) : '',
       start_time: nowStr,
       end_time: '',
       total_cost: plans.length > 0 ? plans[0].price : '230.00',
@@ -150,7 +150,9 @@ export default function Rentals() {
     setFormData({
       user_id: rental.user_id ? String(rental.user_id) : '',
       vehicle_id: rental.vehicle_id || '',
-      plan_id: rental.plan_id ? String(rental.plan_id) : '',
+      plan_id: rental.plan_id && plans.some(p => String(p.id) === String(rental.plan_id))
+        ? String(rental.plan_id)
+        : (plans.length > 0 ? String(plans[0].id) : ''),
       start_time: formatForDateTimeLocal(rental.raw_start_time),
       end_time: formatForDateTimeLocal(rental.raw_end_time),
       total_cost: rental.raw_total_cost !== undefined ? String(rental.raw_total_cost) : '',
@@ -1151,6 +1153,7 @@ export default function Rentals() {
                     onChange={(e) => handlePlanChange(e.target.value)}
                     style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', background: '#f8fafc', color: '#0f172a', outline: 'none' }}
                   >
+                    <option value="">-- No Plan --</option>
                     {plans.map(p => (
                       <option key={p.id} value={p.id}>
                         {p.name} (₹{p.price} / {p.type})
