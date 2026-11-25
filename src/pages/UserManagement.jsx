@@ -19,6 +19,7 @@ export default function UserManagement() {
   // Add & Edit Rider Modals
   const [showAddModal, setShowAddModal] = useState(false);
   const [newUser, setNewUser] = useState({ name: '', email: '', phone: '', status: 'active' });
+  const [submittingUser, setSubmittingUser] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editUser, setEditUser] = useState(null);
 
@@ -135,6 +136,8 @@ export default function UserManagement() {
 
   const handleAddUser = async (e) => {
     e.preventDefault();
+    if (submittingUser) return;
+    setSubmittingUser(true);
     try {
       await axios.post(`/api/users`, { ...newUser, role: 'rider' }, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
@@ -145,6 +148,8 @@ export default function UserManagement() {
     } catch (error) {
       console.error('Error adding user:', error);
       alert('Failed to add rider: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setSubmittingUser(false);
     }
   };
 
@@ -796,8 +801,12 @@ export default function UserManagement() {
                 </select>
               </div>
 
-              <button type="submit" style={{ marginTop: '8px', background: '#00a66c', color: 'white', padding: '14px', borderRadius: '10px', fontWeight: '800', border: 'none', cursor: 'pointer' }}>
-                Create Rider
+              <button
+                type="submit"
+                disabled={submittingUser}
+                style={{ marginTop: '8px', background: submittingUser ? '#94a3b8' : '#00a66c', color: 'white', padding: '14px', borderRadius: '10px', fontWeight: '800', border: 'none', cursor: submittingUser ? 'not-allowed' : 'pointer' }}
+              >
+                {submittingUser ? 'Creating Rider...' : 'Create Rider'}
               </button>
             </form>
           </div>

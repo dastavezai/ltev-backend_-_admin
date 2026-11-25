@@ -1006,7 +1006,8 @@ const getBrandHeaderHTML = (logoUrl, legalName, address, refCode, dateStr, timeS
   <div class="brand-header">
     <div class="brand-left">
       <div class="brand-logo-wrap">
-        <img src="${logoUrl}" alt="LT Logo" class="brand-logo" onerror="this.style.display='none'" />
+        <img src="${logoUrl}" alt="LT Logo" class="brand-logo" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='inline-block';" />
+        <span class="brand-logo-ev" style="display: none;">LT</span>
         <span class="brand-logo-ev">EV</span>
       </div>
       <div>

@@ -1803,17 +1803,17 @@ app.get('/api/riders/:id/used-vehicles', authenticateToken, async (req, res) => 
 
 // Create User (Admin Action)
 app.post('/api/users', authenticateToken, async (req, res) => {
+  const { name, email, phone, role, status } = req.body;
+  const userEmail = email && typeof email === 'string' && email.trim() ? email.trim() : null;
+  const rawPhone = phone ? String(phone).trim() : '';
+  const cleanPhone = rawPhone.replace(/\D/g, '').slice(-10);
+
+  if (!name || !name.trim() || cleanPhone.length < 10) {
+    return res.status(400).json({ error: 'Full name and a valid 10-digit phone number are required.' });
+  }
+
   const client = await pool.connect();
   try {
-    const { name, email, phone, role, status } = req.body;
-    const userEmail = email && typeof email === 'string' && email.trim() ? email.trim() : null;
-    const cleanPhone = phone ? phone.trim() : '';
-
-    if (!name || !cleanPhone) {
-      client.release();
-      return res.status(400).json({ error: 'Full name and phone number are required.' });
-    }
-
     await client.query('BEGIN');
     
     const result = await client.query(
@@ -1832,10 +1832,10 @@ app.post('/api/users', authenticateToken, async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Error creating user:', err);
     if (err.code === '23505') {
-      if (err.constraint === 'unique_phone') {
+      if (err.constraint === 'unique_phone' || (err.detail && err.detail.includes('(phone)'))) {
         return res.status(400).json({ error: 'A rider with this phone number already exists.' });
       }
-      if (err.constraint === 'users_email_key') {
+      if (err.constraint === 'users_email_key' || (err.detail && err.detail.includes('(email)'))) {
         return res.status(400).json({ error: 'A rider with this email address already exists.' });
       }
     }
@@ -1855,10 +1855,11 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
     }
     const { name, email, phone, role, status, kyc_status } = req.body;
     const userEmail = email && typeof email === 'string' && email.trim() ? email.trim() : null;
+    const cleanPhone = phone ? String(phone).replace(/\D/g, '').slice(-10) : '';
     
     const result = await pool.query(
       "UPDATE users SET name = $1, email = $2, phone = $3, role = $4, status = $5, kyc_status = $6 WHERE id = $7 RETURNING *",
-      [name, userEmail, phone, role, status, kyc_status, id]
+      [name ? name.trim() : name, userEmail, cleanPhone || phone, role, status, kyc_status, id]
     );
     
     if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
