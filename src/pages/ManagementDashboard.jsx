@@ -1224,9 +1224,27 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
   // -------------------------------------------------------------
   // TAB 3: ADVANCE BOOKINGS & SLOT ALLOCATION
   // -------------------------------------------------------------
-  const advanceBookingsQueue = useMemo(() => {
-    return bookings.filter(b => b.status === 'pre_booking' || !b.vehicle_id);
+  const activeAssignedUserIds = useMemo(() => {
+    const ids = new Set();
+    bookings.forEach(b => {
+      if (b.vehicle_id && (b.status === 'active' || b.status === 'in_use')) {
+        ids.add(String(b.user_id));
+      }
+    });
+    return ids;
   }, [bookings]);
+
+  const isBookingWaiting = (b) => {
+    if (b.status === 'completed' || b.status === 'cancelled') return false;
+    if (activeAssignedUserIds.has(String(b.user_id)) && (b.status === 'pre_booking' || !b.vehicle_id)) {
+      return false;
+    }
+    return b.status === 'pre_booking' || !b.vehicle_id;
+  };
+
+  const advanceBookingsQueue = useMemo(() => {
+    return bookings.filter(b => isBookingWaiting(b));
+  }, [bookings, activeAssignedUserIds]);
 
   const waitingBookingsCount = useMemo(() => {
     return advanceBookingsQueue.length;
@@ -1239,10 +1257,11 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
   const filteredAdvanceBookings = useMemo(() => {
     return bookings.filter(b => {
       const isAssigned = Boolean(b.vehicle_id && b.status !== 'pre_booking');
-      const isWaiting = b.status === 'pre_booking' || !b.vehicle_id;
+      const isWaiting = isBookingWaiting(b);
 
       if (bookingFilter === 'waiting' && !isWaiting) return false;
       if (bookingFilter === 'assigned' && !isAssigned) return false;
+      if (bookingFilter === 'all' && !isWaiting && !isAssigned) return false;
 
       const q = searchQuery.toLowerCase().trim();
       const matches = !q || (

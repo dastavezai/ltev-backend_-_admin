@@ -890,6 +890,22 @@ _Support: +91 78705 72429 | https://ltev.in_`;
   const pendingDuesCount = details?.extra_dues?.filter(d => d.status === 'pending').length || 0;
   const pendingApprovalsCount = details?.wallet_approvals?.filter(a => a.status === 'pending').length || 0;
 
+  const unsettledBookingBalance = (details?.rental_history || []).reduce((sum, r) => {
+    if (r.status === 'cancelled') return sum;
+    const explicitDue = parseFloat(r.due_amount || 0);
+    const preBookingShortfall = r.status === 'pre_booking' ? Math.max(0, 5100 - parseFloat(r.total_cost || 0)) : 0;
+    return sum + Math.max(explicitDue, preBookingShortfall);
+  }, 0);
+
+  const unpaidServiceBills = (details?.services_history || []).reduce((sum, m) => {
+    if (m.billed_to === 'rider' && m.payment_status !== 'paid') {
+      return sum + parseFloat(m.cost || 0);
+    }
+    return sum;
+  }, 0);
+
+  const notSettledTotal = numDue + unsettledBookingBalance + unpaidServiceBills;
+
   return (
     <div 
       onClick={onClose}
@@ -1085,6 +1101,29 @@ _Support: +91 78705 72429 | https://ltev.in_`;
                     ₹{depositBalance.toLocaleString('en-IN')}
                     <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'normal' }}> / ₹{minDeposit}</span>
                   </strong>
+                </div>
+
+                <div style={{
+                  marginTop: '4px',
+                  paddingTop: '8px',
+                  borderTop: '1px dashed #e2e8f0',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: notSettledTotal > 0 ? '#b45309' : '#64748b', fontWeight: '700' }}>Not Settled Money:</span>
+                    <strong style={{ color: notSettledTotal > 0 ? '#dc2626' : '#15803d', fontSize: '14px' }}>
+                      ₹{notSettledTotal.toLocaleString('en-IN')}
+                    </strong>
+                  </div>
+                  {notSettledTotal > 0 && (
+                    <div style={{ fontSize: '11px', color: '#64748b', lineHeight: '1.35' }}>
+                      {numDue > 0 && <div>• Pending Dues: ₹{numDue.toLocaleString('en-IN')}</div>}
+                      {unsettledBookingBalance > 0 && <div>• Booking / Rental Balance: ₹{unsettledBookingBalance.toLocaleString('en-IN')}</div>}
+                      {unpaidServiceBills > 0 && <div>• Unpaid Service Bills: ₹{unpaidServiceBills.toLocaleString('en-IN')}</div>}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
