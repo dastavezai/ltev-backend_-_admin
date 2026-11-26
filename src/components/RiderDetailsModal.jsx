@@ -893,8 +893,11 @@ _Support: +91 78705 72429 | https://ltev.in_`;
   const unsettledBookingBalance = (details?.rental_history || []).reduce((sum, r) => {
     if (r.status === 'cancelled') return sum;
     const explicitDue = parseFloat(r.due_amount || 0);
-    const preBookingShortfall = r.status === 'pre_booking' ? Math.max(0, 5100 - parseFloat(r.total_cost || 0)) : 0;
-    return sum + Math.max(explicitDue, preBookingShortfall);
+    const pkg = (parseFloat(r.plan_price || 0) + parseFloat(r.plan_deposit || 3500)) || 5100;
+    let preBookingShortfall = r.status === 'pre_booking' ? Math.max(0, pkg - parseFloat(r.total_cost || 0)) : 0;
+    if (preBookingShortfall <= 10) preBookingShortfall = 0;
+    const finalShortfall = explicitDue <= 10 ? preBookingShortfall : Math.max(explicitDue, preBookingShortfall);
+    return sum + finalShortfall;
   }, 0);
 
   const unpaidServiceBills = (details?.services_history || []).reduce((sum, m) => {

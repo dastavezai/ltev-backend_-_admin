@@ -1068,8 +1068,6 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Vehicle number and service description are required.' });
     }
 
-    await client.query('BEGIN');
-
     // Resolve vehicle_id: frontend sends display code (e.g. "LT001" or "0001") or vehicle.id — resolve to actual DB vehicle id
     let resolvedVehicleId = String(vehicle_id).trim();
     // First, check if vehicle exists directly by id or registration_number or model
@@ -1103,11 +1101,11 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       if (looseMatch.rows.length > 0) {
         resolvedVehicleId = looseMatch.rows[0].id;
       } else {
-        // Auto-register manual / external vehicle into vehicles table so foreign queries or reports don't fail
+        // Auto-register manual / external vehicle into vehicles table with all NOT NULL columns (location, model, status, type)
         try {
           await client.query(`
-            INSERT INTO vehicles (id, model, type, status, registration_number)
-            VALUES ($1, $2, 'scooter', 'available', $1)
+            INSERT INTO vehicles (id, model, type, status, location, registration_number)
+            VALUES ($1, $2, 'scooter', 'available', 'Khajpura Stand', $1)
             ON CONFLICT (id) DO UPDATE SET registration_number = EXCLUDED.registration_number
           `, [resolvedVehicleId, `Manual / ${resolvedVehicleId}`]);
         } catch (vErr) {
@@ -1115,6 +1113,8 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
         }
       }
     }
+
+    await client.query('BEGIN');
 
     const cleanUserId = user_id ? (typeof user_id === 'string' && user_id.toUpperCase().startsWith('USR-') ? parseInt(user_id.replace(/^USR-/i, ''), 10) : parseInt(user_id, 10)) : null;
     const finalDate = date_reported ? new Date(date_reported) : new Date();
@@ -1166,8 +1166,7 @@ app.post('/api/maintenance', authenticateToken, async (req, res) => {
       await client.query("UPDATE vehicles SET status = 'maintenance' WHERE (id = $1 OR UPPER(TRIM(model)) = UPPER(TRIM($1))) AND status = 'available'", [String(resolvedVehicleId)]);
     } else if (finalStatus === 'completed') {
       const activeRental = await client.query("SELECT id FROM rentals WHERE (vehicle_id = $1 OR vehicle_id = $2) AND status IN ('active', 'in_use', 'pending_return')", [String(resolvedVehicleId), String(vehicle_id)]);
-      const activeBooking = await client.query("SELECT id FROM bookings WHERE (vehicle_id = $1 OR vehicle_id = $2) AND status IN ('active', 'assigned', 'in_use')", [String(resolvedVehicleId), String(vehicle_id)]);
-      if (activeRental.rows.length === 0 && activeBooking.rows.length === 0) {
+      if (activeRental.rows.length === 0) {
         await client.query("UPDATE vehicles SET status = 'available' WHERE id = $1 OR UPPER(TRIM(model)) = UPPER(TRIM($1)) OR UPPER(TRIM(registration_number)) = UPPER(TRIM($1))", [String(resolvedVehicleId)]);
       }
     }
@@ -1214,12 +1213,9 @@ app.put('/api/maintenance/:id', authenticateToken, async (req, res) => {
       items_breakdown
     } = req.body;
 
-    await client.query('BEGIN');
-
     // Fetch existing log to preserve unspecified fields and compare parts_replaced
     const existingLogRes = await client.query('SELECT * FROM maintenance_logs WHERE id = $1', [id]);
     if (existingLogRes.rows.length === 0) {
-      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Maintenance record not found' });
     }
     const existing = existingLogRes.rows[0];
@@ -1244,12 +1240,14 @@ app.put('/api/maintenance/:id', authenticateToken, async (req, res) => {
     if (resolvedVehicleIdPut) {
       try {
         await client.query(`
-          INSERT INTO vehicles (id, model, type, status, registration_number)
-          VALUES ($1, $2, 'scooter', 'available', $1)
+          INSERT INTO vehicles (id, model, type, status, location, registration_number)
+          VALUES ($1, $2, 'scooter', 'available', 'Khajpura Stand', $1)
           ON CONFLICT (id) DO NOTHING
         `, [String(resolvedVehicleIdPut), `Manual / ${resolvedVehicleIdPut}`]);
       } catch (_) {}
     }
+
+    await client.query('BEGIN');
 
     const finalUserId = user_id !== undefined ? (user_id ? (typeof user_id === 'string' && user_id.toUpperCase().startsWith('USR-') ? parseInt(user_id.replace(/^USR-/i, ''), 10) : parseInt(user_id, 10)) : null) : existing.user_id;
     const finalDate = date_reported ? new Date(date_reported) : existing.date_reported;
@@ -1319,11 +1317,7 @@ app.put('/api/maintenance/:id', authenticateToken, async (req, res) => {
         "SELECT id FROM rentals WHERE (vehicle_id = $1 OR vehicle_id = $2) AND status IN ('active', 'in_use', 'pending_return')",
         [String(resolvedVehicleIdPut), String(existing.vehicle_id)]
       );
-      const activeBooking = await client.query(
-        "SELECT id FROM bookings WHERE (vehicle_id = $1 OR vehicle_id = $2) AND status IN ('active', 'assigned', 'in_use')",
-        [String(resolvedVehicleIdPut), String(existing.vehicle_id)]
-      );
-      if (activeRental.rows.length === 0 && activeBooking.rows.length === 0) {
+      if (activeRental.rows.length === 0) {
         await client.query(
           "UPDATE vehicles SET status = 'available' WHERE id = $1 OR UPPER(TRIM(model)) = UPPER(TRIM($1)) OR UPPER(TRIM(registration_number)) = UPPER(TRIM($1))",
           [String(resolvedVehicleIdPut)]
@@ -4261,7 +4255,7 @@ app.get('/api/bookings/all', authenticateToken, async (req, res) => {
         u.id as user_id, u.name as user_name, u.phone as user_phone, u.email as user_email,
         u.security_deposit_balance, u.security_deposit_paid,
         COALESCE(v.id, r.vehicle_id) as vehicle_id, v.model as vehicle_model, v.status as vehicle_status,
-        p.id as plan_id, p.name as plan_name, p.price as plan_price, p.type as plan_type
+        p.id as plan_id, p.name as plan_name, p.price as plan_price, p.type as plan_type, p.security_deposit as plan_deposit
       FROM rentals r
       JOIN users u ON u.id = r.user_id
       LEFT JOIN vehicles v ON (LOWER(v.id) = LOWER(r.vehicle_id) OR LOWER(v.model) = LOWER(r.vehicle_id))
@@ -4272,14 +4266,23 @@ app.get('/api/bookings/all', authenticateToken, async (req, res) => {
     const now = new Date();
     const formattedBookings = result.rows.map(booking => {
       let is_overdue = false;
-      const basePackage = 5100;
+      const planPrice = parseFloat(booking.plan_price || 0);
+      const planDeposit = booking.plan_deposit !== null && booking.plan_deposit !== undefined ? parseFloat(booking.plan_deposit) : 3500;
+      const basePackage = planPrice > 0 ? (planPrice + planDeposit) : 5100;
       const paidAmount = parseFloat(booking.total_cost || 0);
-      const dueFrom5100 = Math.max(0, basePackage - paidAmount);
+      let dueFromPackage = Math.max(0, basePackage - paidAmount);
+      if (dueFromPackage <= 10) dueFromPackage = 0;
 
-      let calculated_due = Math.max(dueFrom5100, parseFloat(booking.due_amount || 0));
+      // Active / vehicle assigned rentals have already settled initial handover unless explicit due_amount is set
+      let calculated_due = (booking.status === 'active' || booking.vehicle_id)
+        ? parseFloat(booking.due_amount || 0)
+        : Math.max(dueFromPackage, parseFloat(booking.due_amount || 0));
+
+      if (calculated_due <= 10 && (booking.status === 'active' || booking.vehicle_id || paidAmount >= basePackage - 10)) {
+        calculated_due = 0;
+      }
       let overdue_days = 0;
 
-      const planPrice = parseFloat(booking.plan_price || 0);
       const planType = (booking.plan_type || '').toLowerCase();
 
       if (booking.status === 'active' && planPrice > 0) {
@@ -4352,7 +4355,8 @@ app.get('/api/bookings/all', authenticateToken, async (req, res) => {
         handover_remarks: booking.handover_remarks || '',
         assignment_date: booking.assignment_date || booking.start_time,
         pre_booking_date: booking.pre_booking_date || booking.start_time,
-        due_from_5100: dueFrom5100,
+        due_from_5100: dueFromPackage,
+        due_from_package: dueFromPackage,
         calculated_due,
         overdue_days,
         is_overdue,
@@ -4461,6 +4465,13 @@ app.post('/api/bookings/create', authenticateToken, async (req, res) => {
 
     // Distribute payment between Security Deposit (refundable) and Cycle Pass (rent)
     const advAmt = parseFloat(collected_amount || 0);
+    const planRes = await client.query('SELECT price, security_deposit FROM plans WHERE id = $1', [resolvedPlanId]);
+    const planPrice = planRes.rows.length > 0 ? parseFloat(planRes.rows[0].price || 0) : 1600;
+    const planDeposit = planRes.rows.length > 0 ? parseFloat(planRes.rows[0].security_deposit || 0) : 3500;
+    const packageRate = (planPrice + planDeposit) || 5100;
+    let initialDue = Math.max(0, packageRate - advAmt);
+    if (initialDue <= 10) initialDue = 0;
+
     let allocatedDeposit = 0;
     let allocatedCycle = 0;
 
@@ -4470,8 +4481,7 @@ app.post('/api/bookings/create', authenticateToken, async (req, res) => {
         ? parseFloat(cycle_amount) || 0
         : Math.max(0, advAmt - allocatedDeposit);
     } else {
-      // Standard package distribution: ₹3,500 security deposit + ₹1,600 cycle rent (total ₹5,100)
-      allocatedDeposit = Math.min(3500, advAmt);
+      allocatedDeposit = Math.min(planDeposit || 3500, advAmt);
       allocatedCycle = Math.max(0, advAmt - allocatedDeposit);
     }
 
@@ -4490,7 +4500,7 @@ app.post('/api/bookings/create', authenticateToken, async (req, res) => {
     `, [
       bookingId, resolvedUserId, vehicle_id || null, resolvedPlanId, start_time, pDate,
       advAmt, status, payment_mode || 'cash',
-      payment_status || 'paid', Math.max(0, 5100 - advAmt), remarks || '', nextPayDate,
+      payment_status || 'paid', initialDue, remarks || '', nextPayDate,
       advAmt, 0.00, payment_mode || 'cash', remarks || '', assignDate, initialHandoverId,
       allocatedDeposit, allocatedCycle
     ]);
@@ -4740,7 +4750,7 @@ app.put('/api/bookings/:id', authenticateToken, async (req, res) => {
 
     await client.query('BEGIN');
 
-    const bookingRes = await client.query('SELECT user_id, advance_paid, total_cost, payment_mode, remarks, pre_booking_date, deposit_amount, rent_cycle_amount, handover_id FROM rentals WHERE id = $1', [id]);
+    const bookingRes = await client.query('SELECT user_id, advance_paid, total_cost, payment_mode, remarks, pre_booking_date, deposit_amount, rent_cycle_amount, handover_id, plan_id, due_amount FROM rentals WHERE id = $1', [id]);
     if (bookingRes.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Booking not found.' });
@@ -4758,8 +4768,25 @@ app.put('/api/bookings/:id', authenticateToken, async (req, res) => {
       `, [user_name || null, user_phone || null, userId]);
     }
 
+    let planPrice = 1600;
+    let planDeposit = 3500;
+    if (currentBooking.plan_id) {
+      const pRes = await client.query('SELECT price, security_deposit FROM plans WHERE id = $1', [currentBooking.plan_id]);
+      if (pRes.rows.length > 0) {
+        planPrice = parseFloat(pRes.rows[0].price || 0);
+        planDeposit = parseFloat(pRes.rows[0].security_deposit || 0);
+      }
+    }
+    const packageRate = (planPrice + planDeposit) || 5100;
+
     const paid = collected_amount !== undefined && collected_amount !== '' && collected_amount !== null ? parseFloat(collected_amount) : null;
-    const due = paid !== null ? Math.max(0, 5100 - paid) : null;
+    let due = null;
+    if (req.body.due_amount !== undefined && req.body.due_amount !== null && req.body.due_amount !== '') {
+      due = parseFloat(req.body.due_amount);
+    } else if (paid !== null) {
+      due = Math.max(0, packageRate - paid);
+    }
+    if (due !== null && due <= 10) due = 0.00;
     const pDate = pre_booking_date ? new Date(pre_booking_date).toISOString() : null;
     
     // Resolve advance paid safely

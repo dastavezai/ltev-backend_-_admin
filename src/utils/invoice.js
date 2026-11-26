@@ -99,7 +99,9 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
       }
     }
     const paidAmount = advancePaid !== null ? advancePaid : 1500;
-    const dueAmount = Math.max(0, 5100 - paidAmount);
+    const totalPkg = (parseFloat(data.plan_price || 0) + parseFloat(data.plan_deposit || 3500)) || 5100;
+    let dueAmount = (data.status === 'active' || data.vehicle_id) ? parseFloat(data.due_amount || 0) : Math.max(0, totalPkg - paidAmount);
+    if (dueAmount <= 10) dueAmount = 0;
     const bookingDate = data.pre_booking_date || data.advance_date || data.created_at || data.start_time || data.date || Date.now();
     const formattedDate = formatIndianDate(bookingDate);
     const billingTime = formatIndianTime(bookingDate);
@@ -315,7 +317,7 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
   // 3. BOOKING CONFIRM & VEHICLE HANDOVER RECEIPT TEMPLATE (RNT)
   // ============================================================
   if (type === 'booking_confirm') {
-    const totalPackage = 5100;
+    const totalPackage = (parseFloat(data.plan_price || 0) + parseFloat(data.plan_deposit || 3500)) || 5100;
     const paidAmount = parseFloat(data.total_cost || data.collected_amount || data.paid_amount || 0);
 
     // Accurately resolve advance_paid and handover_amount
@@ -343,7 +345,8 @@ export const getInvoiceHTML = (templateType = 'advance_booking', data = {}) => {
     if (advancePaid === null) advancePaid = 1500;
     if (handoverCollected === null) handoverCollected = Math.max(0, paidAmount - advancePaid);
     const totalReceived = advancePaid + handoverCollected;
-    const dueAmount = Math.max(0, totalPackage - totalReceived);
+    let dueAmount = Math.max(0, totalPackage - totalReceived);
+    if (dueAmount <= 10) dueAmount = 0;
 
     const advanceDate = data.pre_booking_date || data.advance_date || data.created_at || data.start_time;
     const formattedAdvanceDate = advanceDate ? formatIndianDate(advanceDate) : 'Confirmed';

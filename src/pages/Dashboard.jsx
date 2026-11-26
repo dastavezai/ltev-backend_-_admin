@@ -175,7 +175,9 @@ export default function Dashboard() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {preBookingsList.slice(0, 3).map(b => {
                   const paid = parseFloat(b.total_cost || b.collected_amount || 0);
-                  const due = Math.max(0, 5100 - paid);
+                  const pkg = (parseFloat(b.plan_price || 0) + parseFloat(b.plan_deposit || 3500)) || 5100;
+                  let due = (b.status === 'active' || b.vehicle_id) ? parseFloat(b.due_amount || 0) : Math.max(0, pkg - paid);
+                  if (due <= 10) due = 0;
                   return (
                     <div key={b.id} style={{ background: 'white', padding: '12px 14px', borderRadius: '10px', border: '1px solid #dcfce7' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '700', fontSize: '13px', color: '#0f172a' }}>
@@ -185,7 +187,7 @@ export default function Dashboard() {
                       <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span>📅 {new Date(b.pre_booking_date || Date.now()).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
                         <span style={{ fontWeight: '800', color: due > 0 ? '#dc2626' : '#16a34a', background: due > 0 ? '#fee2e2' : '#dcfce7', padding: '1px 6px', borderRadius: '4px', fontSize: '11px' }}>
-                          Due: 5100 - {paid} = ₹{due}
+                          Due: ₹{due}
                         </span>
                       </div>
                     </div>

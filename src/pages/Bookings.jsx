@@ -428,7 +428,13 @@ export default function Bookings() {
     setOnlyUnassignedEVs(true);
     setShowMoreAssignOptions(false);
     const paid = parseFloat(booking.total_cost || booking.collected_amount || booking.plan_price || 0);
-    const due = Math.max(0, 5100 - paid);
+    const pkg = (parseFloat(booking.plan_price || 0) + parseFloat(booking.plan_deposit || 3500)) 
+      || (booking.base_package ? parseFloat(booking.base_package) : 0) 
+      || 5100;
+    let due = (booking.status === 'active' || booking.vehicle_id)
+      ? parseFloat(booking.due_amount || 0)
+      : Math.max(0, pkg - paid);
+    if (due <= 10) due = 0;
 
     const targetVehId = booking.vehicle_id || '';
     setAssignForm({
@@ -564,7 +570,9 @@ export default function Bookings() {
   const activeSubscriptions = bookings.filter(b => b.status === 'active' || Boolean(b.vehicle_id));
   const overdueBookings = bookings.filter(b => {
     const paid = parseFloat(b.total_cost || b.collected_amount || b.plan_price || 0);
-    return (5100 - paid) > 0 || b.is_overdue || b.payment_status === 'overdue';
+    const pkg = (parseFloat(b.plan_price || 0) + parseFloat(b.plan_deposit || 3500)) || 5100;
+    const due = (b.status === 'active' || b.vehicle_id) ? parseFloat(b.due_amount || 0) : Math.max(0, pkg - paid);
+    return due > 10 || b.is_overdue || b.payment_status === 'overdue';
   });
 
   // Filter logic
@@ -584,7 +592,9 @@ export default function Bookings() {
     if (filterTab === 'active') return b.status === 'active' || Boolean(b.vehicle_id);
     if (filterTab === 'overdue') {
       const paid = parseFloat(b.total_cost || b.collected_amount || b.plan_price || 0);
-      return (5100 - paid) > 0 || b.is_overdue;
+      const pkg = (parseFloat(b.plan_price || 0) + parseFloat(b.plan_deposit || 3500)) || 5100;
+      const due = (b.status === 'active' || b.vehicle_id) ? parseFloat(b.due_amount || 0) : Math.max(0, pkg - paid);
+      return due > 10 || b.is_overdue;
     }
 
     return true;
@@ -608,8 +618,12 @@ export default function Bookings() {
       aVal = new Date(a.pre_booking_date || a.start_time || 0).getTime();
       bVal = new Date(b.pre_booking_date || b.start_time || 0).getTime();
     } else if (sortConfig.field === 'due') {
-      aVal = Math.max(0, 5100 - parseFloat(a.total_cost || a.collected_amount || 0));
-      bVal = Math.max(0, 5100 - parseFloat(b.total_cost || b.collected_amount || 0));
+      const aPkg = (parseFloat(a.plan_price || 0) + parseFloat(a.plan_deposit || 3500)) || 5100;
+      const bPkg = (parseFloat(b.plan_price || 0) + parseFloat(b.plan_deposit || 3500)) || 5100;
+      aVal = (a.status === 'active' || a.vehicle_id) ? parseFloat(a.due_amount || 0) : Math.max(0, aPkg - parseFloat(a.total_cost || a.collected_amount || 0));
+      bVal = (b.status === 'active' || b.vehicle_id) ? parseFloat(b.due_amount || 0) : Math.max(0, bPkg - parseFloat(b.total_cost || b.collected_amount || 0));
+      if (aVal <= 10) aVal = 0;
+      if (bVal <= 10) bVal = 0;
     }
 
     if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -772,7 +786,9 @@ export default function Bookings() {
             <tbody>
               {sortedBookings.map((bkg, idx) => {
                 const paidAmount = parseFloat(bkg.total_cost || bkg.collected_amount || bkg.plan_price || 0);
-                const dueAmount = Math.max(0, 5100 - paidAmount);
+                const pkg = (parseFloat(bkg.plan_price || 0) + parseFloat(bkg.plan_deposit || 3500)) || 5100;
+                let dueAmount = (bkg.status === 'active' || bkg.vehicle_id) ? parseFloat(bkg.due_amount || 0) : Math.max(0, pkg - paidAmount);
+                if (dueAmount <= 10) dueAmount = 0;
                 const bookingDate = bkg.pre_booking_date || bkg.start_time || Date.now();
                 const cleanReceipt = (bkg.remarks && !bkg.remarks.startsWith('ADV-BKG') && !bkg.remarks.startsWith('BKG-') && !bkg.remarks.toLowerCase().includes('advance booking deposit')) ? bkg.remarks : '';
                 const cleanPhone = (bkg.user_phone && bkg.user_phone !== '9000000000' && bkg.user_phone !== '0000000000') ? bkg.user_phone : '';
@@ -892,11 +908,12 @@ export default function Bookings() {
                                 const paid = parseFloat(bkg.total_cost || bkg.collected_amount || 0);
                                 const adv = bkg.advance_paid !== null && bkg.advance_paid !== undefined ? parseFloat(bkg.advance_paid) : (paid <= 2500 ? paid : 1500);
                                 const hnd = bkg.handover_amount !== null && bkg.handover_amount !== undefined ? parseFloat(bkg.handover_amount) : Math.max(0, paid - adv);
+                                const pkg = (parseFloat(bkg.plan_price || 0) + parseFloat(bkg.plan_deposit || 3500)) || 5100;
                                 handleOpenInvoiceWindow({
                                   ...bkg,
                                   vehicle_name: selectedVeh?.vehicle_id || selectedVeh?.id || bkg.vehicle_id,
                                   vehicle_model: selectedVeh?.model || bkg.vehicle_model || 'LT Commercial EV',
-                                  total_cost: paid || 5100,
+                                  total_cost: paid || pkg,
                                   advance_paid: adv,
                                   handover_amount: hnd,
                                   advance_payment_mode: bkg.advance_payment_mode || (bkg.status === 'pre_booking' ? bkg.payment_mode : 'cash'),
@@ -1002,7 +1019,10 @@ export default function Bookings() {
       {/* CREATE ADVANCE BOOKING MODAL */}
       {createModalOpen && (() => {
         const totalPaid = createPaymentRows.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
-        const due = Math.max(0, 5100 - totalPaid);
+        const selectedPlan = plans.find(p => String(p.id) === String(createForm.plan_id));
+        const pkg = selectedPlan ? (parseFloat(selectedPlan.price || 0) + parseFloat(selectedPlan.security_deposit || 3500)) : 5100;
+        let due = Math.max(0, pkg - totalPaid);
+        if (due <= 10) due = 0;
 
         return (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '16px' }}>
@@ -1192,7 +1212,7 @@ export default function Bookings() {
 
                   {/* SECTION 3: PAYMENT COLLECTION */}
                   <div>
-                    {renderPaymentRowsBuilder(createPaymentRows, setCreatePaymentRows, 5100)}
+                    {renderPaymentRowsBuilder(createPaymentRows, setCreatePaymentRows, pkg)}
 
                     {/* Package Payment Distribution Breakdown */}
                     {(() => {
@@ -1303,7 +1323,7 @@ export default function Bookings() {
 
             <form onSubmit={handleEditSubmit} style={{ display: 'grid', gap: '12px' }}>
               <div style={{ background: '#f8fafc', padding: '10px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', color: '#334155' }}>
-                <strong>DUE CALCULATION:</strong> 5100 - {editForm.collected_amount || '0'} = <strong style={{ color: '#dc2626' }}>₹{Math.max(0, 5100 - (parseFloat(editForm.collected_amount) || 0))}</strong>
+                <strong>DUE CALCULATION:</strong> Package Rate - {editForm.collected_amount || '0'} = <strong style={{ color: '#dc2626' }}>₹{Math.max(0, 5100 - (parseFloat(editForm.collected_amount) || 0)) <= 10 ? 0 : Math.max(0, 5100 - (parseFloat(editForm.collected_amount) || 0))}</strong>
               </div>
 
               <div>
@@ -1381,10 +1401,16 @@ export default function Bookings() {
 
       {/* BIG 2-STEP ASSIGN EV DIALOG */}
       {assignModalOpen && assigningBooking && (() => {
+        const pkg = (parseFloat(assigningBooking.plan_price || 0) + parseFloat(assigningBooking.plan_deposit || 3500)) 
+          || (assigningBooking.base_package ? parseFloat(assigningBooking.base_package) : 0) 
+          || 5100;
         const prevPaid = parseFloat(assigningBooking.total_cost || assigningBooking.collected_amount || 0);
-        const prevDue = Math.max(0, 5100 - prevPaid);
+        let prevDue = (assigningBooking.status === 'active' || assigningBooking.vehicle_id)
+          ? parseFloat(assigningBooking.due_amount || 0)
+          : Math.max(0, pkg - prevPaid);
+        if (prevDue <= 10) prevDue = 0;
         const additionalPaid = parseFloat(assignForm.additional_payment || 0);
-        const remainingDueAfter = Math.max(0, 5100 - (prevPaid + (isNaN(additionalPaid) ? 0 : additionalPaid)));
+        const remainingDueAfter = Math.max(0, prevDue - (isNaN(additionalPaid) ? 0 : additionalPaid));
 
         return (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '16px' }}>
@@ -1469,7 +1495,7 @@ export default function Bookings() {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', background: '#ffffff', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', textAlign: 'center' }}>
                         <div>
                           <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600' }}>PACKAGE RATE</div>
-                          <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>₹5,100</div>
+                          <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>₹{pkg.toLocaleString('en-IN')}</div>
                         </div>
                         <div>
                           <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600' }}>PREVIOUS ADVANCE</div>
@@ -1867,7 +1893,7 @@ export default function Bookings() {
                             vehicle_model: selectedVehicleObj?.model || assigningBooking.vehicle_model || 'LT Commercial EV',
                             location: selectedVehicleObj?.location || assigningBooking.location || 'Khajpura Stand, Patna',
                             plan_name: assigningBooking.plan_name || 'Weekly Commercial Rental',
-                            total_cost: (prevPaid + addedPaid) || 5100,
+                            total_cost: (prevPaid + addedPaid) || pkg,
                             advance_paid: prevPaid,
                             handover_amount: addedPaid,
                             advance_payment_mode: assigningBooking.advance_payment_mode || assigningBooking.payment_mode || 'cash',

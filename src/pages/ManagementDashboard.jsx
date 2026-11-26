@@ -1281,6 +1281,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
     const paid = parseFloat(bkgOrRental.total_cost || bkgOrRental.collected_amount || 0);
     const advPaid = bkgOrRental.advance_paid !== null && bkgOrRental.advance_paid !== undefined ? parseFloat(bkgOrRental.advance_paid) : (paid <= 2500 ? paid : 1500);
     const hndCollected = bkgOrRental.handover_amount !== null && bkgOrRental.handover_amount !== undefined ? parseFloat(bkgOrRental.handover_amount) : Math.max(0, paid - advPaid);
+    const pkgTotal = (parseFloat(bkgOrRental.plan_price || 0) + parseFloat(bkgOrRental.plan_deposit || 3500)) || 5100;
 
     handleOpenInvoiceWindow({
       ...bkgOrRental,
@@ -1291,7 +1292,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
       vehicle_name: vCode,
       vehicle_model: (vObj && vObj.model) || bkgOrRental.vehicle_model || 'LT Commercial EV',
       location: (vObj && vObj.location) || bkgOrRental.location || 'Khajpura Stand',
-      total_cost: paid || 5100,
+      total_cost: paid || pkgTotal,
       advance_paid: advPaid,
       handover_amount: hndCollected,
       advance_payment_mode: bkgOrRental.advance_payment_mode || (bkgOrRental.status === 'pre_booking' ? bkgOrRental.payment_mode : 'cash'),
@@ -1328,7 +1329,13 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
     setAssignSlotOnlyUnassigned(true);
     setShowMoreSlotOptions(false);
     const paid = parseFloat(booking.total_cost || booking.collected_amount || 0);
-    const due = Math.max(0, 5100 - paid);
+    const pkg = (parseFloat(booking.plan_price || 0) + parseFloat(booking.plan_deposit || 3500)) 
+      || (booking.base_package ? parseFloat(booking.base_package) : 0) 
+      || 5100;
+    let due = (booking.status === 'active' || booking.vehicle_id)
+      ? parseFloat(booking.due_amount || 0)
+      : Math.max(0, pkg - paid);
+    if (due <= 10) due = 0;
 
     const defaultVehId = availableVehicles[0]?.id || '';
     setAssignSlotForm({
@@ -1390,7 +1397,8 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
           assignment_date: assignSlotForm.assignment_date,
           pre_booking_date: selectedBookingForSlot.pre_booking_date,
           deposit_amount: Math.min(3500, totalPaidNow),
-          cycle_amount: Math.max(0, totalPaidNow - Math.min(3500, totalPaidNow))
+          cycle_amount: Math.max(0, totalPaidNow - Math.min(3500, totalPaidNow)),
+          due_amount: 0
         },
         authHeaders
       );
@@ -3870,7 +3878,11 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
               <tbody>
                 {filteredAdvanceBookings.map(bkg => {
                   const paid = parseFloat(bkg.total_cost || bkg.collected_amount || 0);
-                  const due = Math.max(0, 5100 - paid);
+                  const pkg = (parseFloat(bkg.plan_price || 0) + parseFloat(bkg.plan_deposit || 3500)) || (bkg.base_package ? parseFloat(bkg.base_package) : 5100);
+                  let due = (bkg.status === 'active' || bkg.vehicle_id)
+                    ? parseFloat(bkg.due_amount || 0)
+                    : Math.max(0, pkg - paid);
+                  if (due <= 10) due = 0;
                   const isAssigned = Boolean(bkg.vehicle_id && bkg.status !== 'pre_booking');
 
                   return (
@@ -4176,8 +4188,14 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
       {/* MODAL: ASSIGN SLOT TO ADVANCE BOOKING (2-STEP CARD DESIGN) */}
       {/* ============================================================ */}
       {assignSlotModalOpen && selectedBookingForSlot && (() => {
+        const pkg = (parseFloat(selectedBookingForSlot.plan_price || 0) + parseFloat(selectedBookingForSlot.plan_deposit || 3500)) 
+          || (selectedBookingForSlot.base_package ? parseFloat(selectedBookingForSlot.base_package) : 0) 
+          || 5100;
         const prevPaid = parseFloat(selectedBookingForSlot.total_cost || selectedBookingForSlot.collected_amount || 0);
-        const prevDue = Math.max(0, 5100 - prevPaid);
+        let prevDue = (selectedBookingForSlot.status === 'active' || selectedBookingForSlot.vehicle_id)
+          ? parseFloat(selectedBookingForSlot.due_amount || 0)
+          : Math.max(0, pkg - prevPaid);
+        if (prevDue <= 10) prevDue = 0;
         const addedPaid = assignSlotPaymentRows.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
         const currentAddedPayment = addedPaid;
         const remainingDueAfter = Math.max(0, prevDue - currentAddedPayment);
@@ -4294,7 +4312,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                       <div className="mgmt-form-grid-3" style={{ background: '#ffffff', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', textAlign: 'center' }}>
                         <div>
                           <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600' }}>PACKAGE RATE</div>
-                          <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>₹5,100</div>
+                          <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>₹{pkg.toLocaleString('en-IN')}</div>
                         </div>
                         <div>
                           <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600' }}>PREVIOUS ADVANCE</div>
@@ -4660,7 +4678,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
                             vehicle_model: selectedVeh?.model || selectedBookingForSlot.vehicle_model || 'LT Commercial EV',
                             location: selectedVeh?.location || 'Khajpura Stand, Patna',
                             plan_name: selectedBookingForSlot.plan_name || 'Weekly Commercial Rental',
-                            total_cost: (prevPaid + addedPaid) || 5100,
+                            total_cost: (prevPaid + addedPaid) || pkg,
                             advance_paid: prevPaid,
                             handover_amount: addedPaid,
                             advance_payment_mode: selectedBookingForSlot.advance_payment_mode || selectedBookingForSlot.payment_mode || 'cash',
@@ -4778,7 +4796,10 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
       {/* ============================================================ */}
       {createBookingModalOpen && (() => {
         const totalPaid = createBookingPaymentRows.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
-        const due = Math.max(0, 5100 - totalPaid);
+        const selectedPlan = plans.find(p => String(p.id) === String(createBookingForm.plan_id));
+        const pkg = selectedPlan ? (parseFloat(selectedPlan.price || 0) + parseFloat(selectedPlan.security_deposit || 3500)) : 5100;
+        let due = Math.max(0, pkg - totalPaid);
+        if (due <= 10) due = 0;
 
         return (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: '16px' }}>
@@ -4968,7 +4989,7 @@ _Support: +91 78705 72429 | LocalToto Workshop Patna_`;
 
                   {/* SECTION 3: PAYMENT COLLECTION */}
                   <div>
-                    {renderPaymentRowsBuilder(createBookingPaymentRows, setCreateBookingPaymentRows, 5100)}
+                    {renderPaymentRowsBuilder(createBookingPaymentRows, setCreateBookingPaymentRows, pkg)}
 
                     {/* Package Payment Distribution Breakdown */}
                     {(() => {
